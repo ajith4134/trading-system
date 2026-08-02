@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import math
+import signal
 import sys
 from pathlib import Path
 from typing import AsyncIterator
@@ -89,6 +90,32 @@ async def run_capture(venue, specs, root: Path, duration_seconds: float,
     return recorder.stats()
 
 
+def _stop_gracefully_on_sigterm() -> None:
+    """Make SIGTERM a clean shutdown rather than a torn hour.
+
+    SIGINT alone is not enough, and the reason is not obvious. A non-interactive
+    shell sets SIGINT to SIG_IGN for the children it starts in the background,
+    and the disposition survives exec - so a recorder launched by a supervisor
+    script cannot be interrupted by SIGINT at all, no matter what Python
+    installs afterwards. Measured on this box: the supervisor's `kill -INT` was
+    a no-op and it hung waiting for a child that never noticed.
+
+    SIGTERM does land, and by default it kills the process where it stands.
+    That leaves the zstd frame of every stream mid-write torn, which
+    `RawWriter` then correctly refuses to append to - costing each affected
+    stream the remainder of its hour. Also measured: the two busiest depth
+    streams, seventeen minutes each.
+
+    Raising KeyboardInterrupt routes SIGTERM into the shutdown path that already
+    exists and is already tested, so `close()` runs, the zstd footers are
+    written, and the `.writing` markers are removed.
+    """
+    def raise_keyboard_interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, raise_keyboard_interrupt)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="capture", description="Record a venue's raw frames to disk.")
@@ -120,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     venue = _VENUES[args.venue]()
     specs = venue.core_specs(symbols)
     duration = args.seconds if args.seconds > 0 else float("inf")
+
+    _stop_gracefully_on_sigterm()
 
     try:
         stats = asyncio.run(run_capture(venue, specs, Path(args.root), duration,

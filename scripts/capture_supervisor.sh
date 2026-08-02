@@ -40,8 +40,14 @@ child_pid=""
 # close() writes the zstd footers and removes the .writing marker, and an hour
 # left with a stale marker blocks the repair that is the way out of it.
 forward_stop() {
+    # TERM, not INT. A non-interactive shell sets SIGINT to SIG_IGN for the
+    # children it starts in the background and the disposition survives exec, so
+    # `kill -INT` here is a no-op and the wait below never returns. Measured: the
+    # supervisor hung and the recorder kept running. The recorder installs a
+    # SIGTERM handler that routes into its normal shutdown, so this closes the
+    # zstd footers and removes the .writing markers.
     if [ -n "$child_pid" ]; then
-        kill -INT "$child_pid" 2>/dev/null
+        kill -TERM "$child_pid" 2>/dev/null
         wait "$child_pid" 2>/dev/null
     fi
     printf '{"ts":"%s","venue":"%s","event":"supervisor_stopped"}\n' \
