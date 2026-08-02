@@ -1055,3 +1055,104 @@ def test_a_failed_raw_fsync_leaves_the_pair_repairable(tmp_path: Path, monkeypat
     assert _read_lines(raw) == [f'{{"frame":{i}}}' for i in range(5)]
     assert reconcile_pair(raw, idx).entries_rebuilt == 5, (
         "the index gained entries the failed raw side could not back")
+
+
+def test_a_failed_raw_fsync_does_not_make_the_index_durable_instead(tmp_path: Path,
+                                                                    monkeypatch):
+    """Withholding the index's footer is not enough - its fsync must go too.
+
+    `close()` finishes the index descriptor either way, so the un-footered bytes
+    reach the page cache regardless. Syncing them there would put the index
+    ahead of a raw file whose own sync just failed, which is precisely the
+    drift the raw-first ordering exists to prevent: after a power loss the
+    index would hold entries backed by raw frames that never landed, and
+    nothing rebuilds raw from the index.
+    """
+    w = RawWriter(tmp_path, "binance", "depth", "BTCUSDT")
+    w.append('{"frame":0}', t_recv_ns=HOUR_05, t_exch_ms=None, seq=None)
+    raw_fd, idx_fd = w._raw_fh.fileno(), w._idx_fh.fileno()
+
+    synced: list[int] = []
+    real_fsync = os.fsync
+
+    def fsync_failing_on_the_raw_file(fd: int) -> None:
+        synced.append(fd)
+        if fd == raw_fd:
+            raise OSError(errno.EIO, "I/O error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_failing_on_the_raw_file)
+    with pytest.raises(OSError):
+        w.close()
+
+    assert idx_fd not in synced, (
+        "raw could not be made durable, so the index must not be either")
+
+
+def _torn_pair_and_its_repair_events(tmp_path: Path, monkeypatch) -> list[str]:
+    """Repair a pair whose index is short, recording the durability sequence.
+
+    `reconcile_pair` rewrites the index through `_write_lines`, which is the
+    only place this module replaces a file rather than appending to one - and
+    the only place the atomic-rename durability rules apply.
+    """
+    raw, idx = paths_for(tmp_path, "v", "s", "SYM", "2026-08-02T05")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    _write_zst_lines(raw, ['{"frame":0}', '{"frame":1}'])
+    _write_zst_lines(idx, [encode_index_entry(IndexEntry(
+        n=0, t_recv_ns=HOUR_05, t_exch_ms=None, seq=None, kind="data", esc=False))])
+
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def recording_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        events.append("fsync-directory" if is_directory else "fsync-file")
+        return real_fsync(fd)
+
+    def recording_replace(src, dst) -> None:
+        events.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+
+    assert reconcile_pair(raw, idx).entries_rebuilt == 1
+    assert "replace" in events, "the repair never rewrote the index"
+    return events
+
+
+def test_repair_makes_the_rebuilt_file_durable_before_the_rename(tmp_path: Path,
+                                                                 monkeypatch):
+    """A rename being atomic says nothing about what it exposes.
+
+    `os.replace` guarantees a reader sees the old name or the new one, never a
+    half-written mixture. It does not guarantee the new inode's CONTENTS have
+    reached the disk: a power loss immediately after can leave the index's name
+    pointing at an empty or partial inode. Repair is the recovery path for a
+    crash, so it has to survive one.
+    """
+    events = _torn_pair_and_its_repair_events(tmp_path, monkeypatch)
+
+    assert "fsync-file" in events[:events.index("replace")], (
+        "the rebuilt index was renamed into place before its contents were "
+        "made durable, so a power loss can expose an empty inode under a "
+        "name that promises a repaired file")
+
+
+def test_repair_makes_the_rename_itself_durable(tmp_path: Path, monkeypatch):
+    """The rename is a directory entry, and it needs the same treatment.
+
+    Syncing the new inode leaves the old name still pointing at the old one
+    until the directory is synced too. Without it a power loss can undo the
+    repair entirely - the torn index returns, and `reconcile_pair` has to run
+    again against whatever the raw file looks like by then.
+    """
+    events = _torn_pair_and_its_repair_events(tmp_path, monkeypatch)
+
+    assert "fsync-directory" in events[events.index("replace"):], (
+        "the directory was never synced after the rename, so the repair "
+        "itself may not survive the crash it exists to recover from")
