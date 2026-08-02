@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 .venv/
-capture/
+# Anchored: an unanchored `capture/` also matches src/capture/, which is source.
+/capture/
 .claude/
+.superpowers/
+.pytest_cache/

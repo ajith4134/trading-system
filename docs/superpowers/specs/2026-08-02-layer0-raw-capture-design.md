@@ -72,6 +72,52 @@ than baked in wrong.
 
 Exact instrument selection and the reasoning behind three-not-five, and futures-not-spot, are in §11.
 
+### 3.3 How each data type is actually obtained — **corrected 2026-08-02 by live measurement**
+
+The original design assumed every data type arrived over websocket. **Task 11's live smoke test proved
+otherwise**, and the correction was verified independently with no capture code involved. Measured on
+this host, 12 s per single stream on `wss://fstream.binance.com/ws/`:
+
+```
+depth@100ms  117    bookTicker 266    trade 501     <- WORK
+aggTrade 0   markPrice@1s 0   forceOrder 0   kline_1m 0   miniTicker 0   !forceOrder@arr 0
+```
+
+Every `markPrice` and `forceOrder` variant was tested (`@1s`, bare, `!…@arr`, `!…@arr@1s`, and via
+`/stream?streams=`). All returned zero. This is not a naming error — those stream families are
+unavailable from this host, while REST serves the same data normally.
+
+**Had this shipped, the archive would have contained depth only** — no trades, no funding, no
+liquidations — and none of it recoverable later. This is the single strongest justification for
+sequencing a live smoke test inside the capture sub-project rather than after it.
+
+| Data | Source | Notes |
+|---|---|---|
+| **L2 depth** | Binance ws `@depth@100ms` · Hyperliquid ws `l2Book` | Unchanged |
+| **Trades** | Binance ws **`@trade`** · Hyperliquid ws `trades` | **`@aggTrade` yields zero here.** `@trade` is *individual* trades — strictly more raw, so this is an improvement on the original spec, not a workaround |
+| **Funding + mark** | **REST poll** | Binance `/fapi/v1/premiumIndex` **with no symbol returns 854 symbols in one call**; Hyperliquid `metaAndAssetCtxs` returns **232 assets in one call**. Hyperliquid ws `activeAssetCtx` also works |
+| **Open interest** | **REST poll** | Binance `/fapi/v1/openInterest` (per symbol); Hyperliquid included in the same one-call payload |
+| **Liquidations** | **OKX ws `liquidation-orders` (`instType: SWAP`)** | Binance has **no public path**: `allForceOrders` → 404, `forceOrders` → 401 (auth, own orders only). OKX verified working, one subscription covers every swap |
+
+**The REST path is better than the websocket design it replaces.** One poll covers 854 Binance
+symbols and one covers 232 Hyperliquid assets; per-symbol websocket streams would have needed
+hundreds of subscriptions to match that. This materially strengthens **R1 (genuinely broad tail)**
+rather than merely routing around a blocked stream.
+
+### 3.4 OKX — reference-only venue (added 2026-08-02)
+
+OKX is captured **solely for market-wide liquidation data** and is **never an execution venue**. This
+boundary is permanent and must be enforced in code and in review: no order path, no credentials, no
+adapter surface beyond reading the public liquidation stream.
+
+Rationale: liquidation cascades are cross-venue correlated, so OKX liquidations are a usable proxy for
+market-wide forced flow — and forced, non-discretionary flow is the most durable edge class in
+`~/research/IDEAS-INTELLIGENCE.md` §6. The data is unrecoverable if not captured as it happens.
+
+**A silent stream must never look like a healthy one.** A subscribed stream that has received zero
+frames after a startup grace period is recorded as a ledger event, so this failure mode cannot recur
+undetected on any venue.
+
 Tail breadth is a requirement, not a default — see §8 R1.
 
 ## 4. Architecture
@@ -241,7 +287,27 @@ Established by direct check on 2026-08-02, not assumed.
 
 ## 10. Blockers and preconditions
 
-### B1 — GCS write access is unproven (blocking for offload only)
+### ~~B1 — GCS write access is unproven~~ → **RESOLVED 2026-08-02**
+
+> **Bucket `gs://capture-raw-data4134` created and `roles/storage.objectAdmin` granted to
+> `1095194309870-compute@developer.gserviceaccount.com`.** Verified end to end by
+> `scripts/verify_gcs_write.sh`, which uploads, reads back, lists, **compares byte-for-byte**, and
+> deletes:
+>
+> ```
+> RESULT: GCS write access CONFIRMED for gs://capture-raw-data4134
+> ```
+>
+> The round-trip comparison is deliberate — a successful upload that silently corrupts is exactly the
+> failure this project exists to avoid, so "the command exited 0" is not accepted as proof.
+>
+> **Consequence: `archive_offloader` is unblocked and may now be built.** The local-only-never-prunes
+> rule below applies only until it exists. The runway table stays relevant as the deadline for
+> building it, not for obtaining access.
+>
+> Original blocker text follows for the record.
+
+### B1 (original) — GCS write access is unproven (blocking for offload only)
 
 ```
 ERROR: HTTPError 403: ...does not have storage.buckets.list access to the project

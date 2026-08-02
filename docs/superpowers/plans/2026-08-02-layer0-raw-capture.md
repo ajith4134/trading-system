@@ -434,15 +434,22 @@ class RawWriter:
 
 
 def read_pair(raw_path: Path, idx_path: Path) -> list[tuple[str, IndexEntry]]:
-    dctx = zstandard.ZstdDecompressor()
-    with open(raw_path, "rb") as fh:
-        raw_lines = dctx.stream_reader(fh).read().decode("utf-8").splitlines()
-    with open(idx_path, "rb") as fh:
-        idx_lines = dctx.stream_reader(fh).read().decode("utf-8").splitlines()
-    return [
-        (unescape_payload(r), decode_index_entry(i))
-        for r, i in zip(raw_lines, idx_lines)
-    ]
+    def _lines(path: Path) -> list[str]:
+        # Strict newline split - NOT splitlines(), which also breaks on
+        # \v \f \x85 U+2028 U+2029 and would desync raw from index.
+        dctx = zstandard.ZstdDecompressor()
+        with open(path, "rb") as fh:
+            text = dctx.stream_reader(fh).read().decode("utf-8")
+        return text.rstrip("\n").split("\n") if text else []
+
+    raw_lines, idx_lines = _lines(raw_path), _lines(idx_path)
+    pairs = []
+    for r, i in zip(raw_lines, idx_lines):
+        entry = decode_index_entry(i)
+        # Only unescape what was escaped. Unescaping unconditionally would
+        # collapse a literal \\ in an untouched payload and break byte-exactness.
+        pairs.append((unescape_payload(r) if entry.esc else r, entry))
+    return pairs
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -471,6 +478,14 @@ A `kill -9` can leave the raw file with more lines than the index. Truncating wo
 - Consumes: `RawWriter`, `read_pair`, `paths_for` from Task 3
 - Produces: `reconcile_pair(raw_path: Path, idx_path: Path) -> int` returning number of index entries repaired
 
+> **Contract established in Task 3's review, which this task completes.** `read_pair` **raises**
+> a named mismatch exception when the raw and index files have different line counts — it does
+> not silently `zip()` to the shorter one, because that returns wrong data instead of reporting
+> damage. `reconcile_pair` is the repair path: it rebuilds the missing index entries so a
+> subsequent `read_pair` succeeds. Detect and refuse, then repair — never paper over.
+>
+> This means the test below must call `reconcile_pair` *before* `read_pair`, which it already does.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
@@ -484,7 +499,7 @@ from capture.frame_codec import decode_index_entry
 def _truncate_index_by_one(idx_path: Path) -> None:
     dctx = zstandard.ZstdDecompressor()
     with open(idx_path, "rb") as fh:
-        lines = dctx.stream_reader(fh).read().decode("utf-8").splitlines()
+        lines = dctx.stream_reader(fh).read().decode("utf-8").rstrip("\n").split("\n")
     cctx = zstandard.ZstdCompressor(level=3)
     with open(idx_path, "wb") as fh:
         with cctx.stream_writer(fh) as w:
@@ -531,9 +546,17 @@ Append to `src/capture/raw_writer.py`:
 
 ```python
 def _read_lines(path: Path) -> list[str]:
+    """Split strictly on newline.
+
+    NOT str.splitlines(): that also splits on \v, \f, \x1c-\x1e, \x85,
+    U+2028 and U+2029, none of which escape_payload guards. Such a payload
+    would yield an extra raw line with no matching index entry, and every
+    subsequent line would pair with the wrong entry.
+    """
     dctx = zstandard.ZstdDecompressor()
     with open(path, "rb") as fh:
-        return dctx.stream_reader(fh).read().decode("utf-8").splitlines()
+        text = dctx.stream_reader(fh).read().decode("utf-8")
+    return text.rstrip("\n").split("\n") if text else []
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
