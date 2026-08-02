@@ -8,6 +8,7 @@ that orphaned the inode a live writer was still filling.
 import builtins
 import errno
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -954,3 +955,103 @@ def test_a_refused_open_leaves_no_marker_of_its_own(tmp_path: Path):
         "the refused open left its own marker, which blocks the repair that "
         "is the only way out of the refusal")
     assert reconcile_pair(raw, idx).entries_rebuilt == 1
+
+
+# --------------------------------------------------------------------------
+# IMPORTANT 6 - the fsync posture
+# --------------------------------------------------------------------------
+
+def _record_fsyncs(monkeypatch) -> list[tuple[int, bool]]:
+    """Record every fd fsynced, classified as file or directory while still open.
+
+    Power loss cannot be simulated in-process: `kill -9` leaves the page cache
+    intact, so nothing observable distinguishes a flushed file from a synced
+    one. These tests therefore constrain the mechanism, and the reasoning for
+    wanting it lives on `RawWriter.flush` and `CaptureLedger.record`.
+    """
+    calls: list[tuple[int, bool]] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        calls.append((fd, is_directory))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    return calls
+
+
+def test_flush_makes_both_files_durable_raw_first(tmp_path: Path, monkeypatch):
+    """`fh.flush()` only reaches the page cache. That covers `kill -9` and not a
+    power loss or a hypervisor reset, so the 30s cadence bounded crash loss
+    against process death only - against power loss the bound was whatever the
+    kernel happened to have written back."""
+    w = RawWriter(tmp_path, "binance", "depth", "BTCUSDT", flush_interval_seconds=30.0)
+    w.append('{"frame":0}', t_recv_ns=HOUR_05, t_exch_ms=None, seq=None)
+    raw_fd, idx_fd = w._raw_fh.fileno(), w._idx_fh.fileno()
+
+    calls = _record_fsyncs(monkeypatch)
+    w.flush()
+
+    assert [fd for fd, _ in calls] == [raw_fd, idx_fd], (
+        "raw must be made durable before the index gains its own boundary")
+    w.close()
+
+
+def test_close_makes_both_files_durable_before_releasing_them(tmp_path: Path,
+                                                              monkeypatch):
+    w = RawWriter(tmp_path, "binance", "depth", "BTCUSDT")
+    w.append('{"frame":0}', t_recv_ns=HOUR_05, t_exch_ms=None, seq=None)
+    raw_fd, idx_fd = w._raw_fh.fileno(), w._idx_fh.fileno()
+
+    calls = _record_fsyncs(monkeypatch)
+    w.close()
+
+    assert [fd for fd, _ in calls] == [raw_fd, idx_fd]
+
+
+def test_opening_an_hour_makes_its_directory_entry_durable(tmp_path: Path,
+                                                           monkeypatch):
+    """An fsync of a file's contents does not make its NAME durable. Without the
+    directory fsync a power loss can leave the whole hour with no entry at all,
+    which is the file's contents surviving in an inode nothing points at."""
+    calls = _record_fsyncs(monkeypatch)
+    w = RawWriter(tmp_path, "binance", "depth", "BTCUSDT")
+    w.append('{"frame":0}', t_recv_ns=HOUR_05, t_exch_ms=None, seq=None)
+
+    assert any(is_directory for _, is_directory in calls), (
+        "the hour's directory entry was never made durable")
+    w.close()
+
+
+def test_a_failed_raw_fsync_leaves_the_pair_repairable(tmp_path: Path, monkeypatch):
+    """Raw not being safely down means the index must not gain a footer.
+
+    Same rule as a failed raw close, now with one more way for raw to fail. The
+    index's unfinished frame is abandoned deliberately, and `reconcile_pair`
+    rebuilds it from the raw file - which is intact.
+    """
+    w = RawWriter(tmp_path, "binance", "depth", "BTCUSDT")
+    for i in range(5):
+        w.append(f'{{"frame":{i}}}', t_recv_ns=HOUR_05 + i, t_exch_ms=None, seq=None)
+    raw_fd = w._raw_fh.fileno()
+
+    real_fsync = os.fsync
+
+    def fsync_failing_on_the_raw_file(fd: int) -> None:
+        if fd == raw_fd:
+            raise OSError(errno.EIO, "I/O error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_failing_on_the_raw_file)
+    with pytest.raises(OSError):
+        w.close()
+    monkeypatch.undo()
+
+    raw, idx = paths_for(tmp_path, "binance", "depth", "BTCUSDT", "2026-08-02T05")
+    assert _read_lines(raw) == [f'{{"frame":{i}}}' for i in range(5)]
+    assert reconcile_pair(raw, idx).entries_rebuilt == 5, (
+        "the index gained entries the failed raw side could not back")

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from capture.capture_ledger import (
     CaptureLedger, LedgerEvent, read_all,
@@ -160,3 +161,35 @@ def test_the_last_nanosecond_of_a_day_is_filed_under_that_day(tmp_path: Path):
 
     assert [e.kind for e in read_all(tmp_path, "kraken", "2026-08-02")] == ["last_nanosecond"]
     assert read_all(tmp_path, "kraken", "2026-08-03") == []
+
+
+def test_every_recorded_event_is_fsynced_not_merely_flushed(tmp_path: Path,
+                                                            monkeypatch):
+    """The ledger is the incident record and the sole evidence of every anomaly.
+
+    `fh.flush()` reaches the page cache, which survives `kill -9` and not a
+    power loss or a hypervisor reset. Losing this file's tail is losing exactly
+    the events that describe the crash that lost them.
+
+    Power loss cannot be simulated in-process, so this constrains the mechanism;
+    the reasoning and the measured cost are on `CaptureLedger.record`.
+    """
+    synced_fds = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        synced_fds.append(fd)
+        return real_fsync(fd)
+
+    ledger = CaptureLedger(tmp_path, "kraken")
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    for i in range(3):
+        ledger.record(LedgerEvent(
+            ts_ns=1785648600_000_000_000 + i, venue="kraken", stream="trades",
+            kind="gap", severity=SEVERITY_OBSERVATION_LOSS, detail={}))
+    ledger_fd = ledger._fh.fileno()
+    monkeypatch.undo()
+    ledger.close()
+
+    assert synced_fds == [ledger_fd] * 3, (
+        "an event returned from record() while still only in the page cache")

@@ -232,6 +232,26 @@ def utc_date_of(ts_ns: int) -> str:
     return _utc_moment(ts_ns).strftime("%Y-%m-%d")
 
 
+def _fsync_directory(folder: Path) -> None:
+    """Make a directory's entries durable, so a newly created file has a name.
+
+    Failure is swallowed on purpose: this is a durability improvement on a file
+    that is already open and about to take live frames, and some filesystems do
+    not permit opening a directory for fsync at all. Losing capture over it
+    would be a worse trade than losing the guarantee it adds.
+    """
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def paths_for(root: Path, venue: str, stream: str, symbol: str, hour: str) -> tuple[Path, Path]:
     date = hour.split("T")[0]
     folder = Path(root) / "raw" / venue / date
@@ -454,9 +474,16 @@ class RawWriter:
             try:
                 self._idx_fh = open(idx_path, "ab")
                 try:
-                    self._raw_z = zstandard.ZstdCompressor(level=3).stream_writer(self._raw_fh)
+                    # closefd=False: `close()` has to flush and fsync each file
+                    # BETWEEN finishing its zstd stream and closing its
+                    # descriptor. With the default the zstd writer closes the
+                    # descriptor out from under that, and there is nothing left
+                    # to fsync.
+                    self._raw_z = zstandard.ZstdCompressor(level=3).stream_writer(
+                        self._raw_fh, closefd=False)
                     try:
-                        self._idx_z = zstandard.ZstdCompressor(level=3).stream_writer(self._idx_fh)
+                        self._idx_z = zstandard.ZstdCompressor(level=3).stream_writer(
+                            self._idx_fh, closefd=False)
                     except Exception:
                         if self._raw_z is not None:
                             self._raw_z.close()
@@ -473,6 +500,11 @@ class RawWriter:
             self._raw_fh = self._idx_fh = self._raw_z = self._idx_z = None
             self._release_claim(marker)
             raise
+        # An fsync of a file's contents does not make its NAME durable: after a
+        # power loss the directory entry can be missing and the whole hour with
+        # it. One directory fsync per hour per stream closes that, and is
+        # unmeasurable beside 3600 seconds of capture.
+        _fsync_directory(raw_path.parent)
         self._marker_path = marker
         self._hour, self._n = hour, resume_n
         # The first frame of this open establishes the cadence reference; there
@@ -535,11 +567,14 @@ class RawWriter:
             self._last_flush_ns = t_recv_ns
 
     def flush(self) -> None:
-        """Emit a zstd frame boundary in both files, raw first.
+        """Emit a zstd frame boundary in both files and fsync them, raw first.
 
         Ordering is load-bearing for the same reason it is in `close()`:
         `reconcile_pair` can rebuild missing index entries from raw lines, but
-        nothing can rebuild raw frames from index entries.
+        nothing can rebuild raw frames from index entries. It is constrained by
+        `test_flush_never_leaves_the_index_ahead_of_the_raw_file`, which fails
+        whichever file is flushed second - naming a file in the test would let
+        the reverse order pass.
 
         The two files can only drift apart in one way, and it is the harmless
         one. If the raw flush succeeds and the index flush then fails - ENOSPC is
@@ -549,14 +584,30 @@ class RawWriter:
         entries come back as kind="recovered". The reverse drift cannot happen,
         because the index is never flushed before raw and an exception on the raw
         side stops the sequence before the index is touched.
+
+        `fh.flush()` alone only moves bytes from a Python buffer into the page
+        cache. That is enough for `kill -9`, which is what this class's crash
+        analysis used to reason about, and is NOT enough for a power loss or a
+        hypervisor reset - the unresolved reboot scenario. Without the fsync the
+        30s cadence bounds crash loss only against process death, while against
+        power loss the bound is whatever the kernel had not written back, which
+        no part of this system controls. The fsync is what makes the measured
+        worst-case-loss table on this class true in both cases.
+
+        Cost, measured 2026-08-02 on this disk (GCE ext4): fsync median 1.85 ms,
+        p99 3.11 ms. One depth stream at 100ms is 120 boundaries per hour, so
+        240 fsyncs and ~0.44 s of an hour. At twenty (stream, symbol) writers
+        that is ~9 s per 3600, or 0.25% - paid per BOUNDARY, never per frame.
         """
-        # Raw is flushed to completion before the index gains its own frame - see
-        # the docstring above and close().
+        # Raw is flushed and made durable before the index gains its own frame -
+        # see the docstring above and close().
         if self._raw_z is not None:
             self._raw_z.flush(zstandard.FLUSH_FRAME)
             self._raw_fh.flush()
+            os.fsync(self._raw_fh.fileno())
             self._idx_z.flush(zstandard.FLUSH_FRAME)
             self._idx_fh.flush()
+            os.fsync(self._idx_fh.fileno())
 
     def close(self) -> None:
         """Finish both files, attempting every resource even if one fails.
@@ -564,10 +615,16 @@ class RawWriter:
         Ordering is load-bearing. `reconcile_pair` can rebuild missing index
         entries from raw lines, but nothing can rebuild raw frames from index
         entries - so an interrupted close must never leave the index holding
-        frames the raw file does not. Raw is therefore finished completely
-        first, and the index stream's footer is written only once raw is safely
-        down. If raw's close fails, the index's unfinished frame is deliberately
-        abandoned; its descriptor is still closed so nothing leaks.
+        frames the raw file does not. Raw is therefore finished completely and
+        fsynced first, and the index stream's footer is written only once raw is
+        safely down. If any part of finishing raw fails, the index's unfinished
+        frame is deliberately abandoned; its descriptor is still closed so
+        nothing leaks.
+
+        The final fsync of each file is why the zstd writers are opened with
+        `closefd=False`: the footer has to be written by the zstd stream and the
+        descriptor has to still be open afterwards for there to be anything to
+        fsync.
         """
         if self._raw_fh is None and self._idx_fh is None:
             self._hour = None
@@ -575,11 +632,22 @@ class RawWriter:
         errors: list[Exception] = []
 
         raw_is_complete = True
-        for finish in (self._raw_z, self._raw_fh):
-            if finish is None:
-                continue
+        if self._raw_z is not None:
             try:
-                finish.close()
+                self._raw_z.close()          # writes the frame footer into _raw_fh
+            except Exception as exc:
+                raw_is_complete = False
+                errors.append(exc)
+        if self._raw_fh is not None:
+            if raw_is_complete:
+                try:
+                    self._raw_fh.flush()
+                    os.fsync(self._raw_fh.fileno())
+                except Exception as exc:
+                    raw_is_complete = False
+                    errors.append(exc)
+            try:
+                self._raw_fh.close()
             except Exception as exc:
                 raw_is_complete = False
                 errors.append(exc)
@@ -591,6 +659,12 @@ class RawWriter:
                 errors.append(exc)
 
         if self._idx_fh is not None:
+            if raw_is_complete:
+                try:
+                    self._idx_fh.flush()
+                    os.fsync(self._idx_fh.fileno())
+                except Exception as exc:
+                    errors.append(exc)
             try:
                 self._idx_fh.close()
             except Exception as exc:
@@ -693,17 +767,26 @@ def _write_lines(path: Path, lines: list[str]) -> None:
     `os.replace` swaps the inode, so this is only safe once the caller has
     established that no writer holds the old descriptor - see
     `is_hour_being_written`.
+
+    The temporary file is fsynced BEFORE the replace, and the directory after
+    it. Without the first, a power loss can leave the new name pointing at an
+    empty or partial inode - atomic in the rename sense and still data loss.
+    Without the second, the rename itself may not survive. Repair is the
+    recovery path for a crash, so it has to survive one.
     """
     cctx = zstandard.ZstdCompressor(level=3)
     # Write to a temporary file in the same directory so os.replace() is atomic
     fd, tmpfile = tempfile.mkstemp(dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as fh:
-            with cctx.stream_writer(fh) as w:
+            with cctx.stream_writer(fh, closefd=False) as w:
                 for line in lines:
                     w.write((line + "\n").encode("utf-8"))
+            fh.flush()
+            os.fsync(fh.fileno())
         # Atomic replacement: any reader sees either old or new, never partial
         os.replace(tmpfile, path)
+        _fsync_directory(path.parent)
     except Exception:
         os.unlink(tmpfile)
         raise
