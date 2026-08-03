@@ -463,6 +463,53 @@ def test_a_rebuild_once_the_skipped_lookahead_hour_closes_serves_the_complete_ba
     assert bar["close"] == pytest.approx(999.0)
 
 
+def test_a_build_that_raises_leaves_no_quarantine_file_to_block_the_rerun(tmp_path):
+    """A failed build must not brick the day it failed on.
+
+    The quarantine file is named by the snapshot id, and that id derives from the
+    raw files alone - it does not move when `interval_ns` does. So a build that
+    raised AFTER writing quarantine left a file whose name refused every later
+    attempt with `QuarantineExistsError`, including the operator's re-run with the
+    correct interval. With no delete path in this store, the day could then only be
+    built by hand-removing a file the error text never mentions.
+
+    Writing the quarantine only once the build has otherwise succeeded keeps the
+    record of unrecoverable trades exactly where it belongs - on runs that produced
+    a store to be missing them from.
+    """
+    from capture.raw_writer import RawWriter
+    from store.cli import BarOutsideBuildDay
+
+    day_d = "2026-08-02"
+    d_midnight = _midnight_ns(day_d)
+    stranded_event_ns = d_midnight - 30 * SECOND_NS          # belongs to day D-1
+    stranded_receive_ns = d_midnight + 5 * 3600 * SECOND_NS  # filed in day D's hour 05
+
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    writer.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, d_midnight + SECOND_NS),
+                  d_midnight + 2 * SECOND_NS, (d_midnight + SECOND_NS) // 1_000_000, None)
+    writer.append(_binance_trade_frame("BTCUSDT", 99.5, 0.25, stranded_event_ns),
+                  stranded_receive_ns, stranded_event_ns // 1_000_000, None)
+    writer.close()
+
+    store_root = tmp_path / "store"
+    build = lambda interval_ns: build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=day_d,
+        symbols=["BTCUSDT"], interval_ns=interval_ns, lookahead_hours=2)
+
+    # Seven minutes does not divide a UTC day, so the day's first bar opens before
+    # the day does and the stray-bar check refuses the whole build.
+    with pytest.raises(BarOutsideBuildDay):
+        build(7 * MINUTE_NS)
+    assert not (store_root / "quarantine").exists(), (
+        "a build that stored nothing left a quarantine file whose name refuses the re-run")
+
+    summary = build(MINUTE_NS)
+    assert summary["bars"] == 1
+    assert summary["trades_stranded"] == 1
+    assert Path(summary["quarantine_file"]).exists()
+
+
 def test_a_trade_deferred_to_the_next_day_is_neither_stranded_nor_quarantined(tmp_path):
     """The ordinary case must never trip the alarm the stranded count exists to be.
 

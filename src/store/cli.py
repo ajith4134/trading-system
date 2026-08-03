@@ -316,7 +316,9 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     Discarded trades are reported three ways - `trades_deferred_to_next_day`,
     `trades_covered_by_previous_day`, `trades_stranded` - because only the last
     of the three means a trade no build will ever read. Stranded trades are
-    written to a quarantine file, never merely counted.
+    written to a quarantine file, never merely counted - and written only once the
+    rest of the build has succeeded, so a build that raises leaves no file behind
+    to refuse the re-run that would fix it.
     """
     stream = _TRADE_STREAMS.get(venue)
     if stream is None:
@@ -421,34 +423,46 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # availability time makes the reader serve it over the partial one.
     snapshot_id = compute_snapshot_id(
         day_sources, [path.name for path in lookahead_files_skipped_live])
-    # Written before the bars, and in the empty-trades path too: a day that
-    # produced no bars can still have stranded trades, and they are exactly the
-    # ones nothing else will ever record.
-    quarantine_file = (
-        record_stranded_trades(store_root, venue, date, snapshot_id, stranded)
-        if stranded else None)
     counts = {
         "trades_deferred_to_next_day": trades_deferred_to_next_day,
         "trades_covered_by_previous_day": trades_covered_by_previous_day,
         "trades_stranded": len(stranded),
         "lookahead_files": lookahead_files,
         "lookahead_files_skipped_live": [str(path) for path in lookahead_files_skipped_live],
-        "quarantine_file": str(quarantine_file) if quarantine_file is not None else None,
     }
 
-    if not trades:
+    bars = build_bars(trades, interval_ns) if trades else None
+    if bars is not None:
+        stray = bars[(bars[EVENT_TIME] < start_ns) | (bars[EVENT_TIME] >= end_ns)]
+        if not stray.empty:
+            raise BarOutsideBuildDay(
+                f"{len(stray)} bar(s) fall outside {date} (first event_time "
+                f"{int(stray.iloc[0][EVENT_TIME])}, day is [{start_ns}, {end_ns})); "
+                f"storing them would let two builds emit the same (symbol, venue, "
+                f"event_time) and one replace the other")
+        append_partition(store_root, f"bars_{interval_ns}ns", bars, snapshot_id)
+
+    # LAST, once nothing else in this build can still fail. The quarantine file is
+    # named by the snapshot id, and that id derives from the raw files alone - it
+    # does not move when `interval_ns` does. So a build that wrote quarantine and
+    # then raised left behind a name that refused every later attempt at the same
+    # day with `QuarantineExistsError`, including the operator's corrected re-run,
+    # and this store has no delete path: the day could only be built again by
+    # hand-removing a file the error text never mentions. A run that stored no bars
+    # has no trades to be missing, so it has nothing to quarantine.
+    #
+    # The no-bars path still records: a day whose every trade belongs elsewhere
+    # produces no bars and can still strand trades, and nothing downstream of here
+    # can fail on it.
+    quarantine_file = (
+        record_stranded_trades(store_root, venue, date, snapshot_id, stranded)
+        if stranded else None)
+    counts["quarantine_file"] = (
+        str(quarantine_file) if quarantine_file is not None else None)
+
+    if bars is None:
         return {"frames": frames, "trades": 0, "bars": 0, "snapshot_id": None,
                 "by_symbol": by_symbol, **counts}
-
-    bars = build_bars(trades, interval_ns)
-    stray = bars[(bars[EVENT_TIME] < start_ns) | (bars[EVENT_TIME] >= end_ns)]
-    if not stray.empty:
-        raise BarOutsideBuildDay(
-            f"{len(stray)} bar(s) fall outside {date} (first event_time "
-            f"{int(stray.iloc[0][EVENT_TIME])}, day is [{start_ns}, {end_ns})); "
-            f"storing them would let two builds emit the same (symbol, venue, "
-            f"event_time) and one replace the other")
-    append_partition(store_root, f"bars_{interval_ns}ns", bars, snapshot_id)
     return {"frames": frames, "trades": len(trades), "bars": len(bars),
             "snapshot_id": snapshot_id, "by_symbol": by_symbol, **counts}
 
