@@ -500,20 +500,25 @@ def main(argv: list[str] | None = None) -> int:
         args.venue, args.date, symbols, args.interval_ns, args.lookahead_hours)
     print(f"{summary['frames']} frames -> {summary['trades']} trades -> "
           f"{summary['bars']} bars (snapshot {summary['snapshot_id']})", file=sys.stderr)
+    # All three discard counters on one line, including a zero stranded count. A
+    # reader must not have to infer a number from its absence: silence reads
+    # equally well as "none" and as "this build does not report that", and those
+    # are the two answers that must never look the same here.
     print(f"  {summary['lookahead_files']} next-day file(s) read ahead, "
           f"{summary['trades_deferred_to_next_day']} trade(s) deferred to the next day, "
-          f"{summary['trades_covered_by_previous_day']} covered by the previous day's build",
-          file=sys.stderr)
+          f"{summary['trades_covered_by_previous_day']} covered by the previous day's build, "
+          f"{summary['trades_stranded']} stranded", file=sys.stderr)
     for skipped in summary["lookahead_files_skipped_live"]:
         print(f"  skipped lookahead hour (a writer still holds it open): {skipped}",
               file=sys.stderr)
     for symbol, counts in summary["by_symbol"].items():
         print(f"  {symbol}: {counts['frames']} frames -> {counts['trades']} trades",
               file=sys.stderr)
-    # Loud and last, on its own line naming the file. A stranded trade is one no
-    # build will ever pick up, and a number folded into the summary above reads
-    # exactly like the routine deferrals it sits beside - which is how this loss
-    # stayed invisible in the first place.
+    # Repeated loud and last, on its own line naming the file, when it is not
+    # zero. The count above is there so a reader never has to infer it from
+    # silence; this line is there because beside the routine deferrals it reads
+    # exactly like one of them, which is how this loss stayed invisible in the
+    # first place. The counter and the alarm are two different jobs.
     if summary["trades_stranded"]:
         print(f"STRANDED: {summary['trades_stranded']} trade(s) no build can recover; "
               f"quarantined at {summary['quarantine_file']}", file=sys.stderr)
