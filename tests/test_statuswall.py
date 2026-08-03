@@ -149,6 +149,57 @@ def test_subscribed_but_silent_stream_reads_failing_not_absent():
     assert "never delivered" in result.detail
 
 
+def test_the_trade_tape_tile_does_not_assert_bar_building_is_missing():
+    """Rule 8: a tile shows measured state, never asserted state.
+
+    The trade-tape detail carried a hand-typed "OHLCV bar building not
+    implemented" long after the store held bars and the adjacent tile measured
+    them. An asserted clause cannot go stale loudly - it simply keeps reading as
+    true, which is the exact failure a measured board exists to prevent.
+    """
+    facts = _facts(
+        capture_running=True,
+        venues=["binance"],
+        reports={"binance": {"raw_bytes_by_stream": {"trade_BTCUSDT": 10},
+                             "silent_stream_names": []}},
+    )
+    detail = PROBES["spot ohlcv trade tape multi venue"](facts).detail
+    assert "not implemented" not in detail, detail
+
+
+def test_one_raising_probe_fails_its_own_tile_and_leaves_the_board_standing():
+    """A board that renders nothing is useless exactly when something is wrong.
+
+    `assess` called every probe unguarded, so one probe raising - a rotted
+    Parquet part reaching `probe_bitemporal_store`, say - took down the whole
+    wall and no feature rendered at all. The degraded outcome is one tile
+    reading FAILING and naming the error; the tile must not read OK, and the
+    error must not be swallowed into a vague message that hides a programming
+    bug.
+    """
+    from statuswall.evidence import FAILING, PROBES as REAL_PROBES
+
+    exploding = _feature("Exploding feature")
+    healthy = _feature("Strategy health board")
+
+    def raise_on_probe(facts):
+        raise ZeroDivisionError("a Parquet part rotted under the probe")
+
+    patched = dict(REAL_PROBES)
+    patched[exploding.key] = raise_on_probe
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("statuswall.evidence.PROBES", patched)
+        results = assess([exploding, healthy], _facts())
+
+    assert set(results) == {exploding.key, healthy.key}, "the board lost a tile"
+    assert results[healthy.key].state != FAILING, "an unrelated tile was damaged"
+    broken = results[exploding.key]
+    assert broken.state == FAILING
+    assert "ZeroDivisionError" in broken.detail
+    assert "a Parquet part rotted under the probe" in broken.detail
+    assert "raise_on_probe" in broken.proof
+
+
 def test_capture_not_running_reads_stopped_not_ok():
     facts = _facts(
         capture_running=False,
@@ -165,6 +216,97 @@ def test_measure_system_on_an_empty_machine_reports_nothing_rather_than_healthy(
     assert facts.venues == []
     assert facts.latest_capture_date is None
     assert facts.hours_since_capture is None
+
+
+def test_store_probe_reports_not_built_when_no_store_exists(tmp_path):
+    """Before the first build there is no store, and the wall must say so."""
+    from statuswall.evidence import NOT_BUILT, probe_bitemporal_store
+    facts = _facts(capture_root=tmp_path)
+    assert probe_bitemporal_store(facts).state == NOT_BUILT
+
+
+def test_store_probe_reports_ok_once_bars_are_readable(tmp_path):
+    """The state must come from reading the store, not from the module existing."""
+    import pandas as pd
+    from statuswall.evidence import OK, probe_bitemporal_store
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    result = probe_bitemporal_store(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    # The row count explicitly, not `"1" in detail`: the detail reads "1 rows
+    # across 1 append-only part(s) in 1 dataset(s)", so a bare digit search is
+    # answered by the dataset count and a probe reporting ZERO rows passes it.
+    assert result.detail.startswith("1 rows "), result.detail
+
+
+def test_clock_gate_probe_reports_not_built_when_no_store_exists(tmp_path):
+    """No store means nothing to gate, so the wall must not claim a gate exists."""
+    from statuswall.evidence import NOT_BUILT, probe_clock_gated_access
+    facts = _facts(capture_root=tmp_path)
+    assert probe_clock_gated_access(facts).state == NOT_BUILT
+
+
+def test_clock_gate_probe_reports_ok_when_gate_hides_rows_before_availability(tmp_path):
+    """The gate must be exercised live: read one ns before the earliest
+    availability time and confirm nothing comes back."""
+    import pandas as pd
+    from statuswall.evidence import OK, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "1100" in result.detail
+
+
+def test_clock_gate_probe_reports_failing_when_a_row_leaks_before_availability(tmp_path, monkeypatch):
+    """A gate that lets a row through before its availability time is a FAILING
+    core-guarantee break, not a degraded metric - proven by deliberately
+    inverting the gate rather than by asserting on the healthy path alone."""
+    import pandas as pd
+    from statuswall.evidence import FAILING, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    class LeakyReader:
+        """Stands in for a ClockGatedReader whose gate has been inverted."""
+
+        def __init__(self, store_root, dataset):
+            self._store_root = store_root
+            self._dataset = dataset
+
+        def read_as_of(self, sim_clock_ns, symbols=None):
+            from store.parquet_partition import read_dataset
+            return read_dataset(self._store_root, self._dataset)
+
+    import store.clock_gated_reader as cgr
+    monkeypatch.setattr(cgr, "ClockGatedReader", LeakyReader)
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "visible before their availability time" in result.detail
 
 
 # --------------------------------------------------------------------------
