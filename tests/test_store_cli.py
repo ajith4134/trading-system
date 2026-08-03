@@ -2,11 +2,29 @@
 """The build must refuse damaged input rather than quietly producing fewer bars."""
 from __future__ import annotations
 
+import datetime as dt
+import json
 from pathlib import Path
 
 import pytest
 
 from store.cli import build_bars_for_day
+
+MINUTE_NS = 60_000_000_000
+SECOND_NS = 1_000_000_000
+
+
+def _midnight_ns(date: str) -> int:
+    moment = dt.datetime.fromisoformat(date).replace(tzinfo=dt.timezone.utc)
+    return int(moment.timestamp()) * SECOND_NS
+
+
+def _binance_trade_frame(symbol: str, price: float, size: float, event_ns: int) -> str:
+    return json.dumps({
+        "stream": f"{symbol.lower()}@trade",
+        "data": {"e": "trade", "T": event_ns // 1_000_000, "s": symbol,
+                 "p": f"{price}", "q": f"{size}"},
+    })
 
 
 def test_building_from_an_absent_day_reports_zero_rather_than_crashing(tmp_path):
@@ -118,3 +136,90 @@ def test_per_symbol_breakdown_distinguishes_a_symbol_that_contributes_nothing(
     }
     assert summary["frames"] == 2
     assert summary["trades"] == 1
+
+
+def test_a_bar_whose_trades_span_two_day_folders_is_built_complete_not_partial(tmp_path):
+    """The late arrival must extend day D's bar, never replace it with itself.
+
+    `RawWriter` rotates hour files on RECEIVE time, so a trade with an event time
+    of 23:59:59.9 on day D that lands 50 ms after midnight is filed under day
+    D+1. Building each day from its own folder alone therefore made day D+1 emit
+    a second bar for a day-D minute, built from that one late trade and carrying
+    a later availability time - and the reader, which resolves corrections by
+    (symbol, venue, event_time) with the latest version winning, treated the
+    partial bar as a correction of the complete one. The complete bar became
+    permanently unreachable, and nothing about the result looked wrong.
+
+    Measured lag on the real archive reaches 141 s, so this corrupted the last
+    bar of essentially every captured day.
+    """
+    from capture.raw_writer import RawWriter
+    from store.clock_gated_reader import ClockGatedReader
+    from store.temporal_schema import EVENT_TIME
+
+    day_d, day_d1 = "2026-08-02", "2026-08-03"
+    d_midnight = _midnight_ns(day_d)
+    d1_midnight = _midnight_ns(day_d1)
+    last_minute = d1_midnight - MINUTE_NS
+
+    # (price, size, event_ns, receive_ns). The first three land in day D's 23:00
+    # file; the fourth belongs to the same 23:59 minute but arrives after
+    # midnight and is filed under day D+1; the fifth is a genuine day-D+1 trade.
+    tape = [
+        (100.0, 1.0, last_minute + 10 * SECOND_NS, last_minute + 10 * SECOND_NS + 100_000_000),
+        (110.0, 2.0, last_minute + 20 * SECOND_NS, last_minute + 20 * SECOND_NS + 100_000_000),
+        (105.0, 3.0, last_minute + 30 * SECOND_NS, last_minute + 30 * SECOND_NS + 100_000_000),
+        (999.0, 0.001, d1_midnight - 100_000_000, d1_midnight + 50_000_000),
+        (200.0, 4.0, d1_midnight + 5 * SECOND_NS, d1_midnight + 5 * SECOND_NS + 100_000_000),
+    ]
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    for price, size, event_ns, receive_ns in tape:
+        writer.append(_binance_trade_frame("BTCUSDT", price, size, event_ns),
+                      receive_ns, event_ns // 1_000_000, None)
+    writer.close()
+
+    store_root = tmp_path / "store"
+    build = lambda date: build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=date,
+        symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
+
+    day_d_summary = build(day_d)
+    day_d1_summary = build(day_d1)
+
+    # Day D reached into day D+1's folder for the late arrival; day D+1 read the
+    # same trade and discarded it, because it belongs to day D's build.
+    assert day_d_summary["lookahead_files"] == 1
+    assert day_d1_summary["trades_outside_day"] == 1, (
+        "the day-D trade sitting in day D+1's folder was not discarded, so day "
+        "D+1 emitted a partial bar for a day-D minute")
+
+    visible = ClockGatedReader(store_root, f"bars_{MINUTE_NS}ns").read_as_of(2**62)
+    final = visible[visible[EVENT_TIME] == last_minute]
+    assert len(final) == 1
+    bar = final.iloc[0]
+    assert bar["trades"] == 4, "the complete bar was replaced by the late-arrival-only bar"
+    assert bar["volume"] == pytest.approx(6.001)
+    assert bar["open"] == pytest.approx(100.0)
+    assert bar["high"] == pytest.approx(999.0)
+    assert bar["close"] == pytest.approx(999.0)
+
+    # Day D+1 still built its own minute, so the discard cost nothing.
+    assert set(visible[EVENT_TIME]) == {last_minute, d1_midnight}
+
+
+def test_the_index_sidecar_path_follows_the_raw_writer_suffix_constants(monkeypatch):
+    """A literal suffix here fails silently the moment the writer's changes.
+
+    `_hour_files` globs on RAW_SUFFIX and the sidecar is derived from IDX_SUFFIX.
+    Hardcoding either means a changed constant makes the glob match nothing - a
+    build reporting a legitimate-looking zero - or points the sidecar at a file
+    that does not exist, in the one module that refuses silent zeros everywhere
+    else.
+    """
+    from store import cli as store_cli
+
+    monkeypatch.setattr(store_cli, "RAW_SUFFIX", ".ndjson.lz4")
+    monkeypatch.setattr(store_cli, "IDX_SUFFIX", ".idx.lz4")
+    sidecar = store_cli._index_path_for(
+        Path("/archive/trade_BTCUSDT_2026-08-02T23.ndjson.lz4"))
+    assert sidecar.name == "trade_BTCUSDT_2026-08-02T23.idx.lz4"
