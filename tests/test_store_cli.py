@@ -27,6 +27,90 @@ def _binance_trade_frame(symbol: str, price: float, size: float, event_ns: int) 
     })
 
 
+def _append_until_compressed_bytes_reach_disk(writer, first_receive_ns: int) -> Path:
+    """Feed a live `RawWriter` until zstd spills a partial frame to disk.
+
+    A writer holding an hour open buffers inside the compressor, so a handful of
+    frames leaves an EMPTY file that reads back clean and proves nothing. On a
+    real stream the buffer fills within seconds and the hour on disk ends in an
+    unfinished frame - which is what `read_pair` refuses. Feeding until the file
+    is non-empty reproduces that state deterministically instead of depending on
+    how much a fixed frame count happens to compress to.
+
+    Receive times advance by a millisecond so the writer's 30 s flush cadence
+    never fires: a frame boundary would leave the tail complete and readable,
+    which is the one state this helper must not produce.
+    """
+    import random
+
+    from capture.raw_writer import paths_for
+
+    raw_path, _ = paths_for(writer._root, writer._venue, writer._stream, writer._symbol,
+                            dt.datetime.fromtimestamp(
+                                first_receive_ns / SECOND_NS,
+                                tz=dt.timezone.utc).strftime("%Y-%m-%dT%H"))
+    noise = random.Random(20260803)
+    for index in range(200_000):
+        receive_ns = first_receive_ns + index * 1_000_000
+        event_ns = receive_ns
+        writer.append(
+            _binance_trade_frame("BTCUSDT", round(noise.random() * 100_000, 6),
+                                 round(noise.random(), 8), event_ns),
+            receive_ns, event_ns // 1_000_000, None)
+        if raw_path.exists() and raw_path.stat().st_size > 0:
+            return raw_path
+    raise AssertionError("the writer never spilled compressed bytes to disk")
+
+
+def test_a_lookahead_hour_a_live_writer_still_holds_open_is_skipped_not_read(tmp_path):
+    """Building yesterday while capture runs must not abort on today's open hour.
+
+    The lookahead reaches into the NEXT day's folder, and on a running capture
+    that day's current hour is held open by `RawWriter` with an unfinished zstd
+    frame on disk. `read_pair` refuses a torn file - correctly, for a closed hour
+    - so selecting lookahead candidates on existence alone aborts the build of a
+    day the operator did ask for, naming a file they did not, and the documented
+    repair (`reconcile_pair`) refuses that file too because a writer holds it.
+    Skipping the live hour costs nothing: those trades are still in the file and
+    day D+1's own build reads them from its own folder once the hour is closed.
+    """
+    from capture.raw_writer import RawWriter, is_hour_being_written, read_pair
+
+    day_d, day_d1 = "2026-08-02", "2026-08-03"
+    d_midnight, d1_midnight = _midnight_ns(day_d), _midnight_ns(day_d1)
+
+    settled = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    for offset in range(3):
+        event_ns = d_midnight + offset * SECOND_NS
+        settled.append(_binance_trade_frame("BTCUSDT", 100.0 + offset, 1.0, event_ns),
+                       event_ns + 1_000_000, event_ns // 1_000_000, None)
+    settled.close()
+
+    live = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    try:
+        open_hour = _append_until_compressed_bytes_reach_disk(live, d1_midnight)
+
+        # The premise of the test, asserted rather than assumed: this hour is
+        # both live and unreadable, which is exactly the pair of facts that made
+        # the old lookahead abort.
+        assert is_hour_being_written(open_hour)[0] is True
+        with pytest.raises(Exception, match="incomplete|unreadable|newline"):
+            read_pair(open_hour, open_hour.with_name(
+                open_hour.name.replace(".ndjson.zst", ".idx.zst")))
+
+        summary = build_bars_for_day(
+            capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+            date=day_d, symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
+    finally:
+        live.close()
+
+    assert summary["bars"] == 1
+    assert summary["lookahead_files"] == 0, "the live hour was read instead of skipped"
+    assert [Path(path).name for path in summary["lookahead_files_skipped_live"]] == [
+        "trade_BTCUSDT_2026-08-03T00.ndjson.zst"], (
+        "a skipped lookahead hour that nothing reports is silent loss")
+
+
 def test_building_from_an_absent_day_reports_zero_rather_than_crashing(tmp_path):
     summary = build_bars_for_day(
         capture_root=tmp_path, store_root=tmp_path / "store",

@@ -19,6 +19,11 @@ therefore reads a bounded lookahead into the next day's folder and keeps only
 the trades whose event time falls inside the day being built, which makes every
 day's output complete and non-overlapping in event time.
 
+The lookahead skips a next-day hour a live capture writer still holds open. That
+refusal above is right for a CLOSED hour and wrong for one still being appended
+to, and applying it there aborted the build of yesterday - the module's normal
+operating configuration - over a file the operator never asked for.
+
     python -m store.cli --venue binance --date 2026-08-02 --symbols BTCUSDT,ETHUSDT
 """
 from __future__ import annotations
@@ -29,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from capture.raw_writer import IDX_SUFFIX, RAW_SUFFIX, read_pair
+from capture.raw_writer import IDX_SUFFIX, RAW_SUFFIX, is_hour_being_written, read_pair
 from store.parquet_partition import append_partition, compute_snapshot_id
 from store.temporal_schema import EVENT_TIME
 from store.trade_bars import Trade, build_bars, extract_trades
@@ -118,25 +123,50 @@ def _hour_files(capture_root: Path, venue: str, date: str,
 
 
 def _lookahead_hour_files(capture_root: Path, venue: str, date: str, stream: str,
-                          symbol: str, lookahead_hours: int) -> list[Path]:
-    """The next day's first hours, where this day's late arrivals were filed.
+                          symbol: str, lookahead_hours: int) -> tuple[list[Path], list[Path]]:
+    """The next day's readable first hours, and the ones a writer still holds.
 
-    An absent next-day folder is normal, not an error: it is what building the
-    most recent captured day looks like. It returns nothing and the count the
-    caller reports says so, rather than the absence being invisible.
+    Returns (readable, skipped_live). An absent next-day folder is normal, not an
+    error: it is what building the most recent captured day looks like. It
+    returns nothing and the count the caller reports says so, rather than the
+    absence being invisible.
+
+    An hour whose `.writing` marker is live is SKIPPED rather than read. This is
+    the module's normal operating configuration - building yesterday's bars while
+    capture keeps running - and in it the next day's current hour is open, with an
+    unfinished zstd frame on disk. `read_pair` refuses that file, correctly for a
+    CLOSED hour, and the refusal used to abort the build of a day the operator
+    did ask for while naming a file they did not; the documented repair,
+    `reconcile_pair`, then refuses the same file with `HourStillBeingWritten`, so
+    the only way out was `--lookahead-hours 0`, which reinstates the partial-bar
+    corruption the lookahead exists to prevent.
+
+    Skipping costs no trades: they remain in the file, and day D+1's own build
+    reads them from its own folder once the hour is closed. What it must not cost
+    is visibility, so every skipped hour is returned and reported - an invisible
+    skip is the silent loss this module refuses everywhere else.
+
+    Only the LOOKAHEAD is tolerant. A live hour in the day's own folder means the
+    operator is building today, and `read_pair`'s refusal is the correct and
+    informative failure for that.
     """
     if lookahead_hours <= 0:
-        return []
+        return [], []
     following = _next_date(date)
     folder = Path(capture_root) / "raw" / venue / following
     if not folder.is_dir():
-        return []
+        return [], []
     found: list[Path] = []
+    skipped_live: list[Path] = []
     for hour in range(min(lookahead_hours, 24)):
         candidate = folder / f"{stream}_{symbol}_{following}T{hour:02d}{RAW_SUFFIX}"
-        if candidate.exists():
-            found.append(candidate)
-    return found
+        if not candidate.exists():
+            continue
+        if is_hour_being_written(candidate)[0]:
+            skipped_live.append(candidate)
+            continue
+        found.append(candidate)
+    return found, skipped_live
 
 
 def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: str,
@@ -149,6 +179,10 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     against a measured worst-case arrival lag of 141 s; the cost of reading too
     far is only a few extra files, while reading too little silently loses the
     tail of the day's last bar.
+
+    A lookahead hour a live writer still holds open is skipped and reported
+    (`lookahead_files_skipped_live`) rather than read; a live hour in the day's
+    OWN folder is still a hard failure. See `_lookahead_hour_files`.
     """
     stream = _TRADE_STREAMS.get(venue)
     if stream is None:
@@ -183,6 +217,11 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # captured yet" stays visible instead of looking like a lookahead that ran.
     trades_outside_day = 0
     lookahead_files = 0
+    # The skipped list is how "the next day's hour is still open" stays
+    # distinguishable from "the next day has not been captured yet", which is
+    # what `lookahead_files: 0` already says. A skip nobody can see is the same
+    # silent loss as a discard nobody can see.
+    lookahead_files_skipped_live: list[Path] = []
     # Per symbol, not just a running total: a symbol that contributes zero frames
     # or zero trades must stay visible in the result rather than disappear into
     # an aggregate that looks identical to one where every symbol pulled its
@@ -191,9 +230,10 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     for symbol in symbols:
         symbol_frames = 0
         symbol_trades = 0
-        ahead = _lookahead_hour_files(
+        ahead, skipped_live = _lookahead_hour_files(
             capture_root, venue, date, stream, symbol, lookahead_hours)
         lookahead_files += len(ahead)
+        lookahead_files_skipped_live.extend(skipped_live)
         for raw_path in symbol_files[symbol] + ahead:
             idx_path = _index_path_for(raw_path)
             for payload, entry in read_pair(raw_path, idx_path):
@@ -214,7 +254,9 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     if not trades:
         return {"frames": frames, "trades": 0, "bars": 0, "snapshot_id": None,
                 "by_symbol": by_symbol, "trades_outside_day": trades_outside_day,
-                "lookahead_files": lookahead_files}
+                "lookahead_files": lookahead_files,
+                "lookahead_files_skipped_live": [
+                    str(path) for path in lookahead_files_skipped_live]}
 
     bars = build_bars(trades, interval_ns)
     stray = bars[(bars[EVENT_TIME] < start_ns) | (bars[EVENT_TIME] >= end_ns)]
@@ -229,7 +271,9 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     return {"frames": frames, "trades": len(trades), "bars": len(bars),
             "snapshot_id": snapshot_id, "by_symbol": by_symbol,
             "trades_outside_day": trades_outside_day,
-            "lookahead_files": lookahead_files}
+            "lookahead_files": lookahead_files,
+            "lookahead_files_skipped_live": [
+                str(path) for path in lookahead_files_skipped_live]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -258,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {summary['lookahead_files']} next-day file(s) read ahead, "
           f"{summary['trades_outside_day']} trade(s) discarded as another day's",
           file=sys.stderr)
+    for skipped in summary["lookahead_files_skipped_live"]:
+        print(f"  skipped lookahead hour (a writer still holds it open): {skipped}",
+              file=sys.stderr)
     for symbol, counts in summary["by_symbol"].items():
         print(f"  {symbol}: {counts['frames']} frames -> {counts['trades']} trades",
               file=sys.stderr)
