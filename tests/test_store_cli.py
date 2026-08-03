@@ -386,6 +386,83 @@ def test_a_trade_stranded_beyond_the_lookahead_window_is_counted_and_quarantined
     assert record["source_file"].endswith(f"trade_BTCUSDT_{day_d}T05.ndjson.zst")
 
 
+def test_a_rebuild_once_the_skipped_lookahead_hour_closes_serves_the_complete_bar(tmp_path):
+    """A build that skipped a live hour must not lock the day into its partial bar.
+
+    Two earlier fixes combine into permanent corruption if the snapshot id ignores
+    what the build skipped. Skipping a live lookahead hour leaves day D's last bar
+    built from its own hour 23 alone - three trades here, high 102.0, volume 3.0 -
+    while the late arrival with a day-D event time sits unread in day D+1's open
+    hour 00. Digesting only day D's OWN files then gives the complete rebuild the
+    SAME id as the partial build, so `append_partition` refuses it, the partial bar
+    is permanent in a store with no delete path, and day D+1's own build discards
+    that trade by event time and reports `trades_covered_by_previous_day=1,
+    trades_stranded=0` - a false all-clear over a bar that is quietly wrong.
+
+    Folding the skipped hours' identities into the id makes the incomplete build a
+    different build, which is what it is. The rebuild once the hour closes then
+    appends, and because its late trade arrived later its bar carries a later
+    availability time - so the reader's correction resolution returns the complete
+    bar over the partial one, which is the bitemporal design working as designed
+    rather than being worked around.
+    """
+    from capture.raw_writer import RawWriter
+    from store.clock_gated_reader import ClockGatedReader
+    from store.temporal_schema import EVENT_TIME
+
+    day_d, day_d1 = "2026-08-02", "2026-08-03"
+    d1_midnight = _midnight_ns(day_d1)
+    last_minute = d1_midnight - MINUTE_NS
+
+    settled = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    for price, offset in ((100.0, 10), (102.0, 20), (101.0, 30)):
+        event_ns = last_minute + offset * SECOND_NS
+        settled.append(_binance_trade_frame("BTCUSDT", price, 1.0, event_ns),
+                       event_ns + 100_000_000, event_ns // 1_000_000, None)
+    settled.close()
+
+    # Event time 23:59:59.9 on day D, received 50 ms into day D+1: filed under day
+    # D+1's hour 00, which a live writer still holds open.
+    late_event_ns = d1_midnight - 100_000_000
+    live = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    live.append(_binance_trade_frame("BTCUSDT", 999.0, 3.0, late_event_ns),
+                d1_midnight + 50_000_000, late_event_ns // 1_000_000, None)
+
+    store_root = tmp_path / "store"
+    build = lambda: build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=day_d,
+        symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
+
+    try:
+        partial = build()
+    finally:
+        live.close()
+
+    assert [Path(path).name for path in partial["lookahead_files_skipped_live"]] == [
+        f"trade_BTCUSDT_{day_d1}T00.ndjson.zst"]
+    assert partial["bars"] == 1
+
+    # The hour is closed now, so the rebuild skips nothing and reads the late
+    # trade. It is a different build and its id must say so.
+    complete = build()
+    assert complete["lookahead_files"] == 1
+    assert complete["lookahead_files_skipped_live"] == []
+    assert complete["snapshot_id"] != partial["snapshot_id"], (
+        "a build that skipped a live hour and one that read it are not the same "
+        "build, and an id that cannot tell them apart makes the partial bar permanent")
+
+    visible = ClockGatedReader(store_root, f"bars_{MINUTE_NS}ns").read_as_of(2**62)
+    final = visible[visible[EVENT_TIME] == last_minute]
+    assert len(final) == 1, "the correction did not replace the partial bar"
+    bar = final.iloc[0]
+    assert bar["trades"] == 4, "the reader still serves the bar built without the late trade"
+    assert bar["volume"] == pytest.approx(6.0)
+    assert bar["open"] == pytest.approx(100.0)
+    assert bar["high"] == pytest.approx(999.0)
+    assert bar["low"] == pytest.approx(100.0)
+    assert bar["close"] == pytest.approx(999.0)
+
+
 def test_a_trade_deferred_to_the_next_day_is_neither_stranded_nor_quarantined(tmp_path):
     """The ordinary case must never trip the alarm the stranded count exists to be.
 

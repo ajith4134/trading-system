@@ -43,16 +43,31 @@ class PartitionExistsError(FileExistsError):
     """A part with this snapshot id is already on disk."""
 
 
-def compute_snapshot_id(paths: Sequence[Path]) -> str:
+def compute_snapshot_id(paths: Sequence[Path],
+                        unread_input_names: Sequence[str] = ()) -> str:
     """A short digest over the *contents* of the inputs, order-independent.
 
     Content rather than filenames: the id answers "which data produced this
     result", and a rename must not read as different data. Sorted per-file
     digests rather than a running hash so the caller's iteration order cannot
     change the answer.
+
+    `unread_input_names` names inputs the caller COULD not read - a file still
+    being appended to - and folds them in by name, deliberately not by content.
+    Their bytes are changing while this runs, so a digest of them would answer a
+    question about an instant that has already passed; the name is the stable
+    part and it is the part that matters, because it says which input this result
+    is missing. A run that skipped something produced different data from one that
+    read everything, and an id that cannot tell those apart lets `append_partition`
+    refuse the complete rebuild as a duplicate of the incomplete one - in a store
+    with no delete path, that makes the incomplete result permanent.
+
+    Names, not paths: the same inputs read from a copied archive are the same
+    inputs, exactly as the content digest already treats them.
     """
     digests = sorted(_digest_file(Path(path)) for path in paths)
-    combined = hashlib.sha256("".join(digests).encode("utf-8")).hexdigest()
+    unread = sorted(f"unread:{name}" for name in unread_input_names)
+    combined = hashlib.sha256("".join(digests + unread).encode("utf-8")).hexdigest()
     return combined[:16]
 
 

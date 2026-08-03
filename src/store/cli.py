@@ -22,7 +22,12 @@ day's output complete and non-overlapping in event time.
 The lookahead skips a next-day hour a live capture writer still holds open. That
 refusal above is right for a CLOSED hour and wrong for one still being appended
 to, and applying it there aborted the build of yesterday - the module's normal
-operating configuration - over a file the operator never asked for.
+operating configuration - over a file the operator never asked for. A skipped
+hour is named in the snapshot id, because a build that skipped one is missing
+exactly the late trades the lookahead exists to rescue and is therefore not the
+same build as one that read everything. Naming it there is what lets the rebuild,
+once the hour closes, append the complete bar instead of being refused as a
+duplicate of the incomplete one.
 
 Nothing discarded is left unaccounted for. A trade whose event time falls after
 the day is deferred to that day's own build; one from before the day is
@@ -207,10 +212,16 @@ def _lookahead_hour_files(capture_root: Path, venue: str, date: str, stream: str
     the only way out was `--lookahead-hours 0`, which reinstates the partial-bar
     corruption the lookahead exists to prevent.
 
-    Skipping costs no trades: they remain in the file, and day D+1's own build
-    reads them from its own folder once the hour is closed. What it must not cost
-    is visibility, so every skipped hour is returned and reported - an invisible
-    skip is the silent loss this module refuses everywhere else.
+    Skipping is NOT free, and it is returned rather than swallowed because of what
+    it costs. The trades it passes over include exactly the ones the lookahead
+    exists to rescue: a day-D trade filed under day D+1 because it arrived after
+    midnight. Day D+1's own build will read that hour once it closes and then
+    discard the trade by event time, so nothing else ever picks it up, and day D's
+    last bar is left built from its own folder alone - complete-looking and short
+    the late trades. That is why the caller folds the skipped hours into the
+    snapshot id: it makes the incomplete build a different build, so the rebuild
+    once the hour closes is allowed to append the complete bar, which carries a
+    later availability time and wins the reader's correction resolution.
 
     Only the LOOKAHEAD is tolerant. A live hour in the day's own folder means the
     operator is building today, and `read_pair`'s refusal is the correct and
@@ -298,7 +309,9 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
 
     A lookahead hour a live writer still holds open is skipped and reported
     (`lookahead_files_skipped_live`) rather than read; a live hour in the day's
-    OWN folder is still a hard failure. See `_lookahead_hour_files`.
+    OWN folder is still a hard failure. See `_lookahead_hour_files`. Every skipped
+    hour is named in `snapshot_id`, so rebuilding the day once those hours close
+    is a new snapshot rather than a refused duplicate.
 
     Discarded trades are reported three ways - `trades_deferred_to_next_day`,
     `trades_covered_by_previous_day`, `trades_stranded` - because only the last
@@ -395,7 +408,19 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # the reader de-duplicates, while the guard against an accidental re-run was
     # gone and parts accumulated on every run. A rebuild of the same day must
     # collide; that refusal IS the append-only guarantee working.
-    snapshot_id = compute_snapshot_id(day_sources)
+    #
+    # The hours this build SKIPPED are part of its identity, by name and never by
+    # content - see `compute_snapshot_id`. A build that skipped a live lookahead
+    # hour is a different, incomplete build: its last bar is missing the late
+    # trades in that hour, and no other build will ever supply them. Without the
+    # skipped names in the id, the rebuild once the hour closes computes the same
+    # id, `append_partition` refuses it as a re-run, and the partial bar is
+    # permanent in a store with no delete path. With them, a re-run that skipped
+    # the SAME hours still collides - the accidental-re-run guard is untouched -
+    # while the rebuild that skips nothing appends a complete bar whose later
+    # availability time makes the reader serve it over the partial one.
+    snapshot_id = compute_snapshot_id(
+        day_sources, [path.name for path in lookahead_files_skipped_live])
     # Written before the bars, and in the empty-trades path too: a day that
     # produced no bars can still have stranded trades, and they are exactly the
     # ones nothing else will ever record.
