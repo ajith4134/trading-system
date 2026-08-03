@@ -57,9 +57,17 @@ class ClockGatedReader:
         # Grouping without venue would silently collapse them into one and drop a
         # venue's bar - data loss, not correction resolution. A correction
         # replaces the same venue's bar, never another venue's.
+        #
+        # drop_duplicates(keep="last"), not groupby(...).last(): groupby's .last()
+        # defaults to skipna=True and picks the last non-null value per COLUMN
+        # independently, not the last physical ROW. A correction that legitimately
+        # carries a null in a non-key column would then be spliced together with a
+        # stale value from an older row - a composite that was never stored.
+        # drop_duplicates keeps whole rows, so the result is always exactly one row
+        # that was actually written.
         ordered = visible.sort_values(AVAILABILITY_TIME, kind="mergesort")
-        latest = ordered.groupby([SYMBOL, VENUE, EVENT_TIME], as_index=False, sort=True).last()
-        return latest.sort_values([SYMBOL, VENUE, EVENT_TIME]).reset_index(drop=True)
+        latest = ordered.drop_duplicates(subset=[SYMBOL, VENUE, EVENT_TIME], keep="last")
+        return latest.sort_values([SYMBOL, EVENT_TIME]).reset_index(drop=True)
 
 
 def join_as_of(left: pd.DataFrame, right: pd.DataFrame, suffix: str,

@@ -93,6 +93,31 @@ def test_distinct_venues_sharing_symbol_and_event_time_both_survive(tmp_path):
     assert set(visible[VENUE]) == {"binance", "hyperliquid"}
 
 
+def test_correction_resolution_does_not_splice_a_stale_field_from_an_older_row(tmp_path):
+    """`.last()` on a groupby picks the last non-null value per column
+    independently, not the last physical row. If a correction carries a null in
+    a non-key column, that composes a row that never existed in the store -
+    stitching the older row's value onto the newer row's identity. The reader
+    must return the correction's own null, not resurrect the stale value.
+    """
+    _write(tmp_path, [_row("BTCUSDT", 100, 150, 200, 63000.0)], "snap1")
+    correction = pd.DataFrame([{
+        SYMBOL: "BTCUSDT", VENUE: "binance", EVENT_TIME: 100,
+        INGESTION_TIME: 250, AVAILABILITY_TIME: 300, "close": None,
+    }]).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path, "bars_1m", correction, "snap2")
+
+    visible = ClockGatedReader(tmp_path, "bars_1m").read_as_of(1_000)
+    assert len(visible) == 1
+    assert pd.isna(visible.iloc[0]["close"]), "the newer row's null was overwritten by a stale value"
+
+
+def test_symbol_filter_matching_nothing_returns_empty_without_raising(tmp_path):
+    _write(tmp_path, [_row("BTCUSDT", 100, 150, 200, 1.0)], "snap1")
+    result = ClockGatedReader(tmp_path, "bars_1m").read_as_of(200, symbols=["DOGEUSDT"])
+    assert result.empty
+
+
 def test_join_keys_on_availability_time_not_event_time():
     """Joining on event time is the classic leak, so the join refuses to do it.
 
