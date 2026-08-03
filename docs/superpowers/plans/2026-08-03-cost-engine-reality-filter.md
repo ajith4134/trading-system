@@ -78,32 +78,40 @@ otherwise, and the engine should say so rather than model an aspiration.
 
 ## Task 1 — The fee table and its provenance
 
-- [ ] `FeeRate` carries `maker_bps`, `taker_bps`, both `Decimal`.
-- [ ] `FeeSchedule` carries `venue`, `instrument_kind` (perp/spot), `FeeRate`, `tier`,
+- [x] `FeeRate` carries `maker_bps`, `taker_bps`, both `Decimal`.
+- [x] `FeeSchedule` carries `venue`, `instrument_kind` (perp/spot), `FeeRate`, `tier`,
       `source` (one of `venue_api`, `declared`), `fetched_at_ns`, and `source_detail` naming the
       endpoint or document it came from.
-- [ ] A schedule whose `source` is `declared` is **valid but marked unverified** — it is a written
+- [x] A schedule whose `source` is `declared` is **valid but marked unverified** — it is a written
       claim, not a measurement, and every quote built on it must inherit that mark.
-- [ ] `is_stale(now_ns, max_age_ns)` — a fetched schedule ages; a declared one is stale from birth
+- [x] `is_stale(now_ns, max_age_ns)` — a fetched schedule ages; a declared one is stale from birth
       for the purpose of any decision that moves capital.
-- [ ] Seed the table with the Hyperliquid rates above (`source=venue_api`, with the real
+- [x] Seed the table with the Hyperliquid rates above (`source=venue_api`, with the real
       `fetched_at_ns`) and Binance as `declared`, citing the public fee page and the 401 that
       blocks fetching it.
-- [ ] **Tests:** a declared schedule never reports itself verified; staleness is computed from
+- [x] **Tests:** a declared schedule never reports itself verified; staleness is computed from
       `fetched_at_ns` and not from process start; `Decimal` in, `Decimal` out, no float anywhere.
 
 ## Task 2 — Fetching what the venue will publish
 
-- [ ] `fetch_hyperliquid_schedule()` — `POST /info {"type":"userFees", "user": <address>}`, parsing
+- [x] `fetch_hyperliquid_schedule()` — `POST /info {"type":"userFees", "user": <address>}`, parsing
       `feeSchedule.add` / `.cross` and the `tiers.vip` ladder. Defaults to the zero address, which
       is measured to work, so a schedule can be read before an account exists.
-- [ ] `fetch_binance_schedule()` — **exists and raises `FeeScheduleUnavailable`**, naming the 401
-      and the fact that it needs a key. A missing function invites a future caller to assume the
-      fetch was simply never wired; an explicit refusal records *why*.
+- [x] `fetch_binance_schedule()` — **fully implemented**, signed HMAC-SHA256 request, not a stub.
+      Raises `FeeScheduleUnavailable` only when no credential exists, naming which of "no store",
+      "no entry" or "still a placeholder" it refused on. **Revised from the original plan**, which
+      assumed this could only be a stub: the request itself was never the blocker, only the key.
+      Verified against the live venue with a fabricated well-formed key — Binance answered
+      `-2015` (*invalid API-key, IP, or permissions*), not `-1022`/`-1102` (*bad signature /
+      malformed request*), which proves the signature, header and query encoding are accepted and
+      that only the credential is missing.
+- [x] Credentials come from sops+age (`src/cost/secret_store.py`), decrypted to a pipe and never
+      to a file, per `research/trading-secrets-management.md`. The shipped placeholder is rejected
+      by name so "nobody entered a key yet" cannot be misread as an endpoint failure.
 - [ ] Persist each fetch into the raw archive under its own stream (`userFees`), reusing
       `capture.rest_poller` — a fee schedule is market data and a change to it is an event this
       system must be able to reconstruct after the fact. Cadence: hourly, not 1 Hz.
-- [ ] **Tests:** the real captured `userFees` body (checked in verbatim as a fixture, like
+- [x] **Tests:** the real captured `userFees` body (checked in verbatim as a fixture, like
       `REAL_BINANCE_PREMIUM_INDEX_BODY`) parses to 1.5/4.5 bps; a body missing `feeSchedule`
       raises rather than defaulting; `fetch_binance_schedule` raises the typed error.
 
