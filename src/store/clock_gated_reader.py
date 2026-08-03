@@ -70,12 +70,39 @@ class ClockGatedReader:
         return latest.sort_values([SYMBOL, EVENT_TIME]).reset_index(drop=True)
 
 
+def _join_keys(left: pd.DataFrame, right: pd.DataFrame) -> list[str] | str:
+    """Symbol and venue when both frames name a venue; symbol alone when they do not.
+
+    Symbol alone is not an identity - `read_as_of` dedupes on (symbol, venue,
+    event_time) for exactly this reason, and the same reasoning has to reach the
+    join fifteen lines below it. Keyed on symbol alone, a binance signal matched
+    a hyperliquid reference price whenever both venues carried a row at the same
+    availability time. That is not a row from the future; it is a price from a
+    market the strategy is not trading, and it reads as a perfectly plausible
+    number.
+
+    The fallback is deliberate and it is a real weakening, stated here rather
+    than left to be discovered: a frame with no venue column carries no way to
+    tell venues apart, so the join can only match on symbol and a caller who
+    later adds the column will get stricter matching than they had. `merge_asof`
+    would raise on a `by` column present in only one frame, so both frames must
+    name it for the strict form to apply.
+    """
+    if VENUE in left.columns and VENUE in right.columns:
+        return [SYMBOL, VENUE]
+    return SYMBOL
+
+
 def join_as_of(left: pd.DataFrame, right: pd.DataFrame, suffix: str,
                tolerance_ns: int | None = None) -> pd.DataFrame:
     """Attach the most recent right-hand row that was already available.
 
     `direction="backward"` is what makes this safe: it can only reach into the
     past. A forward or nearest join reaches into the future by construction.
+
+    Matching is keyed on symbol AND venue whenever both frames carry a venue
+    column, falling back to symbol alone when they do not - see `_join_keys` for
+    what the fallback costs.
 
     `tolerance_ns` bounds how stale a match may be. Without it, a funding rate
     from an hour ago attaches to a signal now and reads as current context when
@@ -93,7 +120,7 @@ def join_as_of(left: pd.DataFrame, right: pd.DataFrame, suffix: str,
         left_sorted,
         right_sorted,
         on=AVAILABILITY_TIME,
-        by=SYMBOL,
+        by=_join_keys(left_sorted, right_sorted),
         direction="backward",
         tolerance=tolerance_ns,
         suffixes=("", suffix),

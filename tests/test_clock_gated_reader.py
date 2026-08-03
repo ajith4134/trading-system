@@ -150,3 +150,24 @@ def test_join_tolerance_refuses_a_stale_match():
                           "funding": [0.01]})
     joined = join_as_of(left, right, suffix="_funding", tolerance_ns=100)
     assert pd.isna(joined.loc[0, "funding"])
+
+
+def test_the_join_does_not_attach_another_venues_row():
+    """Symbol alone is not a key, fifteen lines further down than read_as_of.
+
+    `read_as_of` already dedupes on (symbol, venue, event_time) because two
+    venues legitimately carry the same symbol at the same instant. The join keyed
+    on symbol alone, so a binance signal matched a HYPERLIQUID reference price
+    whenever both venues had a row at the same availability time - a leak of a
+    different kind: not a row from the future, but a price from a market the
+    strategy is not trading. It reads as a plausible number, which is why nothing
+    downstream would catch it.
+    """
+    left = pd.DataFrame({SYMBOL: ["BTC"], VENUE: ["binance"], EVENT_TIME: [1_000],
+                         AVAILABILITY_TIME: [1_000], "signal": [1.0]})
+    right = pd.DataFrame({SYMBOL: ["BTC", "BTC"], VENUE: ["binance", "hyperliquid"],
+                          EVENT_TIME: [500, 500], AVAILABILITY_TIME: [500, 500],
+                          "reference": [63_000.0, 999_999.0]})
+    joined = join_as_of(left, right, suffix="_ref")
+    assert joined.loc[0, "reference"] == pytest.approx(63_000.0), (
+        "a hyperliquid price was attached to a binance row")
