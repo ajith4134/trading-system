@@ -310,6 +310,68 @@ def probe_capture_supervisor(facts: SystemFacts) -> ProbeResult:
                        "capture/supervisor/*.restarts.ndjson")
 
 
+def _store_root(facts: SystemFacts) -> Path:
+    return facts.capture_root / "store"
+
+
+def _bar_datasets(facts: SystemFacts) -> list[Path]:
+    root = _store_root(facts)
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("bars_"))
+
+
+def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
+    """Reports on the store by reading it, not by checking a path exists.
+
+    Row and part counts come from `ClockGatedReader.read_as_of`, the same call
+    every consumer makes - a probe that stat()ed the directory instead would go
+    on reporting OK against a store whose Parquet files had rotted or emptied.
+    """
+    datasets = _bar_datasets(facts)
+    if not datasets:
+        return ProbeResult(NOT_BUILT, "no store built from the archive yet",
+                           "capture/store")
+    parts = sum(1 for dataset in datasets for _ in dataset.rglob("*.parquet"))
+    from store.clock_gated_reader import ClockGatedReader
+    rows = len(ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(2**62))
+    return ProbeResult(
+        OK,
+        f"{rows} rows across {parts} append-only part(s) in {len(datasets)} dataset(s)",
+        f"capture/store/{datasets[0].name}",
+    )
+
+
+def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
+    """Reports on the gate by exercising it, not by checking the file exists.
+
+    The check that matters is negative: read one nanosecond before the
+    earliest availability time and confirm nothing comes back. A probe that
+    only confirmed `src/store/clock_gated_reader.py` exists on disk would pass
+    just as happily against a gate that leaks everything.
+    """
+    datasets = _bar_datasets(facts)
+    if not datasets:
+        return ProbeResult(NOT_BUILT, "no store to gate", "src/store/clock_gated_reader.py")
+    from store.clock_gated_reader import ClockGatedReader
+    from store.temporal_schema import AVAILABILITY_TIME
+
+    reader = ClockGatedReader(_store_root(facts), datasets[0].name)
+    everything = reader.read_as_of(2**62)
+    if everything.empty:
+        return ProbeResult(DEGRADED, "store exists but reads empty", "ClockGatedReader.read_as_of")
+
+    earliest = int(everything[AVAILABILITY_TIME].min())
+    hidden = reader.read_as_of(earliest - 1)
+    if not hidden.empty:
+        # The gate is the whole layer. If it lets anything through early, that is
+        # a failure of the system's core guarantee, not a degraded metric.
+        return ProbeResult(FAILING, f"{len(hidden)} row(s) visible before their availability time",
+                           "ClockGatedReader.read_as_of")
+    return ProbeResult(OK, f"gate holds: nothing visible before {earliest}",
+                       "ClockGatedReader.read_as_of, exercised live")
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -334,6 +396,8 @@ PROBES = {
     "venue health monitor auto halt": probe_venue_health,
     "reconnect with full jitter backoff honour retry after": probe_capture_supervisor,
     "strategy health board": probe_status_wall,
+    "bitemporal store": probe_bitemporal_store,
+    "clock gated access api": probe_clock_gated_access,
 }
 
 

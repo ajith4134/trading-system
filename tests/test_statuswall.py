@@ -167,6 +167,94 @@ def test_measure_system_on_an_empty_machine_reports_nothing_rather_than_healthy(
     assert facts.hours_since_capture is None
 
 
+def test_store_probe_reports_not_built_when_no_store_exists(tmp_path):
+    """Before the first build there is no store, and the wall must say so."""
+    from statuswall.evidence import NOT_BUILT, probe_bitemporal_store
+    facts = _facts(capture_root=tmp_path)
+    assert probe_bitemporal_store(facts).state == NOT_BUILT
+
+
+def test_store_probe_reports_ok_once_bars_are_readable(tmp_path):
+    """The state must come from reading the store, not from the module existing."""
+    import pandas as pd
+    from statuswall.evidence import OK, probe_bitemporal_store
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    result = probe_bitemporal_store(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "1" in result.detail
+
+
+def test_clock_gate_probe_reports_not_built_when_no_store_exists(tmp_path):
+    """No store means nothing to gate, so the wall must not claim a gate exists."""
+    from statuswall.evidence import NOT_BUILT, probe_clock_gated_access
+    facts = _facts(capture_root=tmp_path)
+    assert probe_clock_gated_access(facts).state == NOT_BUILT
+
+
+def test_clock_gate_probe_reports_ok_when_gate_hides_rows_before_availability(tmp_path):
+    """The gate must be exercised live: read one ns before the earliest
+    availability time and confirm nothing comes back."""
+    import pandas as pd
+    from statuswall.evidence import OK, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "1100" in result.detail
+
+
+def test_clock_gate_probe_reports_failing_when_a_row_leaks_before_availability(tmp_path, monkeypatch):
+    """A gate that lets a row through before its availability time is a FAILING
+    core-guarantee break, not a degraded metric - proven by deliberately
+    inverting the gate rather than by asserting on the healthy path alone."""
+    import pandas as pd
+    from statuswall.evidence import FAILING, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    class LeakyReader:
+        """Stands in for a ClockGatedReader whose gate has been inverted."""
+
+        def __init__(self, store_root, dataset):
+            self._store_root = store_root
+            self._dataset = dataset
+
+        def read_as_of(self, sim_clock_ns, symbols=None):
+            from store.parquet_partition import read_dataset
+            return read_dataset(self._store_root, self._dataset)
+
+    import store.clock_gated_reader as cgr
+    monkeypatch.setattr(cgr, "ClockGatedReader", LeakyReader)
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "visible before their availability time" in result.detail
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
