@@ -58,14 +58,25 @@ def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
     if frame.empty:
         return []
 
-    written: list[Path] = []
-    for symbol, group in frame.groupby(SYMBOL, sort=True):
+    groups = list(frame.groupby(SYMBOL, sort=True))
+
+    # Every target is checked before any part is written. Checking and writing
+    # symbol-by-symbol in one pass would let a frame with N symbols write the first
+    # N-1 parts and only then discover the Nth collides, leaving those N-1 behind as
+    # a half-written snapshot - exactly the partial state this store promises never
+    # to hold, and the promise Task 4's reader is built on.
+    plan: list[tuple[str, pd.DataFrame, Path, Path]] = []
+    for symbol, group in groups:
         folder = Path(store_root) / dataset / f"symbol={symbol}"
         target = folder / f"part-{snapshot_id}.parquet"
         if target.exists():
             raise PartitionExistsError(
                 f"{target} already exists; snapshot '{snapshot_id}' has been written for "
                 f"{symbol}. Corrections are new snapshots, never rewrites")
+        plan.append((symbol, group, folder, target))
+
+    written: list[Path] = []
+    for symbol, group, folder, target in plan:
         folder.mkdir(parents=True, exist_ok=True)
         # SYMBOL is dropped from the file body because it is already encoded in the
         # "symbol=..." directory name. Writing it into the file too gives pyarrow two

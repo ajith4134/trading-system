@@ -63,6 +63,24 @@ def test_writing_the_same_snapshot_twice_is_refused(tmp_path):
         append_partition(tmp_path, "bars_1m", _frame(), "snap1")
 
 
+def test_a_partial_collision_leaves_no_part_behind(tmp_path):
+    """A refused write must leave no trace, even when only one symbol in a multi-symbol
+    frame collides.
+
+    append_partition used to check-then-write symbol by symbol, so a frame with two
+    symbols where only the second collided would already have the first symbol's part
+    on disk by the time the collision was discovered - a half-written snapshot, which
+    is exactly the partial state the store promises never to hold.
+    """
+    append_partition(tmp_path, "bars_1m", _frame("ETHUSDT"), "snap1")
+    mixed = pd.concat([_frame("BTCUSDT"), _frame("ETHUSDT")], ignore_index=True)
+    with pytest.raises(PartitionExistsError, match="snap1"):
+        append_partition(tmp_path, "bars_1m", mixed, "snap1")
+    assert not (tmp_path / "bars_1m" / "symbol=BTCUSDT").exists(), (
+        "the non-colliding symbol's part must not be written when another symbol in "
+        "the same frame collides")
+
+
 def test_a_correction_is_a_new_part_not_an_edit(tmp_path):
     append_partition(tmp_path, "bars_1m", _frame(available=1_100), "snap1")
     append_partition(tmp_path, "bars_1m", _frame(available=9_999), "snap2")
