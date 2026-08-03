@@ -52,22 +52,52 @@ def test_a_promptly_built_bar_is_visible_at_its_close(tmp_path):
 
 
 def test_no_read_can_return_a_row_from_its_own_future(tmp_path):
-    """Swept over many clocks rather than one: an off-by-one hides at a single point."""
+    """Swept over many clocks rather than one: an off-by-one hides at a single point.
+
+    The assertion is deliberately NOT `availability_time <= clock`. That is a
+    verbatim restatement of the filter predicate, so the reader satisfies it by
+    construction and the test stays green even with `build_bars` reverted to
+    stamping availability at the bar's close - the original leak, which makes a
+    bar built from a trade that arrived two minutes late appear to have been
+    usable two minutes before it existed. A self-consistent store can be
+    consistently wrong.
+
+    So the bound is recomputed from the trades themselves: a bar could not be
+    known before its own close, nor before the last trade in it arrived. That
+    quantity lives outside the store and does not move when the stored column
+    does.
+    """
     open_ns = 100 * MINUTE_NS
     trades = [
         Trade("BTCUSDT", "binance", 100.0, 1.0, open_ns + 5, open_ns + 70_000_000),
         Trade("BTCUSDT", "binance", 101.0, 1.0, open_ns + MINUTE_NS + 5,
               open_ns + MINUTE_NS + 80_000_000),
+        # The third bar holds a prompt trade and one that took two minutes of
+        # reconnect backfill to land. The bar closes at open+3m; it was not
+        # knowable until open+4m. Two trades, not one, so that a build reading
+        # the WRONG arrival out of the bar - the earliest rather than the latest -
+        # produces a row that still satisfies availability >= ingestion and
+        # therefore passes every schema check on the way in.
         Trade("BTCUSDT", "binance", 102.0, 1.0, open_ns + 2 * MINUTE_NS + 5,
-              open_ns + 3 * MINUTE_NS),
+              open_ns + 2 * MINUTE_NS + 70_000_000),
+        Trade("BTCUSDT", "binance", 103.0, 1.0, open_ns + 2 * MINUTE_NS + 10,
+              open_ns + 4 * MINUTE_NS),
     ]
+    knowable_at: dict[int, int] = {}
+    for trade in trades:
+        bar_open = (trade.event_time_ns // MINUTE_NS) * MINUTE_NS
+        knowable_at[bar_open] = max(knowable_at.get(bar_open, bar_open + MINUTE_NS),
+                                    trade.ingestion_time_ns)
+
     reader = _store(tmp_path, build_bars(trades, MINUTE_NS), "snap1")
     for step in range(0, 5 * 60, 7):
         clock = open_ns + step * 1_000_000_000
         visible = reader.read_as_of(clock)
-        if visible.empty:
-            continue
-        assert visible[AVAILABILITY_TIME].max() <= clock, f"leaked at clock {clock}"
+        for bar_open in visible[EVENT_TIME]:
+            assert knowable_at[int(bar_open)] <= clock, (
+                f"the bar opening at {int(bar_open)} was readable at clock {clock}, "
+                f"but its own trades had not all arrived until "
+                f"{knowable_at[int(bar_open)]}")
 
 
 def test_a_correction_cannot_be_seen_before_it_was_made(tmp_path):
@@ -112,19 +142,36 @@ def test_joining_on_event_time_would_leak_and_the_api_will_not_do_it(tmp_path):
 def test_the_same_reader_serves_backtest_and_live_identically(tmp_path):
     """Two paths would diverge; this asserts there is only one.
 
-    'Live' is the reader with the wall clock, 'backtest' the same reader with a
-    simulated one. For the same clock value they must be byte-identical.
-    """
-    open_ns = 100 * MINUTE_NS
-    bars = build_bars(
-        [Trade("BTCUSDT", "binance", 100.0, 1.0, open_ns + 5, open_ns + 70_000_000)],
-        MINUTE_NS)
-    append_partition(tmp_path, "bars_1m", bars, "snap1")
+    'Live' is genuinely driven by the wall clock through a callable, over data
+    anchored to real time so that every bar is already in the past. 'Backtest' is
+    the same reader handed an explicit simulated clock partway through that
+    history, and it must see exactly the prefix that was available then.
 
-    clock = open_ns + 2 * MINUTE_NS
-    backtest = ClockGatedReader(tmp_path, "bars_1m").read_as_of(clock)
-    live = ClockGatedReader(tmp_path, "bars_1m").read_as_of(clock)
-    pd.testing.assert_frame_equal(backtest, live)
+    Two readers of one class compared against the same literal integer would be
+    `assert f(x) == f(x)` and would hold against any implementation at all,
+    including one that ignored the clock entirely. The failure this defends is
+    the reader consulting the wall clock instead of the argument it was handed -
+    a live path and a backtest path diverging inside one function - which shows
+    up here as the backtest seeing bars its simulated clock says do not exist.
+    """
+    import time
+
+    def wall_clock_ns() -> int:
+        return time.time_ns()
+
+    open_ns = ((wall_clock_ns() - 10 * MINUTE_NS) // MINUTE_NS) * MINUTE_NS
+    trades = [Trade("BTCUSDT", "binance", 100.0 + i, 1.0,
+                    open_ns + i * MINUTE_NS + 5,
+                    open_ns + i * MINUTE_NS + 70_000_000) for i in range(5)]
+    reader = _store(tmp_path, build_bars(trades, MINUTE_NS), "snap1")
+
+    live = reader.read_as_of(wall_clock_ns())
+    assert len(live) == 5, "the wall clock is past every bar, so live sees all of them"
+
+    # Bars 0, 1 and 2 close at or before this instant; 3 and 4 have not happened.
+    simulated_clock_ns = open_ns + 3 * MINUTE_NS
+    backtest = reader.read_as_of(simulated_clock_ns)
+    pd.testing.assert_frame_equal(backtest, live.iloc[:3].reset_index(drop=True))
 
 
 def test_history_never_shrinks_as_the_clock_advances(tmp_path):
