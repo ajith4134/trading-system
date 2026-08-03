@@ -318,7 +318,7 @@ def test_a_bar_whose_trades_span_two_day_folders_is_built_complete_not_partial(t
     # Day D reached into day D+1's folder for the late arrival; day D+1 read the
     # same trade and discarded it, because it belongs to day D's build.
     assert day_d_summary["lookahead_files"] == 1
-    assert day_d1_summary["trades_outside_day"] == 1, (
+    assert day_d1_summary["trades_covered_by_previous_day"] == 1, (
         "the day-D trade sitting in day D+1's folder was not discarded, so day "
         "D+1 emitted a partial bar for a day-D minute")
 
@@ -334,6 +334,88 @@ def test_a_bar_whose_trades_span_two_day_folders_is_built_complete_not_partial(t
 
     # Day D+1 still built its own minute, so the discard cost nothing.
     assert set(visible[EVENT_TIME]) == {last_minute, d1_midnight}
+
+
+def test_a_trade_stranded_beyond_the_lookahead_window_is_counted_and_quarantined(tmp_path):
+    """A trade no build will ever pick up must leave a file behind, not a counter.
+
+    A trade whose event time precedes the day being built is recoverable only if
+    that earlier day's own lookahead would have reached its hour file. Beyond
+    that window nothing reads it: the earlier day's build never looks that far,
+    and this day's event-time filter discards it. Counting it alongside the
+    ordinary deferrals - tens of thousands per day on this archive - buries the
+    one number that means data is gone, so it is counted separately and every
+    such trade is written to quarantine where it can still be recovered.
+    """
+    from capture.raw_writer import RawWriter
+
+    day_d = "2026-08-02"
+    d_midnight = _midnight_ns(day_d)
+    stranded_event_ns = d_midnight - 30 * SECOND_NS          # belongs to day D-1
+    stranded_receive_ns = d_midnight + 5 * 3600 * SECOND_NS  # filed in day D's hour 05
+
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    writer.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, d_midnight + SECOND_NS),
+                  d_midnight + 2 * SECOND_NS, (d_midnight + SECOND_NS) // 1_000_000, None)
+    writer.append(_binance_trade_frame("BTCUSDT", 99.5, 0.25, stranded_event_ns),
+                  stranded_receive_ns, stranded_event_ns // 1_000_000, None)
+    writer.close()
+
+    store_root = tmp_path / "store"
+    summary = build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=day_d,
+        symbols=["BTCUSDT"], interval_ns=MINUTE_NS, lookahead_hours=2)
+
+    assert summary["trades_stranded"] == 1
+    assert summary["trades_covered_by_previous_day"] == 0
+    assert summary["trades_deferred_to_next_day"] == 0
+
+    quarantine = (store_root / "quarantine" /
+                  f"stranded-binance-{day_d}-{summary['snapshot_id']}.ndjson")
+    assert Path(summary["quarantine_file"]) == quarantine
+    records = [json.loads(line) for line in
+               quarantine.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    record = records[0]
+    assert record["symbol"] == "BTCUSDT"
+    assert record["venue"] == "binance"
+    assert record["price"] == pytest.approx(99.5)
+    assert record["size"] == pytest.approx(0.25)
+    assert record["event_time_ns"] == stranded_event_ns
+    assert record["ingestion_time_ns"] == stranded_receive_ns
+    assert record["source_file"].endswith(f"trade_BTCUSDT_{day_d}T05.ndjson.zst")
+
+
+def test_a_trade_deferred_to_the_next_day_is_neither_stranded_nor_quarantined(tmp_path):
+    """The ordinary case must never trip the alarm the stranded count exists to be.
+
+    A trade whose event time falls after the day being built is not lost: day D+1
+    reads it from its own folder. `trades_outside_day` counted it identically to a
+    genuinely unrecoverable trade and reached 47,401 on one real day, so it could
+    never function as a signal. Deferrals stay a plain count and write nothing.
+    """
+    from capture.raw_writer import RawWriter
+
+    day_d, day_d1 = "2026-08-02", "2026-08-03"
+    d1_midnight = _midnight_ns(day_d1)
+    last_minute = d1_midnight - MINUTE_NS
+
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    writer.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, last_minute + SECOND_NS),
+                  last_minute + 2 * SECOND_NS, (last_minute + SECOND_NS) // 1_000_000, None)
+    writer.append(_binance_trade_frame("BTCUSDT", 200.0, 2.0, d1_midnight + SECOND_NS),
+                  d1_midnight + 2 * SECOND_NS, (d1_midnight + SECOND_NS) // 1_000_000, None)
+    writer.close()
+
+    store_root = tmp_path / "store"
+    summary = build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=day_d,
+        symbols=["BTCUSDT"], interval_ns=MINUTE_NS, lookahead_hours=2)
+
+    assert summary["trades_deferred_to_next_day"] == 1
+    assert summary["trades_stranded"] == 0
+    assert summary["quarantine_file"] is None
+    assert not (store_root / "quarantine").exists()
 
 
 def test_the_index_sidecar_path_follows_the_raw_writer_suffix_constants(monkeypatch):
