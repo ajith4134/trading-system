@@ -171,3 +171,28 @@ def test_the_join_does_not_attach_another_venues_row():
     joined = join_as_of(left, right, suffix="_ref")
     assert joined.loc[0, "reference"] == pytest.approx(63_000.0), (
         "a hyperliquid price was attached to a binance row")
+
+
+def test_cross_venue_rows_come_back_in_an_order_that_does_not_depend_on_the_disk(tmp_path):
+    """Two venues tying on (symbol, event_time) must not be ordered by discovery.
+
+    Parts are discovered in filesystem order, which varies by machine and by the
+    snapshot ids a build happens to produce. A backtest whose row order changes
+    run to run is not reproducible, which is the one thing this branch's single
+    reader exists to guarantee. Venue is part of the sort key so the tie has an
+    answer that comes from the data.
+
+    The two parts here are named so that discovery yields hyperliquid first: if
+    the sort key does not mention venue, that is the order the reader returns.
+    """
+    for venue, close, snapshot in (("hyperliquid", 63_010.0, "aaa"),
+                                   ("binance", 63_000.0, "bbb")):
+        frame = pd.DataFrame([{
+            SYMBOL: "BTC", VENUE: venue, EVENT_TIME: 100, INGESTION_TIME: 150,
+            AVAILABILITY_TIME: 200, "close": close,
+        }]).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64",
+                    AVAILABILITY_TIME: "int64"})
+        append_partition(tmp_path, "bars_1m", frame, snapshot)
+
+    visible = ClockGatedReader(tmp_path, "bars_1m").read_as_of(200)
+    assert list(visible[VENUE]) == ["binance", "hyperliquid"]

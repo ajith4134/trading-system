@@ -67,7 +67,13 @@ class ClockGatedReader:
         # that was actually written.
         ordered = visible.sort_values(AVAILABILITY_TIME, kind="mergesort")
         latest = ordered.drop_duplicates(subset=[SYMBOL, VENUE, EVENT_TIME], keep="last")
-        return latest.sort_values([SYMBOL, EVENT_TIME]).reset_index(drop=True)
+        # VENUE is in the sort key for the same reason it is in the dedupe key:
+        # without it, two venues tying on (symbol, event_time) come back in
+        # parquet discovery order, which depends on the filesystem and on the
+        # snapshot ids a build happened to produce. A backtest whose row order
+        # varies from machine to machine is not reproducible, which is the whole
+        # claim of having one reader.
+        return latest.sort_values([SYMBOL, VENUE, EVENT_TIME]).reset_index(drop=True)
 
 
 def _join_keys(left: pd.DataFrame, right: pd.DataFrame) -> list[str] | str:
