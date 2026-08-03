@@ -50,13 +50,14 @@ start_as_user() {
 start_as_user "boards_supervisor.sh" \
   "cd ${REPO} && nohup scripts/boards_supervisor.sh"
 
-# Market data capture. UNCOMMENT TO ENABLE — deliberately off by default because
-# starting it writes to disk and opens venue connections continuously, which is a
-# decision to take on purpose rather than inherit from a reboot.
-#
-# start_as_user "capture_supervisor.sh binance" \
-#   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT"
-# start_as_user "capture_supervisor.sh hyperliquid" \
-#   "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
+# Market data capture. Enabled 2026-08-03: the instance rebooted with nothing
+# configured to restart it and the archive lost roughly seventeen hours, which is
+# a gap no later analysis can fill — exchanges do not sell back the tape you
+# failed to record. Disk runway measured 909 days at the observed write rate, so
+# the cost of leaving it running is bounded and the cost of not is not.
+start_as_user "capture_supervisor.sh binance" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT"
+start_as_user "capture_supervisor.sh hyperliquid" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
 
 log "startup-script finished"
