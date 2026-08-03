@@ -429,10 +429,32 @@ def verify_probe_coverage(features: list[Feature]) -> None:
 
 
 def assess(features: list[Feature], facts: SystemFacts) -> dict[str, ProbeResult]:
-    """Status for every catalogued feature. Unprobed features are NOT_BUILT."""
+    """Status for every catalogued feature. Unprobed features are NOT_BUILT.
+
+    A probe that raises loses its own tile and nothing else. Calling them
+    unguarded meant one exception - a rotted Parquet part reaching
+    `probe_bitemporal_store`, a venue report missing a key - took down the entire
+    board and no feature rendered at all, precisely at the moment something was
+    wrong and the board was the thing worth reading.
+
+    The failure is caught, never hidden: the tile reads FAILING, carries the
+    exception type and message, and names the probe in its proof, so a
+    programming error arrives as a visible red tile rather than as a quiet OK.
+    Losing one tile to a bug is degraded; losing the board is useless.
+    """
     results: dict[str, ProbeResult] = {}
     for feature in features:
         probe = PROBES.get(feature.key)
-        results[feature.key] = probe(facts) if probe else ProbeResult(
-            NOT_BUILT, "designed only; no code and no measurement", "—")
+        if probe is None:
+            results[feature.key] = ProbeResult(
+                NOT_BUILT, "designed only; no code and no measurement", "—")
+            continue
+        try:
+            results[feature.key] = probe(facts)
+        except Exception as exc:
+            results[feature.key] = ProbeResult(
+                FAILING,
+                f"probe raised {type(exc).__name__}: {exc}",
+                f"{getattr(probe, '__name__', probe)} raised; this tile measured nothing",
+            )
     return results

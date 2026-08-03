@@ -167,6 +167,39 @@ def test_the_trade_tape_tile_does_not_assert_bar_building_is_missing():
     assert "not implemented" not in detail, detail
 
 
+def test_one_raising_probe_fails_its_own_tile_and_leaves_the_board_standing():
+    """A board that renders nothing is useless exactly when something is wrong.
+
+    `assess` called every probe unguarded, so one probe raising - a rotted
+    Parquet part reaching `probe_bitemporal_store`, say - took down the whole
+    wall and no feature rendered at all. The degraded outcome is one tile
+    reading FAILING and naming the error; the tile must not read OK, and the
+    error must not be swallowed into a vague message that hides a programming
+    bug.
+    """
+    from statuswall.evidence import FAILING, PROBES as REAL_PROBES
+
+    exploding = _feature("Exploding feature")
+    healthy = _feature("Strategy health board")
+
+    def raise_on_probe(facts):
+        raise ZeroDivisionError("a Parquet part rotted under the probe")
+
+    patched = dict(REAL_PROBES)
+    patched[exploding.key] = raise_on_probe
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("statuswall.evidence.PROBES", patched)
+        results = assess([exploding, healthy], _facts())
+
+    assert set(results) == {exploding.key, healthy.key}, "the board lost a tile"
+    assert results[healthy.key].state != FAILING, "an unrelated tile was damaged"
+    broken = results[exploding.key]
+    assert broken.state == FAILING
+    assert "ZeroDivisionError" in broken.detail
+    assert "a Parquet part rotted under the probe" in broken.detail
+    assert "raise_on_probe" in broken.proof
+
+
 def test_capture_not_running_reads_stopped_not_ok():
     facts = _facts(
         capture_running=False,
