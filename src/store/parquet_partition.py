@@ -11,6 +11,8 @@ columnar float data is worth more than the CPU at this volume.
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -19,9 +21,22 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+# The archive writer already solved "a crash must not leave a half-written file
+# under a name a reader trusts", down to the order of the two fsyncs. Its helper
+# is imported rather than reimplemented: `capture.raw_writer._utc_moment` records
+# what happened the last time this project kept three copies of one conversion -
+# each copy had the bug, independently.
+from capture.raw_writer import _fsync_directory
 from store.temporal_schema import SYMBOL, validate_temporal_frame
 
 _CHUNK = 1 << 20
+
+# pyarrow's dataset discovery skips names beginning with "." or "_", so an
+# in-progress part is invisible to `read_dataset` even while it is being written,
+# and stays invisible if a crash strands it. Without the dot the stranded file is
+# discovered as a Parquet part and fails the whole dataset - the very failure the
+# rename is here to prevent.
+_PARTIAL_PREFIX = ".writing-part-"
 
 
 class PartitionExistsError(FileExistsError):
@@ -87,9 +102,50 @@ def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
         # loss: read_dataset reconstructs the column from the path on every read.
         body = group.drop(columns=[SYMBOL]).reset_index(drop=True)
         table = pa.Table.from_pandas(body, preserve_index=False)
-        pq.write_table(table, target, compression="zstd")
+        _write_part_atomically(table, folder, target)
         written.append(target)
     return written
+
+
+def _write_part_atomically(table: pa.Table, folder: Path, target: Path) -> None:
+    """Write a part to a temporary name and rename it into place once complete.
+
+    `pq.write_table` straight to the target writes in place, so a crash or a
+    power loss mid-write leaves a truncated Parquet file under the name readers
+    trust. `read_dataset` then raises ArrowInvalid for the ENTIRE dataset - every
+    symbol becomes unreadable, not only the one being written - and the rebuild
+    that would repair it collides with the truncated part, because the snapshot
+    id is content-derived and therefore unchanged. With no delete path by design,
+    recovery means manual filesystem surgery.
+
+    Renaming makes a part either absent or complete, which leaves the rebuild as
+    the whole recovery path. This does not weaken append-only: the rename target
+    is still refused by the pre-flight collision check in `append_partition`
+    before any bytes are written, so a rename can only ever create a name that
+    did not exist.
+
+    The temporary file is fsynced BEFORE the rename and the directory after it,
+    the discipline `capture.raw_writer._write_lines` documents: without the
+    first, a power loss can leave the new name pointing at an empty inode -
+    atomic in the rename sense and still data loss; without the second, the
+    rename itself may not survive.
+    """
+    handle, temporary_name = tempfile.mkstemp(dir=folder, prefix=_PARTIAL_PREFIX,
+                                              suffix=".parquet")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "wb") as sink:
+            pq.write_table(table, sink, compression="zstd")
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(temporary, target)
+        _fsync_directory(folder)
+    except BaseException:
+        # An abandoned temporary is invisible to dataset discovery (see
+        # _PARTIAL_PREFIX), but leaving it would still accumulate dead bytes on
+        # every failed write.
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def read_dataset(store_root: Path, dataset: str) -> pd.DataFrame:

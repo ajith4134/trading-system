@@ -101,3 +101,42 @@ def test_invalid_frames_are_refused_before_they_reach_disk(tmp_path):
 def test_reading_an_absent_dataset_returns_empty_not_error(tmp_path):
     stored = read_dataset(tmp_path, "never_written")
     assert stored.empty
+
+
+def test_a_crash_mid_write_leaves_the_whole_dataset_readable(tmp_path, monkeypatch):
+    """A torn part must never become the dataset's problem.
+
+    `pq.write_table` writing straight to its target means a crash or a power loss
+    mid-write leaves a truncated Parquet file under the target name, and
+    `read_dataset` then raises ArrowInvalid for the ENTIRE dataset - every symbol
+    becomes unreadable, not just the one being written. Rebuilding cannot help:
+    the snapshot id is content-derived and unchanged, so it collides with the
+    truncated part, and there is no delete path by design. Recovery needs manual
+    filesystem surgery.
+
+    Writing to a temporary file and renaming it into place makes a part either
+    absent or complete, which leaves the rebuild as the whole recovery path.
+    """
+    import pyarrow.parquet as pq
+
+    from store import parquet_partition
+
+    append_partition(tmp_path, "bars_1m", _frame("BTCUSDT"), "snap1")
+
+    def die_halfway(table, where, **kwargs):
+        if hasattr(where, "write"):
+            where.write(b"PAR1this is half a parquet file")
+        else:
+            Path(where).write_bytes(b"PAR1this is half a parquet file")
+        raise OSError("simulated power loss mid-write")
+
+    monkeypatch.setattr(parquet_partition.pq, "write_table", die_halfway)
+    with pytest.raises(OSError):
+        append_partition(tmp_path, "bars_1m", _frame("ETHUSDT"), "snap2")
+
+    survivors = read_dataset(tmp_path, "bars_1m")
+    assert list(survivors[SYMBOL]) == ["BTCUSDT"], "the crash cost more than its own part"
+
+    folder = tmp_path / "bars_1m" / "symbol=ETHUSDT"
+    leftovers = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+    assert leftovers == [], f"a partial part survived the crash: {leftovers}"
