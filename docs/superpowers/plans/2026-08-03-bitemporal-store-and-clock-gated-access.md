@@ -129,7 +129,7 @@ def test_null_availability_time_is_refused():
 def test_availability_earlier_than_ingestion_is_refused():
     """Claiming data was usable before it arrived is the leak this whole layer prevents."""
     with pytest.raises(TemporalInvariantError, match="before"):
-        validate_temporal_frame(_frame(AVAILABILITY_TIME=[900], INGESTION_TIME=[1_100]))
+        validate_temporal_frame(_frame(**{AVAILABILITY_TIME: [900], INGESTION_TIME: [1_100]}))
 
 
 def test_event_time_after_ingestion_is_allowed():
@@ -138,7 +138,7 @@ def test_event_time_after_ingestion_is_allowed():
     Enforcing event <= ingestion would silently rewrite the venue's own account of
     when a trade happened, which is data loss disguised as validation.
     """
-    validate_temporal_frame(_frame(EVENT_TIME=[2_000], INGESTION_TIME=[1_100]))
+    validate_temporal_frame(_frame(**{EVENT_TIME: [2_000], INGESTION_TIME: [1_100]}))
 
 
 def test_null_event_time_is_allowed():
