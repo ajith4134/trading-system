@@ -510,6 +510,52 @@ def test_a_build_that_raises_leaves_no_quarantine_file_to_block_the_rerun(tmp_pa
     assert Path(summary["quarantine_file"]).exists()
 
 
+def test_a_days_old_trade_is_stranded_whichever_hour_it_was_filed_in(tmp_path):
+    """The alarm must fire on the trade's event time, not on where it landed.
+
+    `_is_within_previous_days_lookahead` tested only the hour file's position, so a
+    trade three days stale - or one carrying `event_time_ns=0`, which
+    `_extract_binance` will happily produce from a garbage `T` - read as covered by
+    the previous day's build purely because it was filed in day D's hour 00. The
+    identical trades filed in hour 05 were reported stranded. Whether data loss
+    raised an alarm depended on which hour file the trade happened to land in.
+
+    No build reaches either one: the previous day's lookahead reads day D's early
+    hours but discards anything outside ITS day too, and this day discards them by
+    event time. They are stranded, and they belong in quarantine.
+    """
+    from capture.raw_writer import RawWriter
+
+    day_d = "2026-08-02"
+    d_midnight = _midnight_ns(day_d)
+    day_ns = 86_400 * SECOND_NS
+    stale_event_ns = d_midnight - 3 * day_ns   # three days before the day being built
+    inside_hour_00_ns = d_midnight + 10 * SECOND_NS
+
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    writer.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, d_midnight + SECOND_NS),
+                  d_midnight + 2 * SECOND_NS, (d_midnight + SECOND_NS) // 1_000_000, None)
+    writer.append(_binance_trade_frame("BTCUSDT", 99.5, 0.25, stale_event_ns),
+                  inside_hour_00_ns, stale_event_ns // 1_000_000, None)
+    # A garbage venue timestamp reaches this code unmodified: nothing rejects T=0.
+    writer.append(_binance_trade_frame("BTCUSDT", 98.0, 0.5, 0),
+                  inside_hour_00_ns + SECOND_NS, 0, None)
+    writer.close()
+
+    store_root = tmp_path / "store"
+    summary = build_bars_for_day(
+        capture_root=tmp_path, store_root=store_root, venue="binance", date=day_d,
+        symbols=["BTCUSDT"], interval_ns=MINUTE_NS, lookahead_hours=2)
+
+    assert summary["trades_covered_by_previous_day"] == 0, (
+        "a trade older than the previous day was called recoverable because of the "
+        "hour it was filed in")
+    assert summary["trades_stranded"] == 2
+    records = [json.loads(line) for line in
+               Path(summary["quarantine_file"]).read_text(encoding="utf-8").splitlines()]
+    assert sorted(record["event_time_ns"] for record in records) == [0, stale_event_ns]
+
+
 def test_a_trade_deferred_to_the_next_day_is_neither_stranded_nor_quarantined(tmp_path):
     """The ordinary case must never trip the alarm the stranded count exists to be.
 

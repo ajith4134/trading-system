@@ -31,8 +31,8 @@ duplicate of the incomplete one.
 
 Nothing discarded is left unaccounted for. A trade whose event time falls after
 the day is deferred to that day's own build; one from before the day is
-recoverable only while it sits inside the earlier day's lookahead window, and
-beyond it no build will ever read it. Those last are counted apart as stranded
+recoverable only when it belongs to the previous day AND sits inside that day's
+lookahead window, and outside either bound no build will ever read it. Those last are counted apart as stranded
 and written to `<store_root>/quarantine/`, because a trade lost with only a
 counter to show for it is the failure this module opened by refusing.
 
@@ -163,26 +163,36 @@ def _hour_start_ns(raw_path: Path) -> int | None:
     return int(moment.timestamp()) * _NS_PER_SECOND
 
 
-def _is_within_previous_days_lookahead(raw_path: Path, start_ns: int,
-                                       lookahead_hours: int) -> bool:
-    """Whether the build of an earlier day would have reached this hour file.
+def _is_within_previous_days_lookahead(raw_path: Path, event_time_ns: int,
+                                       start_ns: int, lookahead_hours: int) -> bool:
+    """Whether the build of the PREVIOUS day would have reached this trade.
 
-    The previous day's build reads its own folder plus `lookahead_hours` into
-    this one, so a trade belonging to that day is recoverable exactly when its
-    hour file sits inside that window - measured from the start of the day being
-    built, which is where the previous day's lookahead begins. Assumes that build
-    ran with the same `lookahead_hours` as this one; a build with a shorter
-    window reached less far, and this would then call a stranded trade covered.
+    Two conditions, and both are necessary. The previous day's build reads its own
+    folder plus `lookahead_hours` into this one, so the trade's hour file must sit
+    inside that window - measured from the start of the day being built, which is
+    where the previous day's lookahead begins. Assumes that build ran with the same
+    `lookahead_hours` as this one; a build with a shorter window reached less far,
+    and this would then call a stranded trade covered.
 
-    Beyond the window no build ever reads the trade: the earlier day's does not
-    look that far and this one discards it by event time. That is the difference
-    between a trade deferred and a trade lost, and it is why the two are counted
-    apart.
+    And the trade's event time must fall inside the previous day, because that
+    build keeps only its OWN day's trades however far its lookahead read. Testing
+    the file's position alone made the alarm depend on where a trade happened to
+    land: a three-day-stale trade - or one carrying `event_time_ns=0`, which
+    `_extract_binance` produces from a garbage venue timestamp without complaint -
+    read as covered in hour 00 and stranded in hour 05, identical trades, opposite
+    verdicts. Anything older than the previous day is reachable by no build at all.
+
+    Beyond either bound no build ever reads the trade: the earlier day's does not
+    look that far or would discard it anyway, and this one discards it by event
+    time. That is the difference between a trade deferred and a trade lost, and it
+    is why the two are counted apart.
     """
     hour_start_ns = _hour_start_ns(raw_path)
     if hour_start_ns is None:
         return False
-    return 0 <= hour_start_ns - start_ns < lookahead_hours * _NS_PER_HOUR
+    if not 0 <= hour_start_ns - start_ns < lookahead_hours * _NS_PER_HOUR:
+        return False
+    return start_ns - _NS_PER_DAY <= event_time_ns
 
 
 def _hour_files(capture_root: Path, venue: str, date: str,
@@ -393,7 +403,7 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
                     elif trade.event_time_ns >= end_ns:
                         trades_deferred_to_next_day += 1
                     elif _is_within_previous_days_lookahead(
-                            raw_path, start_ns, lookahead_hours):
+                            raw_path, trade.event_time_ns, start_ns, lookahead_hours):
                         trades_covered_by_previous_day += 1
                     else:
                         stranded.append((trade, raw_path))
