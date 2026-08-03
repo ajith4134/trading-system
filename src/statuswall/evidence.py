@@ -188,8 +188,12 @@ def probe_trade_tape(facts: SystemFacts) -> ProbeResult:
     total_mb = sum(sizes.values()) / 1e6
     return ProbeResult(
         PARTIAL if state == OK else state,
-        f"trade tape captured on {len(facts.venues)} venues ({total_mb:.0f} MB); "
-        f"OHLCV bar building not implemented. {why}",
+        # Only what was measured. The clause that used to follow - "OHLCV bar
+        # building not implemented" - was hand-typed, and it went on reading as
+        # true after the store held bars and the adjacent tile measured them. An
+        # asserted claim cannot go stale loudly, which is the whole reason Rule 8
+        # allows a tile to show nothing but measured state.
+        f"trade tape captured on {len(facts.venues)} venues ({total_mb:.0f} MB). {why}",
         f"raw_bytes_by_stream over {len(sizes)} trade streams",
     )
 

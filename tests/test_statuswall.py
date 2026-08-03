@@ -149,6 +149,24 @@ def test_subscribed_but_silent_stream_reads_failing_not_absent():
     assert "never delivered" in result.detail
 
 
+def test_the_trade_tape_tile_does_not_assert_bar_building_is_missing():
+    """Rule 8: a tile shows measured state, never asserted state.
+
+    The trade-tape detail carried a hand-typed "OHLCV bar building not
+    implemented" long after the store held bars and the adjacent tile measured
+    them. An asserted clause cannot go stale loudly - it simply keeps reading as
+    true, which is the exact failure a measured board exists to prevent.
+    """
+    facts = _facts(
+        capture_running=True,
+        venues=["binance"],
+        reports={"binance": {"raw_bytes_by_stream": {"trade_BTCUSDT": 10},
+                             "silent_stream_names": []}},
+    )
+    detail = PROBES["spot ohlcv trade tape multi venue"](facts).detail
+    assert "not implemented" not in detail, detail
+
+
 def test_capture_not_running_reads_stopped_not_ok():
     facts = _facts(
         capture_running=False,
@@ -190,7 +208,10 @@ def test_store_probe_reports_ok_once_bars_are_readable(tmp_path):
 
     result = probe_bitemporal_store(_facts(capture_root=tmp_path))
     assert result.state == OK
-    assert "1" in result.detail
+    # The row count explicitly, not `"1" in detail`: the detail reads "1 rows
+    # across 1 append-only part(s) in 1 dataset(s)", so a bare digit search is
+    # answered by the dataset count and a probe reporting ZERO rows passes it.
+    assert result.detail.startswith("1 rows "), result.detail
 
 
 def test_clock_gate_probe_reports_not_built_when_no_store_exists(tmp_path):
