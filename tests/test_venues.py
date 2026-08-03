@@ -210,3 +210,63 @@ def test_hyperliquid_parse_instruments_skips_delisted_and_malformed():
         "not-a-dict",
     ]}
     assert v.parse_instruments(payload) == ["BTC"]
+
+
+# Captured verbatim from https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT
+# on 2026-08-03T17:36Z. This is the replacement source for the mark price feed
+# the websocket withholds - see the module docstring of test_rest_poller.py.
+REAL_BINANCE_PREMIUM_INDEX_BODY = json.loads(
+    '{"symbol":"BTCUSDT","markPrice":"63856.20000000",'
+    '"indexPrice":"63883.54000000","estimatedSettlePrice":"63846.38997717",'
+    '"lastFundingRate":"0.00000707","interestRate":"0.00010000",'
+    '"nextFundingTime":1785801600000,"time":1785778577000}')
+
+
+def test_binance_poll_specs_cover_every_symbol():
+    v = BinanceVenue()
+    specs = v.poll_specs(["BTCUSDT", "ETHUSDT"])
+    assert {spec.symbol for spec in specs} == {"BTCUSDT", "ETHUSDT"}
+    assert all(spec.stream == "premiumIndex" for spec in specs)
+    assert all(spec.url.startswith("https://fapi.binance.com/fapi/v1/premiumIndex")
+               for spec in specs)
+    # Per-symbol, not the whole-market form: the all-symbols call returns every
+    # perp on the venue at request weight 10, and writing 500 instruments to
+    # disk to read 3 of them is not a raw archive of what was asked for.
+    assert all(f"symbol={spec.symbol}" in spec.url for spec in specs)
+
+
+def test_binance_premium_index_response_routes_to_its_own_stream():
+    """It is not filed as `markPrice`. The payload shape differs from a
+    `markPriceUpdate` frame, and one filename holding two shapes makes the
+    archive undecodable without knowing which day it was written."""
+    v = BinanceVenue()
+    spec = next(s for s in v.poll_specs(["BTCUSDT"]))
+    meta = v.extract(REAL_BINANCE_PREMIUM_INDEX_BODY)
+
+    assert meta.stream == spec.stream == "premiumIndex"
+    assert meta.symbol == spec.symbol == "BTCUSDT"
+    assert meta.kind == "data"
+    assert meta.t_exch_ms == 1785778577000
+    assert meta.seq is None
+
+
+def test_binance_does_not_subscribe_to_the_mark_price_stream_the_venue_withholds():
+    """Measured 2026-08-03 across three edge IPs: zero frames on `markPrice@1s`
+    and `!markPrice@arr@1s` while `trade` flowed on the same sockets. Keeping
+    the subscription would report the stream silent forever and bury the real
+    source, which is now the REST poll."""
+    v = BinanceVenue()
+    channels = {s.channel for s in v.core_specs(["BTCUSDT"])} | \
+               {s.channel for s in v.tail_specs(["BTCUSDT"])}
+    assert not any("markPrice" in channel for channel in channels)
+
+
+def test_binance_still_subscribes_to_liquidations_despite_the_silence():
+    """Deliberate, and the opposite of the mark price decision: `forceOrder` has
+    no REST replacement (allForceOrders was withdrawn from the public API), so
+    dropping it would remove the only way to notice the venue starting to
+    deliver it. It costs one idle subscription and leaves the tile red, which is
+    what an unavailable feed should look like."""
+    v = BinanceVenue()
+    channels = {s.channel for s in v.core_specs(["BTCUSDT"])}
+    assert "btcusdt@forceOrder" in channels

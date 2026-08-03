@@ -19,6 +19,7 @@ from typing import AsyncIterator
 
 import websockets
 
+from capture.rest_poller import merge_frame_sources, poll_frames
 from capture.venue_recorder import VenueRecorder
 from capture.venues.binance import BinanceVenue
 from capture.venues.hyperliquid import HyperliquidVenue
@@ -70,17 +71,29 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
 
 
 async def run_capture(venue, specs, root: Path, duration_seconds: float,
-                      silence_grace_seconds: float = 60.0) -> dict:
+                      silence_grace_seconds: float = 60.0,
+                      poll_specs=(), poll_interval_seconds: float = 1.0) -> dict:
     """Record one venue for `duration_seconds` and report what was captured.
 
     `silence_grace_seconds` is how long a subscribed stream may deliver nothing
     before the recorder writes that fact to the ledger. It is exposed because a
     run shorter than the grace can never report a silent stream, which makes a
     short capture look clean when it is not.
+
+    `poll_specs` are the feeds this venue will not push to us and which are
+    fetched over REST instead - see `capture.rest_poller`. They are handed to the
+    recorder alongside the subscribed streams because the recorder tracks
+    silence, gaps and writers by (stream, symbol) alone: a polled feed that dies
+    is then reported by the same machinery that reports a dead websocket, rather
+    than by a second copy of it.
     """
-    recorder = VenueRecorder(venue, specs, root,
+    recorder = VenueRecorder(venue, [*specs, *poll_specs], root,
                              silence_grace_seconds=silence_grace_seconds)
     frames = _stream_frames(venue, specs, duration_seconds)
+    if poll_specs:
+        frames = merge_frame_sources(
+            frames,
+            poll_frames(venue, poll_specs, poll_interval_seconds, duration_seconds))
     # `aclosing` matters on the failure path: if consume() raises, the async
     # generator is left suspended inside its `async with websockets.connect(...)`
     # and the socket stays open until the interpreter finalises it. Closing it
@@ -128,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--silence-grace-seconds", type=float, default=60.0,
                         help="how long a subscribed stream may deliver nothing "
                              "before that is recorded in the ledger")
+    parser.add_argument("--poll-interval-seconds", type=float, default=1.0,
+                        help="cadence for feeds fetched over REST because the "
+                             "venue will not push them (see capture.rest_poller)")
     args = parser.parse_args(argv)
 
     # A symbol carrying whitespace builds a channel name the venue does not
@@ -144,15 +160,23 @@ def main(argv: list[str] | None = None) -> int:
         # reported silent on its first check - an alert flood from a typo.
         parser.error("--silence-grace-seconds cannot be negative")
 
+    if args.poll_interval_seconds <= 0:
+        # A zero or negative cadence is an unthrottled request loop against the
+        # venue's REST API, which is a ban rather than a capture.
+        parser.error("--poll-interval-seconds must be greater than zero")
+
     venue = _VENUES[args.venue]()
     specs = venue.core_specs(symbols)
+    poll_specs = venue.poll_specs(symbols)
     duration = args.seconds if args.seconds > 0 else float("inf")
 
     _stop_gracefully_on_sigterm()
 
     try:
         stats = asyncio.run(run_capture(venue, specs, Path(args.root), duration,
-                                        args.silence_grace_seconds))
+                                        args.silence_grace_seconds,
+                                        poll_specs=poll_specs,
+                                        poll_interval_seconds=args.poll_interval_seconds))
     except KeyboardInterrupt:
         # asyncio.run cancels the capture before re-raising, which unwinds
         # VenueRecorder.consume through its own `finally` and flushes every

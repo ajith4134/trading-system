@@ -1,7 +1,7 @@
 """Hyperliquid perps. l2Book carries no sequence numbers - staleness only."""
 from __future__ import annotations
 
-from capture.venues import ExtractedMeta, StreamSpec
+from capture.venues import ExtractedMeta, PollSpec, StreamSpec
 
 _WS_URL = "wss://api.hyperliquid.xyz/ws"
 _INSTRUMENTS_URL = "https://api.hyperliquid.xyz/info"
@@ -23,6 +23,12 @@ class HyperliquidVenue:
 
     def tail_specs(self, symbols: list[str]) -> list[StreamSpec]:
         return self._specs(symbols, _TAIL_TYPES)
+
+    def poll_specs(self, symbols: list[str]) -> list[PollSpec]:
+        """Nothing is polled here: Hyperliquid pushes everything it is asked
+        for. The method exists so the entry point can treat both venues alike
+        rather than testing which kind of venue it is holding."""
+        return []
 
     def ws_url(self, specs: list[StreamSpec]) -> str:
         return _WS_URL

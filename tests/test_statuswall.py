@@ -334,3 +334,35 @@ def test_feature_names_are_escaped_into_the_page():
     page = render_wall(WallInput(features, results, _facts()))
     assert "&lt;20 levels&gt; &amp; more" in page
     assert "<20 levels>" not in page
+
+
+def test_a_polled_feed_answers_its_tile_while_the_withheld_stream_stays_silent():
+    """Rule 8, in the case that made it concrete.
+
+    Binance withheld `markPrice` from this host (measured 2026-08-03) and the
+    feed was recovered by polling `premiumIndex`. Both names satisfy the same
+    feature, so the tile has to read from the route that is working - while
+    still refusing to count a route that is merely leaving old bytes behind.
+    """
+    facts = _facts(
+        capture_running=True,
+        venues=["binance"],
+        reports={"binance": {"silent_stream_names": ["markPrice"],
+                             "raw_bytes_by_stream": {"premiumIndex_BTCUSDT": 4096}}},
+    )
+    result = PROBES["mark price vs index vs oracle price per venue"](facts)
+    assert result.state == OK, result.detail
+
+
+def test_a_dead_stream_that_left_bytes_behind_still_reads_failing():
+    """Bytes on disk are not liveness: a stream that filled a file and then died
+    leaves exactly what a running one leaves. Judged per (venue, stream), so
+    this must not be rescued by the sibling route being healthy elsewhere."""
+    facts = _facts(
+        capture_running=True,
+        venues=["binance"],
+        reports={"binance": {"silent_stream_names": ["premiumIndex"],
+                             "raw_bytes_by_stream": {"premiumIndex_BTCUSDT": 4096}}},
+    )
+    result = PROBES["mark price vs index vs oracle price per venue"](facts)
+    assert result.state == FAILING, result.detail

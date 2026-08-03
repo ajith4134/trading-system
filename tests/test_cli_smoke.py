@@ -358,10 +358,13 @@ def record_run_capture_calls(monkeypatch, stats: dict | None = None) -> list[dic
     calls: list[dict] = []
 
     async def record_call(venue, specs, root, duration_seconds,
-                          silence_grace_seconds=60.0):
+                          silence_grace_seconds=60.0, poll_specs=(),
+                          poll_interval_seconds=1.0):
         calls.append({"venue": venue, "specs": specs, "root": root,
                       "duration_seconds": duration_seconds,
-                      "silence_grace_seconds": silence_grace_seconds})
+                      "silence_grace_seconds": silence_grace_seconds,
+                      "poll_specs": poll_specs,
+                      "poll_interval_seconds": poll_interval_seconds})
         return stats if stats is not None else {"written": 0}
 
     monkeypatch.setattr(cli, "run_capture", record_call)
@@ -452,7 +455,8 @@ def test_main_exits_on_interrupt_without_a_traceback(tmp_path: Path, monkeypatch
     """Ctrl-C is how the run-until-interrupted mode is meant to end. asyncio
     cancels the capture (flushing it) and re-raises KeyboardInterrupt here."""
     async def interrupt_the_capture(venue, specs, root, duration_seconds,
-                                    silence_grace_seconds=60.0):
+                                    silence_grace_seconds=60.0, poll_specs=(),
+                                    poll_interval_seconds=1.0):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_capture", interrupt_the_capture)
@@ -500,5 +504,5 @@ async def test_run_capture_reports_a_silent_stream_within_the_run(tmp_path: Path
     # send, which is the distinction that matters to whoever reads this.
     never_spoke = {e.stream for e in events
                    if e.kind == "silent_stream" and e.detail["frames_received"] == 0}
-    assert never_spoke == {"trade", "markPrice", "forceOrder"}
+    assert never_spoke == {"trade", "forceOrder"}
     assert "depth" not in never_spoke

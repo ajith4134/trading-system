@@ -208,35 +208,60 @@ def probe_l2_depth(facts: SystemFacts) -> ProbeResult:
                        "raw_bytes_by_stream over depth streams")
 
 
-def _silent_stream_probe(facts: SystemFacts, stream: str, label: str) -> ProbeResult:
+def _silent_stream_probe(facts: SystemFacts, streams: tuple[str, ...],
+                         label: str) -> ProbeResult:
     """A subscribed stream that never spoke is a failure, not an absence.
 
     The distinction matters: a stream nobody subscribed to is simply not built,
     while a stream that was subscribed and delivered nothing is wired and dead -
     and it looks identical on disk to a quiet market unless the ledger is read.
+
+    Several stream names may satisfy one feature, because a feed the venue
+    refuses to push can still be recorded by polling it. Data on any of them
+    answers the feature; the tile only fails when every route is silent.
     """
-    silent_in: list[str] = []
+    silent_routes: set[tuple[str, str]] = set()
     for venue, report in facts.reports.items():
-        if stream in report.get("silent_stream_names", []):
-            silent_in.append(venue)
+        for stream in streams:
+            if stream in report.get("silent_stream_names", []):
+                silent_routes.add((venue, stream))
+    silent_in = sorted({venue for venue, _ in silent_routes})
+
+    # Bytes alone do not make a feed healthy: a stream that filled a file for a
+    # week and then died leaves exactly the same bytes behind as one still
+    # running. A route counts only where it has data AND is not reported silent
+    # - judged per (venue, stream), not per venue, so a live poll answers the
+    # tile even while the withheld websocket stream it replaced is silent on
+    # that same venue for that same feature.
+    live_bytes = {}
+    for name, size in _stream_bytes(facts, streams).items():
+        venue, _, stream_symbol = name.partition("/")
+        if (venue, stream_symbol.split("_", 1)[0]) not in silent_routes:
+            live_bytes[name] = size
+    if live_bytes:
+        state, why = _capture_liveness(facts)
+        return ProbeResult(state, f"{label} streaming. {why}", "raw_bytes_by_stream")
+
     if silent_in:
         return ProbeResult(
             FAILING,
-            f"'{stream}' subscribed on {', '.join(silent_in)} and never delivered a frame",
+            f"'{'/'.join(streams)}' subscribed on {', '.join(silent_in)} "
+            "and never delivered a frame",
             "capture_health silent_stream_names",
         )
-    if _stream_bytes(facts, (stream,)):
-        state, why = _capture_liveness(facts)
-        return ProbeResult(state, f"{label} streaming. {why}", "raw_bytes_by_stream")
     return ProbeResult(NOT_BUILT, f"{label} not subscribed on any venue", "capture_health")
 
 
 def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
-    return _silent_stream_probe(facts, "forceOrder", "liquidation feed")
+    return _silent_stream_probe(facts, ("forceOrder",), "liquidation feed")
 
 
 def probe_mark_price(facts: SystemFacts) -> ProbeResult:
-    return _silent_stream_probe(facts, "markPrice", "mark price")
+    # `premiumIndex` is the REST poll that replaced the withheld `markPrice`
+    # websocket stream on 2026-08-03; it carries mark, index and settlement
+    # price in one body. `markPrice` stays listed so an archive written before
+    # that date still answers this tile.
+    return _silent_stream_probe(facts, ("premiumIndex", "markPrice"), "mark price")
 
 
 def probe_gap_detection(facts: SystemFacts) -> ProbeResult:

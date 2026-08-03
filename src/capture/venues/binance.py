@@ -1,10 +1,11 @@
 """Binance USDs-M perpetual futures. Spot is deliberately not captured - see spec 11 Q4."""
 from __future__ import annotations
 
-from capture.venues import ExtractedMeta, StreamSpec
+from capture.venues import ExtractedMeta, PollSpec, StreamSpec
 
 _WS_BASE = "wss://fstream.binance.com/stream?streams="
 _INSTRUMENTS_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+_PREMIUM_INDEX_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
 
 # `trade` rather than `aggTrade`, decided 2026-08-02 from live measurement:
 # aggTrade delivers nothing at all to this host over the websocket (0 frames in
@@ -12,8 +13,28 @@ _INSTRUMENTS_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 # returns data - so the venue has it and a subset of websocket streams is
 # silent). `trade` works, and it carries individual trades rather than
 # aggregated ones, which is strictly more raw and the better fit for this layer.
-_CORE_CHANNELS = ["depth@100ms", "trade", "markPrice@1s", "forceOrder"]
-_TAIL_CHANNELS = ["trade", "markPrice@1s", "forceOrder"]
+# `markPrice@1s` was subscribed here until 2026-08-03 and removed after
+# measurement, not suspicion. From this host, across three separate fstream edge
+# IPs, it delivered zero frames in 35s while `trade` delivered 2001 on the same
+# sockets - and so did `!markPrice@arr@1s`, which Binance guarantees at 1 Hz.
+# The name is right (it matches Binance's own connector), the venue has the data
+# (REST /fapi/v1/premiumIndex returns it), and COIN-M pushes the identical
+# stream type normally. The feed now comes from `poll_specs` instead. Leaving
+# the subscription in place would report it silent forever and bury the source
+# that actually works.
+#
+# `forceOrder` stays, and the difference is deliberate: it is equally silent,
+# but `allForceOrders` was withdrawn from the public REST API, so there is no
+# replacement to move it to. An idle subscription costs nothing and is the only
+# way this system would notice the venue starting to deliver liquidations. Until
+# it does, the feed is genuinely unavailable and its tile is genuinely red.
+_CORE_CHANNELS = ["depth@100ms", "trade", "forceOrder"]
+_TAIL_CHANNELS = ["trade", "forceOrder"]
+
+# Sampled once a second. Request weight is 1 per symbol against a 2400/minute
+# budget, so three symbols spend 180/minute - the cadence is limited by what is
+# worth storing, not by the venue's ceiling.
+_POLL_STREAM = "premiumIndex"
 
 # The stream name each event routes to. It must equal the `stream` on the
 # StreamSpec that subscribed to it (`channel.split("@")[0]`), or one logical
@@ -44,6 +65,20 @@ class BinanceVenue:
     def tail_specs(self, symbols: list[str]) -> list[StreamSpec]:
         return self._specs(symbols, _TAIL_CHANNELS)
 
+    def poll_specs(self, symbols: list[str]) -> list[PollSpec]:
+        """The feeds this venue will not push, fetched one symbol at a time.
+
+        Per-symbol rather than the all-market form: omitting `symbol` returns
+        every perpetual on the venue at request weight 10, and writing several
+        hundred instruments to disk in order to read three of them is not a raw
+        archive of what was asked for.
+        """
+        return [
+            PollSpec(self.name, _POLL_STREAM, symbol,
+                     f"{_PREMIUM_INDEX_URL}?symbol={symbol}")
+            for symbol in symbols
+        ]
+
     def ws_url(self, specs: list[StreamSpec]) -> str:
         return _WS_BASE + "/".join(spec.channel for spec in specs)
 
@@ -60,6 +95,15 @@ class BinanceVenue:
 
         event = body.get("e")
         if not isinstance(event, str):
+            # A REST body has no event field - it is a bare object, not a
+            # wrapped stream frame. `premiumIndex` is recognised by the fields
+            # it is fetched for, so a polled response is routed as data rather
+            # than dismissed as an unknown control frame.
+            if isinstance(body.get("markPrice"), str) and isinstance(body.get("symbol"), str):
+                t_poll_ms = body.get("time")
+                return ExtractedMeta(
+                    t_poll_ms if isinstance(t_poll_ms, int) else None,
+                    None, "data", _POLL_STREAM, body["symbol"])
             return ExtractedMeta(None, None, "control", "unknown", "unknown")
 
         seq = None

@@ -339,7 +339,7 @@ async def test_a_subscribed_stream_that_never_speaks_reaches_the_ledger(tmp_path
     2026-08-02: Binance delivered depth and nothing else, and only the frames
     that did arrive left any trace at all."""
     venue = BinanceVenue()
-    specs = venue.core_specs(["BTCUSDT"])      # depth, trade, markPrice, forceOrder
+    specs = venue.core_specs(["BTCUSDT"])      # depth, trade, forceOrder
     rec = VenueRecorder(venue, specs, tmp_path, silence_grace_seconds=60,
                         clock_ns=clock_advancing_by(1785648600_000_000_000,
                                                     40_000_000_000))
@@ -352,7 +352,7 @@ async def test_a_subscribed_stream_that_never_speaks_reaches_the_ledger(tmp_path
     ]))
 
     events = silent_stream_events(tmp_path)
-    assert {e.stream for e in events} == {"trade", "markPrice", "forceOrder"}
+    assert {e.stream for e in events} == {"trade", "forceOrder"}
     assert all(e.severity == SEVERITY_OBSERVATION_LOSS for e in events)
     assert all(e.detail["symbol"] == "BTCUSDT" for e in events)
     assert all(e.detail["frames_received"] == 0 for e in events)
@@ -389,7 +389,7 @@ async def test_a_venue_that_sends_nothing_at_all_is_still_recorded(tmp_path: Pat
     await rec.consume(_frames([]))
 
     assert {e.stream for e in silent_stream_events(tmp_path)} == {
-        "depth", "trade", "markPrice", "forceOrder"}
+        "depth", "trade", "forceOrder"}
 
 
 @pytest.mark.asyncio
@@ -406,7 +406,7 @@ async def test_silence_is_recorded_once_not_on_every_frame(tmp_path: Path):
     await rec.consume(_frames([_depth_frame("BTCUSDT", n) for n in range(1, 6)]))
     rec.close()
 
-    assert len(silent_stream_events(tmp_path)) == 3
+    assert len(silent_stream_events(tmp_path)) == 2
 
 
 @pytest.mark.asyncio
@@ -429,7 +429,7 @@ async def test_silence_is_reported_during_the_run_not_only_at_shutdown(tmp_path:
 
     await rec.consume(frames_and_a_look_at_the_ledger())
 
-    assert {e.stream for e in recorded_mid_run} == {"trade", "markPrice", "forceOrder"}
+    assert {e.stream for e in recorded_mid_run} == {"trade", "forceOrder"}
 
 
 def gap_events(root: Path) -> list:
@@ -848,8 +848,8 @@ def silent_streams_on(root: Path, date: str) -> list:
     return [e for e in read_all(root, "binance", date) if e.kind == "silent_stream"]
 
 
-def a_four_day_session_with_three_dead_streams(root: Path):
-    """depth speaks every 6h for four UTC days; the other three never speak."""
+def a_four_day_session_with_two_dead_streams(root: Path):
+    """depth speaks every 6h for four UTC days; the other two never speak."""
     venue = BinanceVenue()
     start = 1785648600_000_000_000                      # 2026-08-02T05:30:00Z
     ticks = [start + i * 6 * 3600 * 10**9 for i in range(16)]
@@ -876,23 +876,23 @@ async def test_a_stream_still_dead_the_next_day_is_reported_again(tmp_path: Path
     is exactly the granularity the report reads at - one event per stream per
     day, not one per frame.
     """
-    rec, frames = a_four_day_session_with_three_dead_streams(tmp_path)
+    rec, frames = a_four_day_session_with_two_dead_streams(tmp_path)
     await rec.consume(_frames(frames))
 
     for date in FOUR_DAYS:
         assert {e.stream for e in silent_streams_on(tmp_path, date)} == {
-            "trade", "markPrice", "forceOrder"}, f"{date} reported a clean venue"
+            "trade", "forceOrder"}, f"{date} reported a clean venue"
 
 
 @pytest.mark.asyncio
 async def test_a_dead_stream_is_reported_once_a_day_not_once_a_frame(tmp_path: Path):
     """Re-arming per day must not become re-arming per frame: an event per frame
     drowns the ledger in the anomaly it exists to surface."""
-    rec, frames = a_four_day_session_with_three_dead_streams(tmp_path)
+    rec, frames = a_four_day_session_with_two_dead_streams(tmp_path)
     await rec.consume(_frames(frames))
 
     for date in FOUR_DAYS:
-        assert len(silent_streams_on(tmp_path, date)) == 3, date
+        assert len(silent_streams_on(tmp_path, date)) == 2, date
 
 
 @pytest.mark.asyncio
@@ -928,14 +928,14 @@ async def test_the_health_report_still_sees_the_dead_streams_days_later(
     """
     from capture.capture_health import build_report, write_alerts
 
-    rec, frames = a_four_day_session_with_three_dead_streams(tmp_path)
+    rec, frames = a_four_day_session_with_two_dead_streams(tmp_path)
     await rec.consume(_frames(frames))
 
     for date in FOUR_DAYS:
         report = build_report(tmp_path, "binance", date,
                               free_bytes=10**12, daily_bytes=1.0)
-        assert report["silent_streams"] == 3, date
-        assert report["silent_stream_names"] == ["forceOrder", "markPrice", "trade"]
+        assert report["silent_streams"] == 2, date
+        assert report["silent_stream_names"] == ["forceOrder", "trade"]
         # Only depth wrote bytes, so the venue-day total alone says "present".
         assert list(report["raw_bytes_by_stream"]) == ["depth_BTCUSDT"]
         assert write_alerts(tmp_path, report) >= 1, f"{date} raised no alert"
