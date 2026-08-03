@@ -153,6 +153,51 @@ def test_building_twice_from_identical_input_is_refused(tmp_path, monkeypatch):
         build()
 
 
+def test_rebuilding_a_day_after_more_next_day_trades_land_is_still_refused(tmp_path):
+    """The build's identity is the day it builds, not the lookahead it consulted.
+
+    Digesting the lookahead files into the snapshot id makes the id move whenever
+    the NEXT day's folder grows - which it does continuously while capture runs.
+    A rebuild of an unchanged day then computes a fresh id, sails past
+    `append_partition`'s collision check and appends a duplicate part. Rows stay
+    correct only because the reader de-duplicates; the guard against accidental
+    re-runs is gone and parts accumulate on every run.
+    """
+    from capture.raw_writer import RawWriter
+    from store.parquet_partition import PartitionExistsError
+
+    day_d, day_d1 = "2026-08-02", "2026-08-03"
+    d1_midnight = _midnight_ns(day_d1)
+    last_minute = d1_midnight - MINUTE_NS
+
+    writer = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    writer.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, last_minute + SECOND_NS),
+                  last_minute + 2 * SECOND_NS, (last_minute + SECOND_NS) // 1_000_000, None)
+    writer.append(_binance_trade_frame("BTCUSDT", 200.0, 2.0, d1_midnight + SECOND_NS),
+                  d1_midnight + 2 * SECOND_NS, (d1_midnight + SECOND_NS) // 1_000_000, None)
+    writer.close()
+
+    build = lambda: build_bars_for_day(
+        capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+        date=day_d, symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
+
+    first = build()
+    day_d_hour = (tmp_path / "raw" / "binance" / day_d /
+                  f"trade_BTCUSDT_{day_d}T23.ndjson.zst")
+    day_d_bytes = day_d_hour.read_bytes()
+
+    later = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    later.append(_binance_trade_frame("BTCUSDT", 300.0, 3.0, d1_midnight + 30 * SECOND_NS),
+                 d1_midnight + 31 * SECOND_NS,
+                 (d1_midnight + 30 * SECOND_NS) // 1_000_000, None)
+    later.close()
+
+    assert day_d_hour.read_bytes() == day_d_bytes, "day D's own bytes were touched"
+    with pytest.raises(PartitionExistsError):
+        build()
+    assert first["snapshot_id"] is not None
+
+
 def test_requesting_a_symbol_absent_from_an_existing_capture_raises(tmp_path):
     """A typo or the wrong stream name must be loud, not a silently smaller store.
 

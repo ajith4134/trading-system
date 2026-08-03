@@ -208,7 +208,9 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
 
     start_ns, end_ns = _day_bounds_ns(date)
     trades: list[Trade] = []
-    sources: list[Path] = []
+    # Only the day's OWN files, never the lookahead ones - see the snapshot id
+    # computation below for why the distinction is load-bearing.
+    day_sources: list[Path] = []
     frames = 0
     # Both counted and returned because this module's rule is that nothing is
     # dropped silently. A trade discarded as another day's is correct behaviour,
@@ -234,7 +236,8 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
             capture_root, venue, date, stream, symbol, lookahead_hours)
         lookahead_files += len(ahead)
         lookahead_files_skipped_live.extend(skipped_live)
-        for raw_path in symbol_files[symbol] + ahead:
+        own_files = symbol_files[symbol]
+        for raw_path in own_files + ahead:
             idx_path = _index_path_for(raw_path)
             for payload, entry in read_pair(raw_path, idx_path):
                 frames += 1
@@ -248,7 +251,8 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
                         symbol_trades += 1
                     else:
                         trades_outside_day += 1
-            sources.extend([raw_path, idx_path])
+            if raw_path in own_files:
+                day_sources.extend([raw_path, idx_path])
         by_symbol[symbol] = {"frames": symbol_frames, "trades": symbol_trades}
 
     if not trades:
@@ -266,7 +270,16 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
             f"{int(stray.iloc[0][EVENT_TIME])}, day is [{start_ns}, {end_ns})); "
             f"storing them would let two builds emit the same (symbol, venue, "
             f"event_time) and one replace the other")
-    snapshot_id = compute_snapshot_id(sources)
+    # Digested over the day's OWN files alone. The lookahead decides WHICH trades
+    # are selected, but the identity of the build is the day it builds: with the
+    # lookahead files in the digest, the id moved every time the next day's folder
+    # grew - which it does continuously while capture runs - so a rebuild of an
+    # unchanged day computed a fresh id, sailed past `append_partition`'s
+    # collision check and appended a duplicate part. Rows survived only because
+    # the reader de-duplicates, while the guard against an accidental re-run was
+    # gone and parts accumulated on every run. A rebuild of the same day must
+    # collide; that refusal IS the append-only guarantee working.
+    snapshot_id = compute_snapshot_id(day_sources)
     append_partition(store_root, f"bars_{interval_ns}ns", bars, snapshot_id)
     return {"frames": frames, "trades": len(trades), "bars": len(bars),
             "snapshot_id": snapshot_id, "by_symbol": by_symbol,
