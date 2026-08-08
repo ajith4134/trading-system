@@ -1,7 +1,9 @@
 import time
 from pathlib import Path
 import pytest
-from capture.raw_writer import RawWriter, read_pair, hour_key, paths_for, PairLengthMismatch
+from capture.raw_writer import (
+    PairLengthMismatch, RawWriter, hour_key, is_hour_being_written, paths_for, read_pair,
+)
 
 
 def test_hour_key_is_utc(monkeypatch):
@@ -224,3 +226,67 @@ def test_frame_after_a_failed_idx_write_keeps_its_own_receipt_time(tmp_path: Pat
     assert pairs[2][1].kind == "data"
     assert pairs[2][1].t_recv_ns == base + 2
     assert pairs[2][1].seq == {"id": 2}
+
+
+def test_an_hour_that_has_ended_is_closed_without_waiting_for_the_next_frame(tmp_path: Path):
+    """A thin symbol must not hold a finished hour open until it trades again.
+
+    Rotation lives in `append`, so an hour is finalised only when the NEXT frame
+    for that same (stream, symbol) arrives. Measured on the live archive
+    2026-08-08 at 17:28: 117 binance-spot files, 1 binance and 2 hyperliquid were
+    still held open on hours that had already ended - `trade_ARBIDR_2026-08-08T11`
+    among them, six and a half hours after hour 11 closed, sitting at **zero
+    bytes on disk** with its trades still inside the zstd compressor.
+
+    That is not merely late: `read_pair` returned 0 frames for it and raised
+    nothing, so a build of that day reads the hour as an empty market and records
+    the result as complete. `is_hour_being_written` says True the whole time, and
+    nothing was asking.
+
+    So the venue clock, which ticks on every other symbol's frames, has to be
+    able to close it. One frame in a later hour is proof the earlier hour is over.
+    """
+    w = RawWriter(tmp_path, "binance-spot", "trade", "ARBIDR")
+    in_hour_11 = 1785668400_000_000_000                 # 2026-08-02T11:00:00Z
+    in_hour_17 = in_hour_11 + 6 * 3_600_000_000_000     # six hours later
+    w.append('{"t":"the only trade of hour 11"}', t_recv_ns=in_hour_11,
+             t_exch_ms=None, seq=None)
+
+    raw, idx = paths_for(tmp_path, "binance-spot", "trade", "ARBIDR", "2026-08-02T11")
+    assert is_hour_being_written(raw)[0] is True, "the writer should hold it open here"
+
+    # The venue clock reaches a later hour. This symbol has sent nothing since.
+    closed = w.close_if_hour_ended(in_hour_17)
+
+    assert closed is True
+    assert is_hour_being_written(raw)[0] is False, "the claim must be released"
+    assert raw.stat().st_size > 0, "the buffered frame must be on disk, not in memory"
+    assert [payload for payload, _ in read_pair(raw, idx)] == [
+        '{"t":"the only trade of hour 11"}']
+
+
+def test_closing_an_ended_hour_does_not_reopen_it_or_touch_a_live_one(tmp_path: Path):
+    """Two refusals: no new file for the ended hour, and the current hour is left alone.
+
+    A sweep that closed the hour and then reopened it would leave the claim held
+    and the bytes buffered again, which is the bug wearing a fix. And a sweep that
+    closed a writer already on the current hour would emit a zstd frame boundary
+    per frame across every writer - fragmenting the archive it is meant to settle.
+    """
+    w = RawWriter(tmp_path, "binance-spot", "trade", "THINUSDC")
+    in_hour_11 = 1785668400_000_000_000
+    in_hour_12 = in_hour_11 + 3_600_000_000_000
+    w.append('{"n":1}', t_recv_ns=in_hour_11, t_exch_ms=None, seq=None)
+
+    assert w.close_if_hour_ended(in_hour_12) is True
+    # Idempotent: nothing is open now, so a second sweep is not a second close.
+    assert w.close_if_hour_ended(in_hour_12) is False
+
+    raw_12, _ = paths_for(tmp_path, "binance-spot", "trade", "THINUSDC", "2026-08-02T12")
+    assert not raw_12.exists(), "closing hour 11 must not create hour 12"
+
+    # Now live in hour 12, and a sweep at hour 12 must be a no-op.
+    w.append('{"n":2}', t_recv_ns=in_hour_12, t_exch_ms=None, seq=None)
+    assert w.close_if_hour_ended(in_hour_12) is False
+    assert is_hour_being_written(raw_12)[0] is True
+    w.close()

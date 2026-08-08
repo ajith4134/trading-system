@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from capture.raw_writer import RawWriter, paths_for
 from store.cli import build_bars_for_day
 
 MINUTE_NS = 60_000_000_000
@@ -922,3 +923,97 @@ def test_all_builds_every_captured_symbol_without_being_told_their_names(tmp_pat
     assert code == 0
     dataset = tmp_path / "store" / "bars_60000000000ns"
     assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+
+
+def test_a_live_hour_in_the_days_own_folder_is_skipped_and_named_not_read_empty(tmp_path):
+    """The documented "hard failure" on the day's own live hour does not fire.
+
+    This module's docstring says a live hour in the day being built is a hard
+    failure, on the reasoning that `read_pair` refuses a torn zstd frame. Measured
+    on the live archive 2026-08-08: it does not. A thin pair's hour file sits at
+    **zero bytes** while its trades wait inside the compressor, and zero bytes is
+    an empty stream rather than a torn one - `read_pair` returned 0 frames for
+    `trade_ARBIDR_2026-08-08T11.ndjson.zst` and raised nothing, six and a half
+    hours after that hour ended. A captured hour read as a market with no trades,
+    recorded as a complete build.
+
+    So the claim is checked directly instead of being inferred from a decompressor
+    error, and the response is the one the lookahead path already uses: skip, name
+    the file, and fold the name into the snapshot id so the rebuild once it closes
+    is a new snapshot rather than a refused duplicate. A hard failure would be
+    worse than the bug - one thin symbol would cost the other 2,000 their bars.
+    """
+    from capture.raw_writer import RawWriter, is_hour_being_written, read_pair
+
+    day = "2026-08-02"
+    midnight = _midnight_ns(day)
+
+    settled = RawWriter(tmp_path, "binance", "trade", "BTCUSDT")
+    event_ns = midnight + SECOND_NS
+    settled.append(_binance_trade_frame("BTCUSDT", 100.0, 1.0, event_ns),
+                   event_ns + 1_000_000, event_ns // 1_000_000, None)
+    settled.close()
+
+    # A second symbol whose hour is still claimed, in the SAME day being built.
+    thin = RawWriter(tmp_path, "binance", "trade", "THINUSDT")
+    try:
+        thin_event_ns = midnight + 2 * SECOND_NS
+        thin.append(_binance_trade_frame("THINUSDT", 5.0, 1.0, thin_event_ns),
+                    thin_event_ns + 1_000_000, thin_event_ns // 1_000_000, None)
+        thin_raw, thin_idx = paths_for(
+            tmp_path, "binance", "trade", "THINUSDT", f"{day}T00")
+
+        # The premise, asserted rather than assumed: claimed, and readable as
+        # nothing at all rather than as an error.
+        assert is_hour_being_written(thin_raw)[0] is True
+        assert thin_raw.stat().st_size == 0
+        assert list(read_pair(thin_raw, thin_idx)) == []
+
+        summary = build_bars_for_day(
+            capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+            date=day, symbols=["BTCUSDT", "THINUSDT"], interval_ns=MINUTE_NS)
+    finally:
+        thin.close()
+
+    assert [Path(p).name for p in summary["day_files_skipped_live"]] == [
+        f"trade_THINUSDT_{day}T00.ndjson.zst"], (
+        "an unread hour of the day being built that nothing reports is silent loss")
+    # The other symbol still builds. One claimed hour must not cost the rest.
+    assert summary["bars"] == 1
+    assert summary["by_symbol"]["THINUSDT"] == {"frames": 0, "trades": 0}
+
+
+def test_the_rebuild_after_a_live_day_hour_closes_is_a_new_snapshot(tmp_path):
+    """Skipping is only safe if the completed hour can still be built later.
+
+    The skipped name is folded into the snapshot id, so the rebuild once the writer
+    releases the hour computes a different id and appends rather than colliding.
+    Without that, the incomplete build would be permanent in a store with no
+    delete path - the same reasoning `compute_snapshot_id` already documents for
+    skipped lookahead hours.
+    """
+    day = "2026-08-02"
+    midnight = _midnight_ns(day)
+
+    thin = RawWriter(tmp_path, "binance", "trade", "THINUSDT")
+    thin_event_ns = midnight + SECOND_NS
+    thin.append(_binance_trade_frame("THINUSDT", 5.0, 1.0, thin_event_ns),
+                thin_event_ns + 1_000_000, thin_event_ns // 1_000_000, None)
+
+    skipped = build_bars_for_day(
+        capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+        date=day, symbols=["THINUSDT"], interval_ns=MINUTE_NS)
+    assert skipped["bars"] == 0
+    assert len(skipped["day_files_skipped_live"]) == 1
+
+    # The venue clock moves on and the writer settles the hour.
+    thin.close()
+
+    complete = build_bars_for_day(
+        capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+        date=day, symbols=["THINUSDT"], interval_ns=MINUTE_NS)
+
+    assert complete["day_files_skipped_live"] == []
+    assert complete["bars"] == 1
+    assert complete["snapshot_id"] != skipped["snapshot_id"], (
+        "the rebuild must not be refused as a duplicate of the incomplete build")

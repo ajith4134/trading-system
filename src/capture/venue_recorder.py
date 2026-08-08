@@ -421,6 +421,36 @@ class VenueRecorder:
                         "threshold_seconds": round(threshold_ns / 1e9, 3)},
             ))
 
+    def _settle_writers_whose_hour_ended(self, now_ns: int) -> None:
+        """Finish every hour file whose hour is over, on behalf of a quiet symbol.
+
+        The same argument as `_record_silent_streams`, one layer down: nothing
+        frame-driven can catch this, because the symbol holding the stale hour open
+        is precisely the one sending no frames. `RawWriter.append` rotates only
+        when that symbol speaks again, so a thin pair's completed hour stays open -
+        claimed by its `.writing` marker, with its last frames inside the zstd
+        compressor and, at worst, nothing at all on disk.
+
+        Measured on the live archive 2026-08-08 at 17:28, three venues captured
+        broad: 117 binance-spot hour files, 1 binance and 2 hyperliquid were still
+        held open on hours that had already ended.
+        `trade_ARBIDR_2026-08-08T11.ndjson.zst` was **0 bytes** six and a half
+        hours after hour 11 closed, and `read_pair` returned zero frames for it
+        without raising - so a build of that day reads a captured hour as a market
+        with no trades and records the result as complete. The loss is silent at
+        every layer that could have noticed.
+
+        Driven by the arriving frame's own receive time, the same clock `append`
+        keys the hour on. No wall clock enters this path, so a replayed stream
+        still produces byte-identical files.
+
+        Cost is an attribute compare per writer per frame, and a close only on the
+        hour boundary. `_record_silent_streams` above already walks every expected
+        stream on every frame, so the sweep is cheaper than the check beside it.
+        """
+        for writer in self._writers.values():
+            writer.close_if_hour_ended(now_ns)
+
     def _record_gap(self, stream: str, symbol: str, report, t_recv_ns: int) -> None:
         self._ledger.record(LedgerEvent(
             ts_ns=t_recv_ns, venue=self._venue.name, stream=stream,
@@ -452,6 +482,7 @@ class VenueRecorder:
                 # frame is this one has already been counted as having spoken,
                 # so it cannot be reported silent in the same breath.
                 self._record_silent_streams(t_recv_ns)
+                self._settle_writers_whose_hour_ended(t_recv_ns)
         finally:
             self.close()
 

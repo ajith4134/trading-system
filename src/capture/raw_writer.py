@@ -541,6 +541,31 @@ class RawWriter:
         self._flush_if_interval_elapsed(t_recv_ns)
         return entry.n
 
+    def close_if_hour_ended(self, now_ns: int) -> bool:
+        """Finish the open hour if `now_ns` has moved past it. Returns whether it did.
+
+        Rotation in `append` is not enough on its own, because it only runs when a
+        frame arrives for THIS (stream, symbol). A thin pair's hour therefore stays
+        open until it trades again, and until then its last frames sit inside the
+        zstd compressor with nothing on disk. Measured on the live archive
+        2026-08-08 at 17:28: 117 binance-spot hour files were still held open on
+        hours that had ended, `trade_ARBIDR_2026-08-08T11` among them at zero bytes
+        six and a half hours late - and `read_pair` returned zero frames for it
+        without raising, so a build reads a captured hour as an empty market.
+
+        `now_ns` is the same receive clock `append` keys the hour on, passed in by
+        the caller rather than read here: a frame arriving in a later hour is proof
+        the earlier one is over, and it keeps this path free of a wall clock so a
+        replayed stream still produces byte-identical files.
+
+        Only closes; never opens. The next `append` opens whatever hour its own
+        timestamp names, which is the one place that decision belongs.
+        """
+        if self._hour is None or self._hour == hour_key(now_ns):
+            return False
+        self.close()
+        return True
+
     def _flush_if_interval_elapsed(self, t_recv_ns: int) -> None:
         """Close the zstd frame once `flush_interval_seconds` of stream time passed.
 

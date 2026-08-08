@@ -1102,3 +1102,55 @@ async def test_a_polled_frame_is_routed_by_the_spec_that_requested_it(tmp_path: 
     names = [p.name for p in (tmp_path / "raw" / "binance" / "2026-08-02").iterdir()]
     assert any(n.startswith("depthSnapshot_BTCUSDT_") for n in names), names
     assert not any("unknown" in n for n in names), names
+
+
+@pytest.mark.asyncio
+async def test_a_frame_in_a_later_hour_settles_every_writer_left_on_the_old_one(tmp_path: Path):
+    """One busy symbol's frame is what closes a thin symbol's finished hour.
+
+    `RawWriter.close_if_hour_ended` cannot help if nothing calls it - the exact
+    shape of `tail_specs`, built and tested and never run. The venue clock ticks
+    on every stream's frames, so the recorder is the only place that knows hour 11
+    is over on behalf of a symbol that has said nothing since.
+
+    Measured on the live archive 2026-08-08: 117 binance-spot hour files held open
+    past their hour, one of them six and a half hours late at zero bytes on disk.
+
+    Two symbols, one frame each an hour apart. When the busy one's hour-12 frame
+    arrives, the thin one's hour-11 file must be complete and unclaimed.
+    """
+    from capture.raw_writer import is_hour_being_written, paths_for, read_pair
+
+    venue = BinanceSpotVenue()
+    specs = venue.tail_specs(["THINUSDC", "BUSYUSDT"])
+    in_hour_11 = 1785668400_000_000_000
+    in_hour_12 = in_hour_11 + 3_600_000_000_000
+    clock = {"now": in_hour_11}
+    rec = VenueRecorder(venue, specs, tmp_path, clock_ns=lambda: clock["now"])
+
+    def trade(symbol):
+        return json.dumps({"stream": f"{symbol.lower()}@trade", "data": {
+            "e": "trade", "E": 1785668400000, "s": symbol,
+            "p": "1.0", "q": "1.0", "T": 1785668400000}})
+
+    thin_raw, thin_idx = paths_for(
+        tmp_path, "binance-spot", "trade", "THINUSDC", "2026-08-02T11")
+
+    # Asserted from INSIDE the stream, not after it. `consume` closes every writer
+    # in a `finally`, so a check after it returns passes whether the sweep exists
+    # or not - this test did exactly that at first and passed against no fix at
+    # all. Resuming the generator is the one moment the hour-12 frame is routed
+    # and the recorder is still running.
+    async def two_frames_an_hour_apart():
+        yield trade("THINUSDC")
+        clock["now"] = in_hour_12          # the venue clock moves on
+        assert is_hour_being_written(thin_raw)[0] is True, "still open before the next frame"
+        yield trade("BUSYUSDT")
+        assert is_hour_being_written(thin_raw)[0] is False, (
+            "a frame in hour 12 must have settled hour 11 while capture is still running")
+        assert thin_raw.stat().st_size > 0, "hour 11's frame must be on disk, not buffered"
+        assert [p for p, _ in read_pair(thin_raw, thin_idx)] == [trade("THINUSDC")]
+
+    await rec.consume(two_frames_an_hour_apart())
+
+    assert rec.stats()["written"] == 2

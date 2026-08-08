@@ -19,15 +19,25 @@ therefore reads a bounded lookahead into the next day's folder and keeps only
 the trades whose event time falls inside the day being built, which makes every
 day's output complete and non-overlapping in event time.
 
-The lookahead skips a next-day hour a live capture writer still holds open. That
-refusal above is right for a CLOSED hour and wrong for one still being appended
-to, and applying it there aborted the build of yesterday - the module's normal
-operating configuration - over a file the operator never asked for. A skipped
-hour is named in the snapshot id, because a build that skipped one is missing
-exactly the late trades the lookahead exists to rescue and is therefore not the
-same build as one that read everything. Naming it there is what lets the rebuild,
-once the hour closes, append the complete bar instead of being refused as a
-duplicate of the incomplete one.
+Any hour a live capture writer still holds open is skipped, in the next day's
+folder and in the day's own. That refusal above is right for a CLOSED hour and
+wrong for one still being appended to, and applying it to the lookahead aborted
+the build of yesterday - the module's normal operating configuration - over a
+file the operator never asked for. A skipped hour is named in the snapshot id,
+because a build that skipped one is missing trades and is therefore not the same
+build as one that read everything. Naming it there is what lets the rebuild, once
+the hour closes, append the complete bar instead of being refused as a duplicate
+of the incomplete one.
+
+The day's own hours were exempt from that check until 2026-08-08, on the belief
+that the refusal above would catch them. It does not, and the belief was
+load-bearing: `RawWriter` rotates inside `append`, so a thin pair's finished hour
+stays claimed until it trades again, and its file can hold ZERO bytes with every
+frame still inside the compressor. Zero bytes is an empty stream, not a torn one,
+so `read_pair` returns no frames and raises nothing. Measured that day at 17:28,
+117 binance-spot hour files were claimed past their hour;
+`trade_ARBIDR_2026-08-08T11.ndjson.zst` was empty six and a half hours late and
+read as a market with no trades, in a build that reported success.
 
 Nothing discarded is left unaccounted for. A trade whose event time falls after
 the day is deferred to that day's own build; one from before the day is
@@ -400,11 +410,29 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     far is only a few extra files, while reading too little silently loses the
     tail of the day's last bar.
 
-    A lookahead hour a live writer still holds open is skipped and reported
-    (`lookahead_files_skipped_live`) rather than read; a live hour in the day's
-    OWN folder is still a hard failure. See `_lookahead_hour_files`. Every skipped
-    hour is named in `snapshot_id`, so rebuilding the day once those hours close
-    is a new snapshot rather than a refused duplicate.
+    A live hour is skipped and reported rather than read, in the lookahead
+    (`lookahead_files_skipped_live`) and in the day's OWN folder
+    (`day_files_skipped_live`) alike. Every skipped hour is named in `snapshot_id`,
+    so rebuilding the day once those hours close is a new snapshot rather than a
+    refused duplicate.
+
+    This docstring used to say a live hour in the day's own folder was a hard
+    failure, on the reasoning that `read_pair` refuses a torn zstd frame. Measured
+    2026-08-08, it does not: rotation happens inside `RawWriter.append`, so a thin
+    pair's finished hour stays claimed until it trades again, and its file can sit
+    at ZERO bytes with every frame still inside the compressor. Zero bytes is an
+    empty stream, not a torn one - `read_pair` returned 0 frames for
+    `trade_ARBIDR_2026-08-08T11.ndjson.zst` and raised nothing, six and a half
+    hours after hour 11 ended, while 116 other spot files were in the same state.
+    A captured hour read as a market with no trades and the build reported
+    complete. The claim is now checked directly instead of being inferred from a
+    decompressor error.
+
+    Skipped rather than raised, deliberately, even though the old docstring
+    promised a failure: one claimed hour would otherwise cost the other 2,000
+    symbols in the batch their bars, and the writer that holds it may not release
+    it for hours. The trades are not lost - they are in the file, the file is named
+    in this summary and in the snapshot id, and the next pass builds them.
 
     Discarded trades are reported three ways - `trades_deferred_to_next_day`,
     `trades_covered_by_previous_day`, `trades_stranded` - because only the last
@@ -434,6 +462,19 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
             raise NoHourFilesForSymbol(
                 f"no {stream!r} hour files under {day_folder} for symbol(s) {missing} "
                 f"(venue={venue!r}, date={date!r}); check for a typo or the wrong stream name")
+
+    # AFTER the missing-symbol check, never before. A symbol whose only hour is
+    # still claimed HAS a file; folding it in with the typos would turn a writer
+    # that has not flushed yet into "check for a typo".
+    day_files_skipped_live: list[Path] = []
+    for symbol, files in symbol_files.items():
+        readable = []
+        for raw_path in files:
+            if is_hour_being_written(raw_path)[0]:
+                day_files_skipped_live.append(raw_path)
+            else:
+                readable.append(raw_path)
+        symbol_files[symbol] = readable
 
     start_ns, end_ns = _day_bounds_ns(date)
     trades: list[Trade] = []
@@ -505,8 +546,14 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # 27.7s against 27.6s for the original, which on an hourly supervisor over 569
     # symbols is ~34 minutes of parsing per hour to rediscover "already built".
     # The refusal is unchanged; only its cost moves.
+    # Both kinds of skipped hour, by name and never by content - see
+    # `compute_snapshot_id`. A day's own claimed hour is exactly the case its
+    # docstring describes: bytes still changing, and the name is what says which
+    # input this result is missing, so the rebuild once the writer releases it is
+    # a new snapshot rather than a duplicate refused into permanence.
     snapshot_id = compute_snapshot_id(
-        day_sources, [path.name for path in lookahead_files_skipped_live])
+        day_sources,
+        [path.name for path in lookahead_files_skipped_live + day_files_skipped_live])
     _refuse_if_already_built(store_root, interval_ns, symbols, snapshot_id)
 
     for symbol in symbols:
@@ -541,6 +588,7 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
         "trades_stranded": len(stranded),
         "lookahead_files": lookahead_files,
         "lookahead_files_skipped_live": [str(path) for path in lookahead_files_skipped_live],
+        "day_files_skipped_live": [str(path) for path in day_files_skipped_live],
     }
 
     bars = build_bars(trades, interval_ns) if trades else None
@@ -682,6 +730,15 @@ def main(argv: list[str] | None = None) -> int:
     for skipped in summary["lookahead_files_skipped_live"]:
         print(f"  skipped lookahead hour (a writer still holds it open): {skipped}",
               file=sys.stderr)
+    # Named individually and counted on its own line, because this is the one the
+    # build is missing trades FROM. A skipped lookahead hour costs the tail of the
+    # last bar; a skipped hour of the day being built costs that whole hour for
+    # that symbol until a later pass, and a count with no names cannot be chased.
+    if summary["day_files_skipped_live"]:
+        print(f"  {len(summary['day_files_skipped_live'])} hour(s) of {args.date} "
+              f"itself were skipped, still claimed by a live writer:", file=sys.stderr)
+        for skipped in summary["day_files_skipped_live"]:
+            print(f"    {skipped}", file=sys.stderr)
     for symbol, counts in summary["by_symbol"].items():
         print(f"  {symbol}: {counts['frames']} frames -> {counts['trades']} trades",
               file=sys.stderr)
@@ -746,6 +803,8 @@ def _merge_summaries(summaries: Sequence[dict]) -> dict:
         "lookahead_files": sum(s["lookahead_files"] for s in summaries),
         "lookahead_files_skipped_live": [
             name for s in summaries for name in s["lookahead_files_skipped_live"]],
+        "day_files_skipped_live": [
+            name for s in summaries for name in s["day_files_skipped_live"]],
         "snapshot_id": [s["snapshot_id"] for s in summaries],
         "quarantine_file": [s["quarantine_file"] for s in summaries
                             if s.get("quarantine_file")] or None,
