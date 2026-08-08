@@ -763,6 +763,34 @@ script. Verified 2026-08-08: **0 completed files missing from the bucket.** Live
 per file via `RawWriter`'s own `.writing` marker, because copying a zstd frame mid-write produces a
 truncated archive that reads as complete.
 
+### 10.3c Fees dominate by ~1,300×, not 5-10× — measured 2026-08-08
+
+`ARCHITECTURE.md` Layer 1 argues that **fees dominate breakeven by roughly 5-10× over slippage**, and
+the whole Cost Engine exists on the strength of that claim. It is now measured on this project's own
+captured books, at 10:50 UTC on 2026-08-08:
+
+| Venue | Touch | Half-spread |
+|---|---|---|
+| Binance perp BTCUSDT | 64980.60 / 64980.70 | **0.0077 bps** |
+| Binance spot BTCUSDT | 65010.00 / 65010.01 | **0.0008 bps** |
+
+Against a **10 bps** taker round-trip fee, that is fees dominating by roughly **1,300×** on the perp
+and **12,000×** on spot — two to three orders of magnitude beyond the figure the argument was built
+on.
+
+**The direction of the claim is right and its magnitude was understated.** The practical consequence
+sharpens rather than changes: for a strategy trading liquid BTC at this account's clip sizes, spread
+is very nearly free and **the fee schedule is essentially the entire cost model.** Venue and fee-tier
+selection outrank every execution refinement by a wider margin than the design document assumed, and
+effort spent modelling slippage before fees are *verified* is effort spent on the smaller term by a
+factor of a thousand.
+
+Two caveats, both real. This is BTC, the most liquid instrument on either venue — the mid-tail
+symbols the §5a breadth engine is built for will be far wider, and this measurement says nothing
+about them. And impact behaves entirely differently at size: a $500k clip against 20 levels of
+Binance **spot** was refused outright, because the visible book could only fill $196,888. Spread is
+free; depth is not.
+
 ### 10.4 Capital feasibility gate
 
 Per-strategy minimum viable capital, checked against current NAV, families auto-enabled and
