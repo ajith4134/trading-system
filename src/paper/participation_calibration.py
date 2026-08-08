@@ -5,8 +5,9 @@ that fraction comes from, and the whole reason it exists is that the alternative
 is inventing one.
 
 Measured, or refused. There is no default: the archive holds depth for three
-symbols out of 2,123, and a fraction defaulted for the other 2,120 would be
-indistinguishable downstream from a fraction that was measured.
+instruments and trades for 746 the store can build (2,109 captured, but spot has
+no trade-stream mapping), so a fraction defaulted for the other 743 would be
+indistinguishable downstream from one that was measured.
 """
 import json
 from collections.abc import Sequence

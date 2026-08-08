@@ -28,7 +28,7 @@ SP-054 (paper-wallet fill fidelity — design-only in every prior repo, never bu
 
 | Question | Decision |
 |---|---|
-| What does it run on first? | **Tiered.** Discovery across all 2,123 symbols on top-of-book + the cost engine; finalists re-run on real 20-level depth (BTC/ETH/SOL). |
+| What does it run on first? | **Tiered.** Discovery across every symbol the tape can build — 746 today, see the tier section for why that is not the 2,123 captured — on top-of-book + the cost engine; finalists re-run on real 20-level depth (BTC/ETH/SOL). |
 | Replay or forward? | **Both.** On-demand replay over the bitemporal archive, plus a long-running forward supervisor alongside capture/store/offload. |
 | Maker fills, with no queue data? | **Score every strategy under both accountings.** Gate promotion on the pessimistic one; report the gap as a first-class output. |
 
@@ -40,8 +40,11 @@ all options to be thought through. Three flaws in the plain version, and their f
 2. **It still assumes you get all of that volume.** Others are in the queue. That needs a
    participation rate, and an invented rate is exactly what manufactures edge — so it is
    **calibrated from the depth archive** (resting size at the touch on BTC/ETH/SOL) and
-   carried as a receipted, declared number. One day of depth is thin; a measured starting
-   point with recorded provenance still beats a round number.
+   carried as a receipted, declared number. "One day of depth is thin" was itself too
+   generous: measured 2026-08-08, the archive holds **52 snapshots per symbol per venue
+   covering 10:07–10:59 UTC — 52 minutes, not a day**, at roughly a 30-second cadence. A
+   measured starting point with recorded provenance still beats a round number, and the
+   receipt carries `n_observations` precisely so nobody mistakes 52 minutes for a calibration.
 3. **The maker-or-taker choice is avoidable.** Score both. The gap between them *is* VX-012's
    "realized-vs-assumed fill gap" and VX-014's divergence signal. A strategy that survives
    only under optimistic fills is the single most important fact about it, and this makes it
@@ -123,14 +126,37 @@ never loads the rows it was refused.
 
 ## The two tiers, and what tier 1 honestly cannot do
 
-**Tier 1 — 2,123 symbols, since Aug 3.** Trades and book ticker, no depth. `impact_bps` in
-`src/cost/spread_and_depth.py` **refuses** rather than extrapolating, and
+**Tier 1 — 746 symbols today, from 2026-08-08 09:00 UTC.** Trades and book ticker, no depth.
+`impact_bps` in `src/cost/spread_and_depth.py` **refuses** rather than extrapolating, and
 `quote_round_trip_cost` returns `CostRefused` rather than a number. That behaviour is
 inherited, not re-implemented.
 
+Both of those numbers were wrong when this document was written, and the errors ran in the
+flattering direction — a wider universe over a longer history than exists. Corrected against
+the archive on 2026-08-08:
+
+| | captured | buildable into bars | note |
+|---|---|---|---|
+| binance perp | 569 | **569** | |
+| hyperliquid | 177 | **177** | |
+| binance spot | 1,363 | **0** | no entry in `_TRADE_STREAMS` (`src/store/cli.py`) — the builder cannot read this venue at all |
+| **total** | **2,109** | **746** | |
+
+**2,123 was a capture figure, not a discovery figure.** It counts symbols across three venues
+that the tape records; the spot majority cannot currently be built into bars, so discovery
+runs on 746. Either widen `_TRADE_STREAMS` to cover spot or say 746 — the number that must
+never appear again is the one that counts symbols nothing can read.
+
+**And the history is hours, not days.** Broad capture began at 09:00 UTC on 2026-08-08; every
+day before it holds three symbols per venue and no spot at all. "Since Aug 3" described a
+five-day tape that does not exist. Bars are also buildable only for closed days, so the first
+buildable broad-universe day is Aug 8, available on Aug 9.
+
 Consequence, stated plainly: **tier 1 cannot price impact.** So it refuses order sizes above a
 declared fraction of observed trade volume instead of pretending to fill them. Discovery at
-this tier answers "is there a signal at all", never "what would it have earned at size".
+this tier answers "is there a signal at all", never "what would it have earned at size" — and
+until the tape is long enough to hold a purged, embargoed split, it cannot honestly answer the
+first question either.
 
 **Tier 2 — BTC/ETH/SOL, depth archive.** Real 20-level depth, so impact is priced and the
 shadow stage's execution-quality metrics become measurable. Finalists only.
@@ -192,8 +218,22 @@ step toward placing an order — that remains an explicit, separately-authorised
    distribution measured before a fraction is picked.
 3. **Forward-supervisor cadence** — event-driven off the capture feed vs a fixed tick. Affects
    ops cost more than correctness.
+4. **Whether spot joins tier 1** — 1,363 captured symbols, none buildable, because
+   `_TRADE_STREAMS` in `src/store/cli.py` maps only `binance` and `hyperliquid`. Adding it is
+   a small change to that map plus whatever the spot trade frame's shape demands; the decision
+   is whether spot belongs in discovery at all, not whether it is possible.
+5. **Whether the supervisor builds the broad universe** — it currently builds three symbols per
+   venue. Measured 2026-08-08: 569 symbols cost 367s and 2.7 GB peak in batches of five for
+   five hours of tape, extrapolating to ~34 min for a full day, ~70 MB/day on disk. Feasible;
+   not yet switched on.
 
 ## Review checkpoint
 
 This document is the deliverable of the brainstorming phase. **Nothing is implemented.**
 Next step is the user's review of this design; code begins only after it.
+
+**Amended 2026-08-08**, after `fill_model` and `participation_calibration` were built: the
+tier-1 symbol count, the length of the trade history, and the size of the depth archive were
+all wrong here, and all three overstated what the archive holds. Corrections are in place above
+and marked as corrections rather than silently rewritten — a spec whose errors vanish teaches
+nothing about which claims to check next time. Nothing else in the design changed.
