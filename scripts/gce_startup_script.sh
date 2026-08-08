@@ -59,6 +59,15 @@ start_as_user "capture_supervisor.sh binance" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "store_supervisor.sh" \
   "cd ${REPO} && nohup scripts/store_supervisor.sh"
+# Retention for the local raw cache lives in a file, not here, so that changing
+# it does not require re-pasting this script into instance metadata. This only
+# creates the file if it is absent - an operator who has since changed the value,
+# or switched eviction off with a 0, keeps their setting across reboots.
+[ -e "${HOME_DIR}/capture/eviction-keep-days" ] || {
+  echo 7 > "${HOME_DIR}/capture/eviction-keep-days"
+  chown "${RUN_AS}:${RUN_AS}" "${HOME_DIR}/capture/eviction-keep-days"
+  log "seeded eviction-keep-days=7"
+}
 start_as_user "offload_supervisor.sh" \
   "cd ${REPO} && nohup scripts/offload_supervisor.sh gs://capture-raw-data4134"
 start_as_user "capture_supervisor.sh binance-spot" \

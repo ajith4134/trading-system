@@ -25,6 +25,28 @@ RUNS="$STATE_DIR/runs.ndjson"
 mkdir -p "$STATE_DIR"
 export PATH="/snap/bin:$PATH"
 
+# How many days of raw stay on local disk. Zero means eviction is off.
+#
+# Read from a file rather than only the environment, because the environment is
+# the thing that does not survive. A reboot, or anyone restarting this supervisor
+# by hand without re-exporting the variable, would silently stop evicting while
+# every log line still looked healthy - the same shape of silence that let the
+# bars dataset go five days stale.
+#
+# Read inside the loop, so changing the retention or switching eviction off takes
+# effect on the next pass without restarting anything.
+KEEP_DAYS_FILE="${KEEP_DAYS_FILE:-$CAPTURE_ROOT/eviction-keep-days}"
+
+keep_days() {
+  if [ -n "${KEEP_DAYS:-}" ]; then
+    printf '%s' "${KEEP_DAYS}"
+  elif [ -r "$KEEP_DAYS_FILE" ]; then
+    tr -dc '0-9' < "$KEEP_DAYS_FILE"
+  else
+    printf '0'
+  fi
+}
+
 trap 'exit 0' TERM INT
 
 while true; do
@@ -45,13 +67,14 @@ while true; do
   # than on its own timer is the point: the inventory it checks against is the
   # one this pass just finished writing.
   #
-  # KEEP_DAYS=0 disables it entirely, which is the default. Deleting the local
-  # copy of the archive is not something a supervisor should start doing because
-  # a script was updated - it is switched on deliberately, by setting the value.
-  if [ "$status" -eq 0 ] && [ "${KEEP_DAYS:-0}" -gt 0 ]; then
+  # Zero disables it entirely, which is the default with no file and no variable.
+  # Deleting the local copy of the archive is not something a supervisor should
+  # start doing because a script was updated - it is switched on deliberately.
+  keep="$(keep_days)"
+  if [ "$status" -eq 0 ] && [ "${keep:-0}" -gt 0 ] 2>/dev/null; then
     evicted=$(PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m ops.raw_eviction \
       --bucket "$BUCKET" --capture-root "$CAPTURE_ROOT" \
-      --keep-days "$KEEP_DAYS" --apply 2>>"$LOG")
+      --keep-days "$keep" --apply 2>>"$LOG")
     printf '{"ts":"%s","eviction":%s}\n' "$started" "${evicted:-null}" >> "$RUNS"
   fi
 
