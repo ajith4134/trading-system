@@ -15,6 +15,12 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-randomly>=3.15",
+    # Verification only, never imported by src/. `arch.bootstrap.SPA` is Hansen's
+    # reference implementation and is the only way to check our SPA p-value, which
+    # has no closed form. Declared so the cross-check does not silently vanish in a
+    # fresh environment - importorskip would turn a missing install into a quiet
+    # pass, which is the failure mode that module exists to reject.
+    "arch>=8.0",
 ]
 
 [build-system]
