@@ -110,8 +110,36 @@ _EXTRACTORS = {
 }
 
 
+def is_tradeable(trade: Trade) -> bool:
+    """Whether this row describes a transaction that actually happened.
+
+    Binance emits frames on its `trade` stream that are shaped like trades and are
+    not: price "0", quantity "0", `X` "NA". Captured verbatim from the live tape,
+    2026-08-03T18 on BTCUSDT, 60 of 17,227 frames in that hour. Layer 0 is right to
+    store them - it records what the venue said, never what we wish it had said -
+    and this is the layer that decides what they mean.
+
+    Measured damage before this existed: 746 of the real store's 1,671 bars carried
+    `low <= 0` - BTCUSDT 237 of 278, ETHUSDT 268 of 278, SOLUSDT 241 of 278, with 25
+    zero opens and 19 zero closes. Hyperliquid's 837 bars were clean, because only
+    this feed emits them. `low=("price", "min")` needs one zero to ruin a bar, and
+    the bar looks entirely normal otherwise: correct open, correct high, hundreds of
+    trades. It was found by a paper-plumbing run refusing to divide by a zero price,
+    not by anything watching the store.
+
+    A non-positive SIZE is refused on the same grounds: a fill of nothing is not a
+    fill, and it would inflate the trade count while contributing no volume.
+    """
+    return trade.price > 0 and trade.size > 0
+
+
 def extract_trades(payload: str, entry: IndexEntry, venue: str, symbol: str) -> list[Trade]:
-    """Trades carried by one captured frame. Raises on a venue with no extractor."""
+    """Trades carried by one captured frame. Raises on a venue with no extractor.
+
+    Rows the venue reported but which cannot be transactions are dropped here, by
+    `is_tradeable`, rather than in the aggregation - a zero that reaches `min()` is
+    already indistinguishable from a cheap fill.
+    """
     extractor = _EXTRACTORS.get(venue)
     if extractor is None:
         raise UnknownVenueFormat(
@@ -123,7 +151,8 @@ def extract_trades(payload: str, entry: IndexEntry, venue: str, symbol: str) -> 
         body = json.loads(payload)
     except json.JSONDecodeError:
         return []
-    return extractor(body, entry, symbol, venue)
+    return [trade for trade in extractor(body, entry, symbol, venue)
+            if is_tradeable(trade)]
 
 
 def build_bars(trades: Iterable[Trade], interval_ns: int) -> pd.DataFrame:

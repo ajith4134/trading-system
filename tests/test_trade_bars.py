@@ -158,3 +158,62 @@ def test_the_same_symbol_on_spot_and_perp_stays_two_instruments():
 
     assert len(bars) == 2
     assert sorted(bars["venue"]) == ["binance", "binance-spot"]
+
+
+def test_a_venue_frame_with_a_zero_price_is_not_a_trade():
+    """Binance really sends these, and one of them poisons a whole bar's low.
+
+    Captured verbatim from the live tape, 2026-08-03T18 on binance BTCUSDT, where 60
+    of 17,227 trade frames looked like this: price "0", quantity "0", `X` "NA". Layer
+    0 is right to store them - it never modifies what a venue said - but they are not
+    trades, and `float(data["p"])` turned each into a Trade at price 0.0.
+
+    The damage was not subtle once looked for. In the real store on 2026-08-08, 746
+    of 1,671 bars carried `low <= 0`: BTCUSDT 237 of 278, ETHUSDT 268 of 278, SOLUSDT
+    241 of 278, plus 25 zero opens and 19 zero closes. Hyperliquid's 837 bars were
+    untouched, because only this feed emits them. `min()` needs one zero to ruin a
+    bar, and every one of those bars otherwise looked perfectly normal.
+    """
+    from capture.frame_codec import IndexEntry
+    from store.trade_bars import extract_trades
+
+    entry = IndexEntry(n=0, t_recv_ns=1785780046200_000_000, t_exch_ms=1785780046072,
+                       seq=None, kind="data", esc=False)
+    placeholder = ('{"stream":"btcusdt@trade","data":{"e":"trade","E":1785780046072,'
+                   '"T":1785780046071,"s":"BTCUSDT","t":7950493454,"p":"0","q":"0",'
+                   '"X":"NA","m":true,"st":1}}')
+    real = ('{"stream":"btcusdt@trade","data":{"e":"trade","E":1785780046072,'
+            '"T":1785780046071,"s":"BTCUSDT","t":7950493455,"p":"63884.20",'
+            '"q":"0.01","X":"MARKET","m":true}}')
+
+    assert extract_trades(placeholder, entry, "binance", "BTCUSDT") == []
+    kept = extract_trades(real, entry, "binance", "BTCUSDT")
+    assert [t.price for t in kept] == [63884.20]
+
+
+def test_a_zero_price_frame_cannot_reach_the_low_of_a_bar():
+    """The end-to-end shape of the defect: one placeholder, one real trade, one bar.
+
+    Asserted through `build_bars` rather than only at the extractor, because the
+    aggregation is where the harm appeared - `low=("price", "min")` has no way to
+    tell a zero apart from a cheap fill.
+    """
+    from capture.frame_codec import IndexEntry
+    from store.trade_bars import build_bars, extract_trades
+
+    entry = IndexEntry(n=0, t_recv_ns=1785780046200_000_000, t_exch_ms=1785780046072,
+                       seq=None, kind="data", esc=False)
+    frames = [
+        ('{"data":{"e":"trade","T":1785780046071,"s":"BTCUSDT","p":"0","q":"0",'
+         '"X":"NA","st":1}}'),
+        '{"data":{"e":"trade","T":1785780046072,"s":"BTCUSDT","p":"63884.20","q":"0.01"}}',
+        '{"data":{"e":"trade","T":1785780046073,"s":"BTCUSDT","p":"63880.10","q":"0.02"}}',
+    ]
+    trades = [t for payload in frames
+              for t in extract_trades(payload, entry, "binance", "BTCUSDT")]
+
+    bars = build_bars(trades, 60_000_000_000)
+    assert len(bars) == 1
+    assert float(bars.iloc[0]["low"]) == 63880.10
+    assert float(bars.iloc[0]["open"]) == 63884.20
+    assert int(bars.iloc[0]["trades"]) == 2, "the placeholder must not be counted as a trade"
