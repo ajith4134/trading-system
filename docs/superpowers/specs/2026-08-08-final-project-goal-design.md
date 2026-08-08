@@ -440,6 +440,42 @@ hold for a duration, never fire instantaneously) · an explicit **"why is this l
 to me?"** pre-trade check · **randomised trigger latency** (bounded jitter, breaks exact timing
 attacks) · a **per-symbol tradability gate evaluated before the setup gate**.
 
+### 5a.6b The second new attack surface — the price feed is attacker-authored text
+
+Found by the Requirements Ledger, 2026-08-08, as row **OGR-057** — sourced to `IDEAS-STRATEGIC.md` §9
+and **named in none of the six core design documents.**
+
+The plan quarantines *web* content: `FEATURES.md` §11 and `DECISIONS.md` §7 specify the Dual-LLM
+pattern so the privileged model never sees raw untrusted pages. **Market data was never classified as
+an untrusted-content channel.** It is one:
+
+- **Token names and symbols** are chosen by whoever mints the token.
+- **On-chain memos and NFT metadata** are free-form attacker-controlled strings.
+- **Listing announcements** are prose, ingested as prose.
+
+§5a multiplies this by ~1,290, and concentrates it precisely in the thin tail where minting a token
+costs almost nothing — the same region §5a.6 already identifies as cheap to bait.
+
+Four distinct threats, none currently addressed:
+
+| Threat | Shape |
+|---|---|
+| **Direct injection via the feed** | Attacker-authored strings reaching any reasoning context as text |
+| **Slow context poisoning** | Adversarial content accumulating in long-lived memory, where a single day's ingest looks harmless |
+| **Semantic denial-of-service** | Content crafted to consume the autonomous researcher's curiosity budget (§5a.5) on nothing |
+| **Content targeting models, not people** | Text written to move a model's output rather than to persuade a human reader |
+
+**The rule this imposes: structured extraction only, never free text from a market feed into a
+reasoning context.** A symbol is an identifier to match against a universe record, never a string to
+interpret. Anything narrative — announcements, memos, metadata — goes through the same quarantine as
+a web page, and enters as a hypothesis, never a decision.
+
+Two of the mitigations already exist elsewhere in the plan and should be pointed at this threat
+explicitly: **belief provenance with retraction propagation** (`IDEAS-INTELLIGENCE.md` §1, ledger
+OGR-065) so a falsified source re-scores everything derived from it, and the **capped curiosity
+budget** (§5a.5) so semantic DoS has a ceiling. **The threat-model architecture itself is unbuilt and
+unplanned.**
+
 ### 5a.7 The two Layer 0 consequences — one met, one not
 
 | | Requirement | State 2026-08-08 |
