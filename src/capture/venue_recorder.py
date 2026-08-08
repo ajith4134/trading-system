@@ -74,6 +74,14 @@ _NS_PER_HOUR = 3_600_000_000_000
 # One second is far below the smallest threshold it can act on - the 60 s grace -
 # so nothing it reports changes.
 _SILENCE_CHECK_INTERVAL_NS = 1_000_000_000
+# How many hour files the boundary sweep may close on one frame. Each close writes
+# a zstd footer and fsyncs the raw file, the index and the directory: measured
+# 4.2-4.4 ms on this box's ext4, at a median fsync of 1.40 ms. Closing binance's
+# ~600 writers in one pass therefore blocks the event loop for 2.65 s and spot's
+# ~1,000 for 4.17 s, which pauses the socket and backdates `t_recv_ns` for every
+# frame behind the stall. 25 keeps one slice near 110 ms while still draining a
+# thousand writers within a second of frames.
+_MAX_HOUR_CLOSES_PER_FRAME = 25
 # However slow a stream claims to be, silence becomes reportable eventually -
 # an hour, one file rotation. Without it a stream can talk its way into never
 # being checked again, and detection has to be bounded regardless of history.
@@ -180,6 +188,9 @@ class VenueRecorder:
         self._next_hour_starts_ns = 0
         # Zero so the first frame runs the check and sets the real deadline.
         self._next_silence_check_ns = 0
+        # Writers whose hour has ended and which have not been closed yet. Drained
+        # a slice at a time so no single frame pays for all of them.
+        self._hour_close_backlog: list[RawWriter] = []
         self._trackers: dict[tuple[str, str], object] = {}
         # (stream, symbol, hour) triples whose files cannot be written, and what
         # each has cost so far. Keyed by HOUR, not by stream: see
@@ -506,11 +517,17 @@ class VenueRecorder:
         across an hour edge, and `store.cli` skips and names a claimed hour of the
         day it is building, so the cost is a rebuild rather than a silent loss.
         """
-        if now_ns < self._next_hour_starts_ns:
-            return
-        self._next_hour_starts_ns = now_ns - (now_ns % _NS_PER_HOUR) + _NS_PER_HOUR
-        for writer in self._writers.values():
-            writer.close_if_hour_ended(now_ns)
+        if now_ns >= self._next_hour_starts_ns:
+            self._next_hour_starts_ns = now_ns - (now_ns % _NS_PER_HOUR) + _NS_PER_HOUR
+            # Snapshotted, because `_writers` gains entries as new hours open and a
+            # live view would hand this loop writers on the current hour forever.
+            self._hour_close_backlog = list(self._writers.values())
+
+        # A writer already on the current hour still consumes a slot and returns
+        # False. That keeps the bound honest: the slice is a cap on work attempted,
+        # not on work that happened to be needed.
+        for _ in range(min(_MAX_HOUR_CLOSES_PER_FRAME, len(self._hour_close_backlog))):
+            self._hour_close_backlog.pop().close_if_hour_ended(now_ns)
 
     def _record_gap(self, stream: str, symbol: str, report, t_recv_ns: int) -> None:
         self._ledger.record(LedgerEvent(

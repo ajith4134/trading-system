@@ -1241,3 +1241,74 @@ async def test_the_silence_check_is_not_run_on_every_frame(tmp_path: Path):
     # found promptly rather than never.
     rec._check_stream_health(start_ns + 1_000_000_000)
     assert len(checks) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_hour_boundary_closes_are_spread_across_frames(tmp_path: Path):
+    """Closing every writer in one pass blocks the event loop for seconds.
+
+    Measured on this box's ext4 with the captures live: one `close()` costs
+    4.2-4.4 ms - a zstd footer plus an fsync of the raw file, the index and the
+    directory, at a median fsync of 1.40 ms. So closing binance's ~600 writers in
+    one synchronous pass takes 2,653 ms, and spot's ~1,000 takes 4,173 ms.
+
+    Two harms, and the second is the worse one. `max_queue` is 16 and the queue is
+    built with `pause=transport.pause_reading`, so a multi-second stall pauses the
+    socket and builds a backlog that has to be drained against a 20 s ping timeout.
+    And `t_recv_ns` is stamped when a frame is dequeued, so every frame behind the
+    stall is backdated by up to 4 seconds - at the hour boundary, which is exactly
+    where the receive clock decides which hour file and which bar a trade lands in.
+
+    So the sweep closes a bounded slice per frame and keeps draining on the frames
+    that follow. Between slices the loop returns to `recv()`, which is what lets
+    the transport resume.
+    """
+    from capture.venue_recorder import _MAX_HOUR_CLOSES_PER_FRAME
+
+    venue = BinanceSpotVenue()
+    rec = VenueRecorder(venue, venue.tail_specs(["AUSDT"]), tmp_path,
+                        clock_ns=lambda: 0)
+
+    closed: list[str] = []
+
+    class CountingWriter:
+        def __init__(self, name):
+            self.name = name
+            self.hour_open = True
+
+        def close_if_hour_ended(self, now_ns):
+            if not self.hour_open:
+                return False
+            self.hour_open = False
+            closed.append(self.name)
+            return True
+
+    # The boundary is armed by the first frame, before any writer exists - which is
+    # what happens in production, where `_writers` is empty until a frame routes.
+    hour_start = 1785668400_000_000_000
+    rec._settle_writers_whose_hour_ended(hour_start)
+    assert closed == []
+
+    total = _MAX_HOUR_CLOSES_PER_FRAME * 3 + 7
+    for i in range(total):
+        rec._writers[("trade", f"sym{i}")] = CountingWriter(f"sym{i}")
+
+    next_hour = hour_start + 3_600_000_000_000
+    rec._settle_writers_whose_hour_ended(next_hour)
+    assert len(closed) == _MAX_HOUR_CLOSES_PER_FRAME, (
+        f"one frame must not close all {total} writers; that is the multi-second stall")
+
+    # The frames that follow drain the rest, and no writer is closed twice.
+    frames_taken = 1
+    while len(closed) < total:
+        rec._settle_writers_whose_hour_ended(next_hour + frames_taken)
+        frames_taken += 1
+        assert frames_taken < 100, "the backlog must actually drain"
+
+    assert sorted(closed) == sorted(f"sym{i}" for i in range(total))
+    assert len(closed) == len(set(closed)), "a writer must not be closed twice"
+
+    # Drained: further frames inside the hour do no work at all.
+    before = len(closed)
+    rec._settle_writers_whose_hour_ended(next_hour + 1_000_000_000)
+    assert len(closed) == before
