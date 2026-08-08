@@ -508,6 +508,42 @@ Work: a `--tail-symbols` path through the CLI and supervisor, a rate-limit and c
 that admits several hundred symbols across the venue's stream limits, and a storage estimate before
 turning it on.
 
+### 10.3b Capture continuity — **blocks the attention-scarcity mechanism itself**
+
+Measured 2026-08-08. **Capture has covered 20.0% of wall-clock time since it began.**
+
+| | |
+|---|---|
+| First capture | 2026-08-02 15:42 UTC |
+| Clean stop | 2026-08-03 18:12:27 UTC — `supervisor_stopped` logged, graceful SIGTERM, no torn hour |
+| Restart | 2026-08-08 04:05:54 UTC, 56 seconds after boot |
+| Outage | **4 days 9 hours 53 minutes** |
+| Days with any data | 3 — Aug 2, 3, 8 |
+
+**Not a fault.** The instance is `preemptible: FALSE`, `automaticRestart: TRUE`. The VM was
+deliberately stopped, and the user confirms this is **cost control, done on purpose**.
+
+**The boot-recovery claim is verified.** `DECISIONS.md` §13.3 says capture restarts on boot; the
+startup script fired correctly after a real four-day outage. That claim is now proven against a
+genuine failure rather than a test.
+
+**Why this is a goal problem and not an ops footnote.** §5a's declared mechanism is *attention
+scarcity* — being structurally present for windows others cannot cover. **A machine that is off 80%
+of the time has no such advantage; it has a worse version of the gap it claims to exploit.** And
+none of it is recoverable: Layer 0's contract is never re-pull history.
+
+**Measured sizing, 2026-08-08.** Capture uses **3.1% of one vCPU and 117 MB RSS** for six symbols,
+on an `e2-custom-12-30720` — 12 vCPU, 30 GB. Data rate 31.2 MB/hour for six symbols, of which
+`depth@100ms` is roughly 95%; the broad tail uses only `trade` and `forceOrder`, so widening to
+~1,290 symbols is nothing like 215× the cost. Extrapolated tail estimate ~15 GB/day, ~5.5 TB/year —
+**an estimate from a six-symbol sample, not a measurement.**
+
+**Consequence:** the thing that must never stop needs a fraction of one core, and it is being stopped
+to avoid paying for twelve. Capture belongs on its own minimal always-on instance, with this machine
+free to be stopped whenever it is not building. Dollar figures deliberately not quoted — `gcloud`
+here is authenticated to a different project than the one hosting this instance, and the Cloud
+Billing API rejects unauthenticated callers. **Price it before it sizes anything.**
+
 ### 10.4 Capital feasibility gate
 
 Per-strategy minimum viable capital, checked against current NAV, families auto-enabled and
