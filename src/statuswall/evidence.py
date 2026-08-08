@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -366,25 +367,101 @@ def _bar_datasets(facts: SystemFacts) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("bars_"))
 
 
+# Bars build closed days only, so the newest partition legitimately trails the tape
+# by up to a day plus however long the build takes. The threshold sits above that,
+# so a normal lag is not reported as a stopped pipeline - and a genuinely abandoned
+# store still surfaces within a day and a half rather than never.
+_STORE_STALE_HOURS = 36.0
+# Below this share of the captured symbols the store is not a smaller store, it is
+# a different one from the archive beside it.
+_STORE_COVERAGE_FLOOR = 0.9
+
+
+def _store_symbols(datasets: list[Path]) -> int:
+    """Symbols the store holds bars for, counted from its own partition layout."""
+    return len({part.name for dataset in datasets for part in dataset.iterdir()
+                if part.is_dir() and part.name.startswith("symbol=")})
+
+
+def _captured_symbols_on(facts: SystemFacts) -> int | None:
+    """Symbols with a trade tape on the newest captured day, or None if unknowable.
+
+    None rather than zero, because "no archive to compare against" and "an archive
+    holding nothing" are different facts and only one of them is a shortfall. Reuses
+    `store.cli.captured_symbols` rather than re-deriving the filename convention, so
+    the board cannot disagree with the builder about what was captured.
+    """
+    if not facts.latest_capture_date or not facts.venues:
+        return None
+    from store.cli import captured_symbols
+
+    total = 0
+    measured_any = False
+    for venue in facts.venues:
+        try:
+            total += len(captured_symbols(facts.capture_root, venue, facts.latest_capture_date))
+            measured_any = True
+        except Exception:
+            # A venue with no trade stream registered, or a day it never captured.
+            # Skipped rather than counted as zero - see the None contract above.
+            continue
+    return total if measured_any else None
+
+
 def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
-    """Reports on the store by reading it, not by checking a path exists.
+    """Reports on the store by reading it, and on whether it is still being written.
 
     Row and part counts come from `ClockGatedReader.read_as_of`, the same call
     every consumer makes - a probe that stat()ed the directory instead would go
     on reporting OK against a store whose Parquet files had rotted or emptied.
+
+    Rows alone were not enough, and the failure was live rather than hypothetical.
+    On 2026-08-08 this tile read `ok | 1671 rows across 12 append-only part(s)`
+    while the newest partition was five days old and the store covered 6 of the
+    2,109 symbols being captured. A dead store keeps its rows forever, so a row
+    count cannot tell a working pipeline from an abandoned one - and breadth, the
+    number that had been wrong for days, was not measured at all.
+
+    So the tile now carries both: how long since anything was written, and how many
+    of the captured symbols made it in. Freshness decides first, because a stopped
+    pipeline makes the coverage number meaningless.
     """
     datasets = _bar_datasets(facts)
     if not datasets:
         return ProbeResult(NOT_BUILT, "no store built from the archive yet",
                            "capture/store")
-    parts = sum(1 for dataset in datasets for _ in dataset.rglob("*.parquet"))
+    parts = [part for dataset in datasets for part in dataset.rglob("*.parquet")]
     from store.clock_gated_reader import ClockGatedReader
     rows = len(ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(2**62))
-    return ProbeResult(
-        OK,
-        f"{rows} rows across {parts} append-only part(s) in {len(datasets)} dataset(s)",
-        f"capture/store/{datasets[0].name}",
-    )
+
+    evidence = f"capture/store/{datasets[0].name}"
+    counts = f"{rows} rows across {len(parts)} append-only part(s) in {len(datasets)} dataset(s)"
+    if not parts or rows == 0:
+        return ProbeResult(DEGRADED, f"store exists and reads empty: {counts}", evidence)
+
+    newest_ns = max(part.stat().st_mtime for part in parts)
+    age_hours = (time.time() - newest_ns) / 3600
+
+    in_store = _store_symbols(datasets)
+    captured = _captured_symbols_on(facts)
+    if captured is None:
+        coverage = "coverage not measured (no captured trade tape to compare against)"
+    else:
+        coverage = f"{in_store} of {captured} captured symbol(s) built"
+
+    if age_hours > _STORE_STALE_HOURS:
+        return ProbeResult(
+            STOPPED,
+            f"nothing written for {age_hours:.0f}h ({age_hours / 24:.1f} days); "
+            f"{counts}; {coverage}",
+            evidence)
+    if captured is not None and in_store < _STORE_COVERAGE_FLOOR * captured:
+        return ProbeResult(
+            DEGRADED,
+            f"only {coverage}; newest part {age_hours:.0f}h old; {counts}",
+            evidence)
+    return ProbeResult(OK, f"{counts}; {coverage}; newest part {age_hours:.0f}h old",
+                       evidence)
 
 
 def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:

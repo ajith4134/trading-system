@@ -462,3 +462,89 @@ def test_no_receipt_at_all_still_reports_declared(tmp_path):
     r = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
     assert r.state != OK
     assert "never" in r.detail.lower() or "declared" in r.detail.lower()
+
+
+def _bars_partition(tmp_path, snapshot: str, symbol: str = "BTCUSDT"):
+    """One readable bar partition, so the probe has something real to read."""
+    import pandas as pd
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: [symbol], VENUE: ["binance"], EVENT_TIME: [1_000],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, snapshot)
+
+
+def _age_the_store(tmp_path, hours: float):
+    import os
+    import time
+    when = time.time() - hours * 3600
+    for part in (tmp_path / "store").rglob("*.parquet"):
+        os.utime(part, (when, when))
+
+
+def _captured_tape(tmp_path, date: str, symbols, venue: str = "binance"):
+    folder = tmp_path / "raw" / venue / date
+    folder.mkdir(parents=True, exist_ok=True)
+    for symbol in symbols:
+        (folder / f"trade_{symbol}_{date}T00.ndjson.zst").write_bytes(b"x")
+
+
+def test_a_store_that_stopped_being_written_is_not_ok(tmp_path):
+    """A row count cannot tell a live store from an abandoned one.
+
+    Measured on the real archive 2026-08-08: the wall reported
+    `bitemporal store | ok | 1671 rows across 12 append-only part(s)` while the
+    newest partition was five days old and covered 6 of 2,109 captured symbols.
+    Green, for a pipeline that had stopped producing. Rule 8 names this exact
+    failure - "if the source stopped updating, the board says stopped" - and the
+    probe was counting rows, which a dead store keeps forever.
+
+    Bars legitimately trail the tape by up to a day, because they build closed days
+    only, so the threshold has to sit above that rather than at zero.
+    """
+    from statuswall.evidence import STOPPED, probe_bitemporal_store
+
+    _bars_partition(tmp_path, "snap1")
+    _age_the_store(tmp_path, hours=120)
+
+    result = probe_bitemporal_store(_facts(capture_root=tmp_path))
+    assert result.state == STOPPED
+    assert "120h" in result.detail or "5.0 day" in result.detail, result.detail
+
+
+def test_a_store_covering_a_fraction_of_the_captured_tape_is_degraded(tmp_path):
+    """Six symbols out of 2,109 must not read the same as six out of six.
+
+    The number that was wrong for five days was breadth, and nothing on the board
+    was measuring it - so a store holding 0.3% of the captured universe presented
+    as a healthy store.
+    """
+    from statuswall.evidence import DEGRADED, probe_bitemporal_store
+
+    _bars_partition(tmp_path, "snap1", symbol="BTCUSDT")
+    _captured_tape(tmp_path, "2026-08-03", [f"SYM{i}USDT" for i in range(50)])
+
+    result = probe_bitemporal_store(
+        _facts(capture_root=tmp_path, venues=["binance"], latest_capture_date="2026-08-03"))
+    assert result.state == DEGRADED
+    assert "1 of 50" in result.detail, result.detail
+
+
+def test_coverage_that_cannot_be_measured_is_named_not_assumed(tmp_path):
+    """No captured tape to compare against is not the same as full coverage.
+
+    It must not degrade the tile - there is no evidence of a shortfall - and it
+    must not silently read as complete either. So the detail says coverage was not
+    measured, which is Rule 8's "absence of evidence renders as its own state".
+    """
+    from statuswall.evidence import OK, probe_bitemporal_store
+
+    _bars_partition(tmp_path, "snap1")
+    result = probe_bitemporal_store(_facts(capture_root=tmp_path))
+
+    assert result.state == OK
+    assert "coverage not measured" in result.detail, result.detail

@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Keep the boards reachable: an authenticated local server, and a tunnel to it.
+# Keep the boards reachable AND current: a generator, an authenticated local
+# server, and a tunnel to it.
 #
-# Two children, supervised independently, because they fail independently: the
-# server dies on a code error, the tunnel dies when Cloudflare drops the edge
-# connection. Restarting both when only one died would change the public URL for
-# no reason.
+# Three children, supervised independently, because they fail independently: the
+# generator dies on a probe error, the server on a code error, the tunnel when
+# Cloudflare drops the edge connection. Restarting all three when only one died
+# would change the public URL for no reason.
+#
+# The generator exists because this script used to serve boards and never rebuild
+# them. On 2026-08-08 the wall being served was five days old - written 2026-08-03
+# 17:46 - while this supervisor had been up the whole time reporting nothing wrong,
+# because serving a file and refreshing it are different jobs and only one of them
+# was anyone's. A board that is stale is worse than no board: it reassures exactly
+# when attention was required. See Rule 8.
 #
 # THE URL IS NOT STABLE, and no amount of supervision makes it so. A
 # `trycloudflare.com` quick tunnel is issued a random hostname per tunnel
@@ -27,6 +35,7 @@ PORT=${BOARDS_PORT:-8787}
 PYTHON=${BOARDS_PYTHON:-$REPO/.venv/bin/python}
 CLOUDFLARED=${CLOUDFLARED:-$HOME/.local/bin/cloudflared}
 
+GENERATOR_LOG="$STATE_DIR/generator.log"
 SERVER_LOG="$STATE_DIR/server.log"
 TUNNEL_LOG="$STATE_DIR/tunnel.log"
 URL_FILE="$STATE_DIR/current-url.txt"
@@ -35,9 +44,15 @@ RESTART_LOG="$STATE_DIR/restarts.ndjson"
 MIN_DELAY=1
 MAX_DELAY=60
 HEALTHY_RUN_SECONDS=120
+# How often the wall is rebuilt from live measurement. Every probe reads the
+# archive, the store and the repo, so this is not free - but it is seconds against
+# an interval of minutes, and the alternative is a board whose age is unbounded.
+REGENERATE_INTERVAL=${BOARDS_REGENERATE_INTERVAL:-300}
+WALL_OUT="$BOARDS_DIR/status-wall.html"
 
 mkdir -p "$STATE_DIR"
 
+generator_pid=""
 server_pid=""
 tunnel_pid=""
 
@@ -50,7 +65,7 @@ record_restart() {
 # orphaned cloudflared keeps a tunnel alive that nothing is supervising, and the
 # next start would publish a second URL to the same boards.
 stop_children() {
-  for pid in "$server_pid" "$tunnel_pid"; do
+  for pid in "$generator_pid" "$server_pid" "$tunnel_pid"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
   done
   wait 2>/dev/null
@@ -106,7 +121,23 @@ supervise() {
     local started ended ran code
     started=$(date +%s)
 
-    if [ "$name" = "server" ]; then
+    if [ "$name" = "generator" ]; then
+      # Rebuilt in place on an interval. The wall is written whole by
+      # `statuswall.cli`, so a reader either gets the previous file or the new one.
+      # Failures are recorded and retried rather than fatal: a probe that raises
+      # must not leave the board frozen with nothing saying so.
+      while true; do
+        if ! "$PYTHON" -m statuswall.cli --out "$WALL_OUT" >> "$GENERATOR_LOG" 2>&1; then
+          echo "wall regeneration failed; see $GENERATOR_LOG" >&2
+          break
+        fi
+        sleep "$REGENERATE_INTERVAL"
+      done &
+      generator_pid=$!
+      wait "$generator_pid"
+      code=$?
+      generator_pid=""
+    elif [ "$name" = "server" ]; then
       : > "$SERVER_LOG"
       BOARDS_CREDENTIALS_FILE="$CREDENTIALS" "$PYTHON" -m statuswall.board_server \
         --directory "$BOARDS_DIR" --port "$PORT" >> "$SERVER_LOG" 2>&1 &
@@ -146,6 +177,7 @@ cd "$REPO"
 export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 ensure_credentials
 
+supervise generator &
 supervise server &
 supervise tunnel &
 wait
