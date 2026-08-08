@@ -1,11 +1,26 @@
 #!/bin/bash
 # GCE startup-script — brings the long-running processes back after a reboot.
 #
-# PASTE THE CONTENTS OF THIS FILE into the instance's `startup-script` metadata
-# value. It cannot be installed from the VM: the attached service account has no
-# project IAM (verified 2026-08-03 — `storage.buckets.create` and
-# `services.list` both return 403), so setting instance metadata needs either a
-# console edit or `gcloud auth login` as a human.
+# INSTALL IT, do not just edit it. This file is a copy; the version that runs is
+# the one in the instance's `startup-script` metadata:
+#
+#   gcloud compute instances add-metadata instance-20260801-081737 \
+#     --zone=asia-south1-c --metadata-from-file startup-script=scripts/gce_startup_script.sh
+#
+# That works from the VM as of 2026-08-08 — the note here previously said it did
+# not, citing 403s on `storage.buckets.create` and `services.list` from
+# 2026-08-03. Those are different permissions; `compute.instances.setMetadata` is
+# granted. The note was believed rather than retested, and in the meantime the
+# metadata drifted three supervisors behind this file: on 2026-08-08 the live
+# copy started boards, binance core capture and hyperliquid only — no store
+# builds, no offload, no spot. A reboot would have come up with the archive
+# silently un-backed-up.
+#
+# So: after editing, install it, then read it back from the metadata server and
+# diff. The success message is not the verification.
+#
+#   curl -s -H "Metadata-Flavor: Google" \
+#     http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script
 #
 # WHY THIS AND NOT CRON OR LINGER, both of which were tried and failed here:
 #   - `loginctl enable-linger`  -> "Access denied", and there is no sudo on this box
