@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from store.book_snapshots import levels_from_row
 from store.clock_gated_reader import ClockGatedReader
 from store.temporal_schema import EVENT_TIME, VENUE
 
@@ -140,14 +141,15 @@ def _queue_ahead(books: pd.DataFrame, bar_open_ns: int,
                    & (books[EVENT_TIME] < bar_open_ns + bar_ns)]
     if inside.empty:
         return None
-    snapshot = inside.iloc[0]
-    return max(_touch_size(snapshot["bids"]), _touch_size(snapshot["asks"]))
+    bids, asks = levels_from_row(inside.iloc[0])
+    return max(_touch_size(bids), _touch_size(asks))
 
 
 def _touch_size(levels) -> Decimal:
-    if levels is None or len(levels) == 0:
+    """Size at the best level, or zero for a side with no levels at all."""
+    if not levels:
         return Decimal("0")
-    return Decimal(str(levels[0][1]))
+    return levels[0][1]
 
 
 def _median(values: list[Decimal]) -> Decimal:

@@ -25,6 +25,8 @@ RUNS="$STATE_DIR/runs.ndjson"
 # The symbols carrying depth and funding. Only the core has either: the broad
 # tail subscribes trades alone, so there is nothing polled to build from it.
 CORE="BTCUSDT,ETHUSDT,SOLUSDT"
+# The same three instruments as hyperliquid names them.
+CORE_HYPERLIQUID="BTC,ETH,SOL"
 
 mkdir -p "$STATE_DIR"
 
@@ -34,6 +36,21 @@ build() {   # dataset venue date symbols
   PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m store.build_polled \
     --dataset "$1" --venue "$2" --date "$3" --symbols "$4" \
     --capture-root "$CAPTURE_ROOT" --store-root "$STORE_ROOT" 2>>"$LOG"
+}
+
+# Bars come from the trade tape, not the pollers, so they have their own entry
+# point - and their own day. store.cli reads whole closed hours; the hour a
+# capture writer still holds open is a partial zstd frame it refuses outright
+# (TruncatedFrameFile), which is correct for a CLOSED hour and fatal for today.
+# So bars build yesterday only. Today's bars appear tomorrow, and the lag is
+# real: replay and calibration always trail the tape by up to a day.
+#
+# Symbols differ by venue because the venues name the same instrument
+# differently - BTCUSDT on binance, BTC on hyperliquid.
+build_bars() {   # venue date symbols
+  PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m store.cli \
+    --venue "$1" --date "$2" --symbols "$3" \
+    --capture-root "$CAPTURE_ROOT" --store-root "$STORE_ROOT" 2>&1
 }
 
 while true; do
@@ -48,6 +65,32 @@ while true; do
       printf '{"ts":"%s","day":"%s","result":%s}\n' \
         "$started" "$day" "${result:-null}" >> "$RUNS"
     done
+  done
+
+  # Recorded whether or not it succeeded. Bars went five days stale while the
+  # polled datasets kept writing a line every pass, and nothing in the run log
+  # said bars had been attempted at all - because they never had been. Every
+  # pass now leaves a line naming the venue-day and whether it built.
+  for spec in "binance $CORE" "hyperliquid $CORE_HYPERLIQUID"; do
+    set -- $spec
+    # Three states, not two. The partition writer refuses a rewrite, so every
+    # pass after the first exits non-zero on a day it already built - and
+    # recording that as "failed" would bury a genuine failure in an hourly
+    # stream of expected ones.
+    if output=$(build_bars "$1" "$yesterday" "$2"); then
+      status=built
+    elif printf '%s' "$output" | grep -q PartitionExistsError; then
+      status=already-built
+    else
+      status=failed
+    fi
+    # A day the capture never covered also exits 0, with nothing built. Recording
+    # the status alone would read as success; the count is what distinguishes a
+    # built day from an empty one.
+    bars=$(printf '%s' "$output" | grep -oE '> [0-9]+ bars' | grep -oE '[0-9]+' | head -1)
+    printf '%s\n' "$output" >> "$LOG"
+    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","bars":%s}}\n' \
+      "$started" "$yesterday" "$1" "$yesterday" "$status" "${bars:-null}" >> "$RUNS"
   done
 
   sleep "$INTERVAL"

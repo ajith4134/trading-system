@@ -40,9 +40,17 @@ def a_bar_row(symbol="BTCUSDT", venue="binance", at_ns=T0, volume=100.0, trades=
 
 def a_book_row(symbol="BTCUSDT", venue="binance", at_ns=T0,
                bid_size="5", ask_size="5"):
+    """Levels as JSON strings, which is what the store actually holds.
+
+    Not a stylistic choice. Writing nested lists here produced a fixture the code
+    passed against and the real dataset did not: `book_snapshots` serialises the
+    levels to JSON, so a test built from lists exercises a shape that never
+    reaches production.
+    """
     return {"symbol": symbol, "venue": venue, "event_time_ns": at_ns,
             "ingestion_time_ns": at_ns, "availability_time_ns": at_ns,
-            "bids": [["99.99", bid_size]], "asks": [["100.01", ask_size]],
+            "bids": json.dumps([["99.99", bid_size]]),
+            "asks": json.dumps([["100.01", ask_size]]),
             "last_update_id": 1}
 
 
