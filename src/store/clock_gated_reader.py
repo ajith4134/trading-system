@@ -14,20 +14,34 @@ change that.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import pandas as pd
 
 from store.parquet_partition import read_dataset
 from store.temporal_schema import AVAILABILITY_TIME, EVENT_TIME, SYMBOL, VENUE
 
+if TYPE_CHECKING:                    # import-time cycle: validation reads the store
+    from validation.holdout_custodian import HoldoutCustodian
+
 
 class ClockGatedReader:
     """Serves rows whose availability time has arrived, newest version per event."""
 
-    def __init__(self, store_root: Path, dataset: str) -> None:
+    def __init__(self, store_root: Path, dataset: str,
+                 custodian: "HoldoutCustodian | None" = None) -> None:
         self._store_root = Path(store_root)
         self._dataset = dataset
+        # The holdout custodian, when supplied, gets to refuse the read before any
+        # data is touched. It hangs off the reader rather than the caller because
+        # this is the one door every market-data read goes through, and a guard on
+        # any other door is a guard with a way around it.
+        #
+        # Optional, and that is a real gap rather than a covered case: a reader
+        # built without a custodian is unguarded. See holdout_custodian's module
+        # docstring - do not read the existence of this parameter as proof the
+        # holdout cannot be read.
+        self._custodian = custodian
 
     def read_as_of(self, sim_clock_ns: int,
                    symbols: Sequence[str] | None = None) -> pd.DataFrame:
@@ -35,7 +49,13 @@ class ClockGatedReader:
 
         Inclusive at the boundary: a row available exactly at T is usable at T.
         Off by one in this comparison silently drops the newest bar on every read.
+
+        Raises `HoldoutSealed` when a custodian is attached and the clock is inside
+        its sealed range - checked before reading, so a refused query never loads
+        the rows it was refused.
         """
+        if self._custodian is not None:
+            self._custodian.assert_readable(int(sim_clock_ns))
         frame = read_dataset(self._store_root, self._dataset)
         if frame.empty:
             return frame
