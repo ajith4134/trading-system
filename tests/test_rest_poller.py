@@ -8,11 +8,13 @@ identical `markPrice@1s` stream normally. REST `/fapi/v1/premiumIndex` answers
 200 with the same data, so the feed is recovered by asking for it instead.
 """
 import asyncio
+import json
 
 import pytest
 
 from capture.rest_poller import merge_frame_sources, poll_frames
 from capture.venues import PollSpec
+from capture.venues.binance import BinanceVenue
 
 SPEC = PollSpec("binance", "premiumIndex", "BTCUSDT",
                 "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT")
@@ -136,3 +138,46 @@ async def test_merge_frame_sources_propagates_a_source_failure():
 
 async def test_merge_frame_sources_with_no_sources_ends_immediately():
     assert await _drain(merge_frame_sources()) == []
+
+
+# --- per-spec cadence --------------------------------------------------------
+# A depth snapshot costs 20 request-weight against a 2400/minute budget; the
+# premiumIndex poll costs 1. Running both at one shared cadence means either
+# the funding feed is needlessly slow or the snapshot feed bans the IP.
+
+@pytest.mark.asyncio
+async def test_a_slow_spec_polls_less_often_than_a_fast_one():
+    fast = PollSpec("binance", "premiumIndex", "BTCUSDT", "http://fast")
+    slow = PollSpec("binance", "depthSnapshot", "BTCUSDT", "http://slow",
+                    interval_seconds=0.20)
+    calls: list[str] = []
+
+    async def fetch(url: str) -> str:
+        calls.append(url)
+        return json.dumps({"url": url})
+
+    frames = [f async for f in poll_frames(
+        BinanceVenue(), [fast, slow], interval_seconds=0.05,
+        duration_seconds=0.42, fetch=fetch)]
+
+    assert frames
+    fast_calls = calls.count("http://fast")
+    slow_calls = calls.count("http://slow")
+    assert slow_calls >= 1, "the slow spec never polled at all"
+    assert fast_calls > slow_calls, (fast_calls, slow_calls)
+
+
+@pytest.mark.asyncio
+async def test_a_spec_without_its_own_cadence_uses_the_shared_one():
+    """Adding the field must not change how every existing spec behaves."""
+    spec = PollSpec("binance", "premiumIndex", "BTCUSDT", "http://x")
+    calls: list[str] = []
+
+    async def fetch(url: str) -> str:
+        calls.append(url)
+        return "{}"
+
+    _ = [f async for f in poll_frames(BinanceVenue(), [spec],
+                                      interval_seconds=0.05,
+                                      duration_seconds=0.22, fetch=fetch)]
+    assert len(calls) >= 3

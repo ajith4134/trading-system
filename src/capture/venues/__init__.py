@@ -88,6 +88,11 @@ class PollSpec:
     symbol: str
     url: str
     method: str = "GET"
+    # How often to fetch this one, when it should not share the run's cadence.
+    # A depth snapshot costs 20 request-weight against a 2400/minute budget and
+    # the funding poll costs 1; one shared cadence makes the cheap feed slow or
+    # the expensive feed a ban. None means "use whatever the run was given".
+    interval_seconds: float | None = None
 
 
 @dataclass(frozen=True)

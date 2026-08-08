@@ -86,13 +86,25 @@ async def poll_frames(venue, specs, interval_seconds: float,
     loop = asyncio.get_running_loop()
     deadline = loop.time() + duration_seconds
 
+    # When each spec is next due. A spec may carry its own cadence because the
+    # feeds cost wildly different request-weight: a depth snapshot is 20 against
+    # a 2400/minute budget, the funding poll is 1. Running both at one rate
+    # either starves the cheap feed or bans the IP on the expensive one.
+    next_due = {id(spec): 0.0 for spec in specs}
+
     while True:
         tick_started = loop.time()
         if tick_started >= deadline:
             return
 
+        due = [spec for spec in specs if next_due[id(spec)] <= tick_started]
+        for spec in due:
+            cadence = spec.interval_seconds
+            next_due[id(spec)] = tick_started + (
+                interval_seconds if cadence is None else cadence)
+
         bodies = await asyncio.gather(
-            *(_fetch_or_none(fetch, spec.url) for spec in specs))
+            *(_fetch_or_none(fetch, spec.url) for spec in due))
         for body in bodies:
             if body is not None:
                 yield body
