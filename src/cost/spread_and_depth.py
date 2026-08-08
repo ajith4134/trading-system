@@ -15,9 +15,10 @@ count the one cost this layer exists to state honestly.
 
 The pure functions below take an explicit book, so they are testable without a
 store and cannot silently read anything. `load_book_as_of` is the only I/O door,
-and today it always refuses: Layer 1 holds trade bars and no book dataset yet.
-That refusal is the honest answer, not a placeholder - it blocks a strategy
-rather than handing it a spread borrowed from somewhere else.
+and it reads the Layer 1 `book` dataset through the clock gate - never the raw
+archive, and never a book that arrived after the moment being priced. When no
+snapshot is visible it refuses rather than borrowing one, because a spread taken
+from the wrong instant is worse than no spread at all.
 """
 from __future__ import annotations
 
@@ -31,6 +32,10 @@ Level = tuple[Decimal, Decimal]
 
 _BPS = Decimal(10_000)
 _SIDES = ("buy", "sell")
+
+# The Layer 1 dataset this reads. One name, so the builder and the reader cannot
+# drift into two datasets that look like one.
+_DATASET = "book"
 
 
 class NoBookAvailable(Exception):
@@ -120,20 +125,35 @@ def load_book_as_of(store_root: Path, venue: str, symbol: str,
                     at_ns: int) -> tuple[list[Level], list[Level]]:
     """The book as it was knowable at `at_ns`, through the clock gate only.
 
-    Always refuses today, and the refusal is the point. Layer 1 currently holds
-    `bars_<interval>ns` and nothing else - depth is captured into the raw
-    archive but no book dataset has been built from it, so there is nothing for
-    the clock-gated reader to serve.
+    Through `ClockGatedReader` and nothing else - never the raw archive, which
+    is the one thing `ARCHITECTURE.md` Layer 0 forbids: backtest and live must
+    share a single access path, or an off-by-one in windowing yields a great
+    backtest and a broken system.
 
-    The alternative would be reading the raw archive directly, which is the one
-    thing `ARCHITECTURE.md` Layer 0 forbids: backtest and live must share a
-    single access path, or an off-by-one in windowing yields a great backtest
-    and a broken system. A refusal here costs a strategy that cannot be priced.
-    A direct read costs the guarantee.
+    The newest snapshot knowable at `at_ns` wins. Anything that arrived later is
+    invisible rather than merely discouraged, and there is no interpolation and
+    no reaching forward - pricing against a book that did not exist yet is the
+    leakage this layer is built to make impossible.
     """
-    raise NoBookAvailable(
-        f"no book dataset in the store for {venue}:{symbol} at {at_ns}. "
-        f"Layer 1 holds trade bars only; depth is in the raw archive but has "
-        f"not been built into a clock-gated dataset. Refusing rather than "
-        f"reading the archive directly, which would break the shared "
-        f"backtest/live access path")
+    from store.book_snapshots import levels_from_row
+    from store.clock_gated_reader import ClockGatedReader
+    from store.temporal_schema import AVAILABILITY_TIME
+
+    try:
+        visible = ClockGatedReader(Path(store_root), _DATASET).read_as_of(
+            at_ns, symbols=[symbol])
+    except FileNotFoundError as exc:
+        raise NoBookAvailable(
+            f"no book dataset in the store for {venue}:{symbol}. Depth "
+            f"snapshots are in the raw archive but have not been built into a "
+            f"clock-gated dataset ({exc})") from exc
+
+    if venue and "venue" in visible:
+        visible = visible[visible["venue"] == venue]
+    if visible.empty:
+        raise NoBookAvailable(
+            f"no book for {venue}:{symbol} knowable at {at_ns}. Refusing "
+            f"rather than reaching forward to one that arrived later")
+
+    newest = visible.sort_values(AVAILABILITY_TIME).iloc[-1]
+    return levels_from_row(newest)

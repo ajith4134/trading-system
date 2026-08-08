@@ -93,3 +93,41 @@ def test_loading_a_book_refuses_when_no_book_dataset_exists(tmp_path):
     with pytest.raises(NoBookAvailable) as excinfo:
         load_book_as_of(tmp_path, "binance", "BTCUSDT", at_ns=1_785_648_600_000_000_000)
     assert "book" in str(excinfo.value).lower()
+
+
+# --- reading the dataset once it exists --------------------------------------
+
+def _write_book_dataset(store_root, at_ns, bid="99.95", ask="100.05"):
+    import json as _json
+    from store.book_snapshots import build_book_frame, extract_book_snapshot
+    from store.parquet_partition import append_partition
+
+    class E:
+        t_recv_ns = at_ns
+
+    payload = _json.dumps({"lastUpdateId": 1, "E": at_ns // 1_000_000,
+                           "bids": [[bid, "10"]], "asks": [[ask, "10"]]})
+    frame = build_book_frame(extract_book_snapshot(payload, E(), venue="binance",
+                                                   symbol="BTCUSDT"))
+    append_partition(store_root, "book", frame, snapshot_id="test")
+
+
+def test_a_book_is_served_once_the_dataset_exists(tmp_path):
+    """The refusal was about a missing dataset, not a permanent state."""
+    at = 1_786_184_000_500_000_000
+    _write_book_dataset(tmp_path, at)
+
+    bids, asks = load_book_as_of(tmp_path, "binance", "BTCUSDT", at_ns=at)
+    assert bids[0] == (Decimal("99.95"), Decimal("10"))
+    assert half_spread_bps(bids, asks) == pytest.approx(Decimal("5"),
+                                                        abs=Decimal("0.01"))
+
+
+def test_a_book_published_after_the_moment_asked_about_is_invisible(tmp_path):
+    """The leakage case through the clock gate. A backtest pricing at T must not
+    see the book that arrived at T+1."""
+    at = 1_786_184_000_500_000_000
+    _write_book_dataset(tmp_path, at + 60 * 10**9)      # a minute in the future
+
+    with pytest.raises(NoBookAvailable):
+        load_book_as_of(tmp_path, "binance", "BTCUSDT", at_ns=at)
