@@ -310,11 +310,27 @@ def probe_venue_health(facts: SystemFacts) -> ProbeResult:
             alarms.append(f"{venue}: {report['corrupting_non_gap']} corrupting events")
     if not facts.reports:
         return ProbeResult(NOT_BUILT, "no venue data", "capture_health")
+    # The halt registry is read, never driven from here: a display must not
+    # decide whether a venue may be traded. It reports what the registry
+    # recorded, so a halt shows on the wall with the reason that caused it.
+    from ops.venue_halt import VenueHaltRegistry
+
+    registry = VenueHaltRegistry(Path(facts.capture_root) / "ops")
+    halted = {v: registry.halt_reason(v) for v in facts.reports
+              if not registry.is_tradeable(v)}
+
     detail = "; ".join(alarms) if alarms else "no venue alarms"
+    if halted:
+        return ProbeResult(
+            FAILING,
+            f"HALTED: " + ", ".join(f"{v} ({r})" for v, r in sorted(halted.items()))
+            + f". {detail}",
+            "src/ops/venue_halt.py + capture_health")
     return ProbeResult(
-        DEGRADED if alarms else PARTIAL,
-        f"health monitoring live ({detail}). Auto-halt on degradation not implemented",
-        "src/capture/capture_health.py build_report",
+        DEGRADED if alarms else OK,
+        f"health monitoring live and auto-halt armed ({detail}); "
+        f"{len(facts.reports)} venue(s) tradeable",
+        "src/ops/venue_halt.py + capture_health",
     )
 
 

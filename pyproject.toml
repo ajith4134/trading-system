@@ -22,7 +22,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/capture", "src/statuswall", "src/store", "src/cost"]
+packages = ["src/capture", "src/statuswall", "src/store", "src/cost", "src/ops"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
