@@ -40,5 +40,20 @@ while true; do
     "$started" "$(( $(date +%s) - started_epoch ))" "$status" \
     "${result:-null}" >> "$RUNS"
 
+  # Eviction runs only behind a clean offload, and only ever removes a local file
+  # whose object it has just seen listed in the bucket. Ordering it here rather
+  # than on its own timer is the point: the inventory it checks against is the
+  # one this pass just finished writing.
+  #
+  # KEEP_DAYS=0 disables it entirely, which is the default. Deleting the local
+  # copy of the archive is not something a supervisor should start doing because
+  # a script was updated - it is switched on deliberately, by setting the value.
+  if [ "$status" -eq 0 ] && [ "${KEEP_DAYS:-0}" -gt 0 ]; then
+    evicted=$(PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m ops.raw_eviction \
+      --bucket "$BUCKET" --capture-root "$CAPTURE_ROOT" \
+      --keep-days "$KEEP_DAYS" --apply 2>>"$LOG")
+    printf '{"ts":"%s","eviction":%s}\n' "$started" "${evicted:-null}" >> "$RUNS"
+  fi
+
   sleep "$INTERVAL"
 done
