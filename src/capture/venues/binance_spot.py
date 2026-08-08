@@ -25,6 +25,14 @@ from capture.venues import ExtractedMeta, PollSpec, StreamSpec
 
 _WS_BASE = "wss://stream.binance.com:9443/stream?streams="
 _INSTRUMENTS_URL = "https://api.binance.com/api/v3/exchangeInfo"
+_DEPTH_SNAPSHOT_URL = "https://api.binance.com/api/v3/depth"
+
+# See the note in binance.py: depth arrives as diffs and needs a snapshot to
+# replay onto. Measured at 50 request-weight for limit=1000, hence its own
+# cadence rather than the run's.
+_DEPTH_SNAPSHOT_LIMIT = 1000
+_DEPTH_SNAPSHOT_INTERVAL_SECONDS = 60.0
+_DEPTH_SNAPSHOT_STREAM = "depthSnapshot"
 
 # No `forceOrder`: spot has no liquidations. The futures adapter keeps that
 # subscription deliberately, because there it is a real feed the venue withholds
@@ -69,8 +77,14 @@ class BinanceSpotVenue:
         return self._specs(symbols, _TAIL_CHANNELS)
 
     def poll_specs(self, symbols: list[str]) -> list[PollSpec]:
-        """Nothing. Every feed this venue has, it pushes."""
-        return []
+        """Only the depth snapshot. There is no funding on spot to poll for."""
+        return [
+            PollSpec(self.name, _DEPTH_SNAPSHOT_STREAM, symbol,
+                     f"{_DEPTH_SNAPSHOT_URL}?symbol={symbol}"
+                     f"&limit={_DEPTH_SNAPSHOT_LIMIT}",
+                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS)
+            for symbol in symbols
+        ]
 
     def ws_url(self, specs: list[StreamSpec]) -> str:
         return _WS_BASE + "/".join(spec.channel for spec in specs)

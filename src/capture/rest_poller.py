@@ -29,7 +29,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+from dataclasses import dataclass
 from typing import AsyncIterator
+
+
+@dataclass(frozen=True)
+class PolledFrame:
+    """One polled body, still carrying the spec that asked for it.
+
+    Some REST bodies do not identify themselves. Measured 2026-08-08:
+    `/fapi/v1/depth` returns `[E, T, asks, bids, lastUpdateId]` and names no
+    symbol, while `/fapi/v1/premiumIndex` does. Routing a depth snapshot from
+    its body alone would file every symbol into one `unknown` bucket.
+
+    The subscription knows which symbol it requested, so the frame travels with
+    it rather than having a symbol written into it. The payload stays byte-for-
+    byte what the venue sent, which is the property the whole archive rests on.
+    """
+
+    spec: object
+    payload: str
 
 _REQUEST_TIMEOUT_SECONDS = 15
 
@@ -105,9 +124,9 @@ async def poll_frames(venue, specs, interval_seconds: float,
 
         bodies = await asyncio.gather(
             *(_fetch_or_none(fetch, spec.url) for spec in due))
-        for body in bodies:
+        for spec, body in zip(due, bodies):
             if body is not None:
-                yield body
+                yield PolledFrame(spec, body)
 
         # Measured from the start of the tick, not its end, so the cadence does
         # not drift by the request latency on every single poll.

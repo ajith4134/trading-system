@@ -47,7 +47,11 @@ async def test_poll_frames_yields_the_response_body_verbatim():
         return body
 
     frames = await _drain(poll_frames(object(), [SPEC], 0.01, 0.05, fetch=fetch), limit=1)
-    assert frames == [body]
+    # The frame now travels with the spec that requested it, because some REST
+    # bodies name no symbol. The payload itself is still byte-for-byte the
+    # venue's - that is what this test defends.
+    assert [f.payload for f in frames] == [body]
+    assert frames[0].spec is SPEC
 
 
 async def test_poll_frames_polls_every_spec_on_each_tick():
@@ -82,7 +86,8 @@ async def test_poll_frames_keeps_polling_after_an_endpoint_fails():
             raise ConnectionError("first tick fails")
         return '{"symbol":"BTCUSDT"}'
 
-    frames = await _drain(poll_frames(object(), [SPEC], 0.01, 0.06, fetch=fetch))
+    frames = [f.payload for f in
+              await _drain(poll_frames(object(), [SPEC], 0.01, 0.06, fetch=fetch))]
     assert frames, "the poller gave up after one failure"
     assert all(frame == '{"symbol":"BTCUSDT"}' for frame in frames)
 

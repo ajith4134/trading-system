@@ -6,6 +6,23 @@ from capture.venues import ExtractedMeta, PollSpec, StreamSpec
 _WS_BASE = "wss://fstream.binance.com/stream?streams="
 _INSTRUMENTS_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 _PREMIUM_INDEX_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
+_DEPTH_SNAPSHOT_URL = "https://fapi.binance.com/fapi/v1/depth"
+
+# A depth diff is a changeset, not a book. Replaying `depthUpdate` frames into
+# an order book requires an initial full snapshot to apply them onto, and
+# without one the captured depth cannot be reconstructed at all - which is why
+# the cost engine had to refuse every spread and impact question.
+#
+# Cadence and size are a request-weight decision, measured 2026-08-08 from the
+# x-mbx-used-weight header rather than recalled: a limit=1000 snapshot costs 50
+# on spot against a per-minute budget in the thousands, while premiumIndex costs
+# 1. At the funding cadence of one per second the snapshot alone would spend the
+# entire budget, so it carries its own interval. One per minute per core symbol
+# also means every hourly file rotation contains several snapshots, so each hour
+# stays independently replayable.
+_DEPTH_SNAPSHOT_LIMIT = 1000
+_DEPTH_SNAPSHOT_INTERVAL_SECONDS = 60.0
+_DEPTH_SNAPSHOT_STREAM = "depthSnapshot"
 
 # `trade` rather than `aggTrade`, decided 2026-08-02 from live measurement:
 # aggTrade delivers nothing at all to this host over the websocket (0 frames in
@@ -91,11 +108,21 @@ class BinanceVenue:
         hundred instruments to disk in order to read three of them is not a raw
         archive of what was asked for.
         """
-        return [
+        specs = [
             PollSpec(self.name, _POLL_STREAM, symbol,
                      f"{_PREMIUM_INDEX_URL}?symbol={symbol}")
             for symbol in symbols
         ]
+        # Only the core symbols carry depth diffs, so only they need a snapshot
+        # to replay those diffs onto. The tail subscribes trades alone.
+        specs += [
+            PollSpec(self.name, _DEPTH_SNAPSHOT_STREAM, symbol,
+                     f"{_DEPTH_SNAPSHOT_URL}?symbol={symbol}"
+                     f"&limit={_DEPTH_SNAPSHOT_LIMIT}",
+                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS)
+            for symbol in symbols
+        ]
+        return specs
 
     def ws_url(self, specs: list[StreamSpec]) -> str:
         return _WS_BASE + "/".join(spec.channel for spec in specs)

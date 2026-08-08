@@ -228,9 +228,13 @@ def test_binance_poll_specs_cover_every_symbol():
     v = BinanceVenue()
     specs = v.poll_specs(["BTCUSDT", "ETHUSDT"])
     assert {spec.symbol for spec in specs} == {"BTCUSDT", "ETHUSDT"}
-    assert all(spec.stream == "premiumIndex" for spec in specs)
-    assert all(spec.url.startswith("https://fapi.binance.com/fapi/v1/premiumIndex")
-               for spec in specs)
+    # Two polled feeds per symbol now: the funding rate the venue withholds
+    # from the websocket, and the depth snapshot without which the captured
+    # depth diffs cannot be replayed into a book.
+    funding = [s for s in specs if s.stream == "premiumIndex"]
+    assert {s.symbol for s in funding} == {"BTCUSDT", "ETHUSDT"}
+    assert all(s.url.startswith("https://fapi.binance.com/fapi/v1/premiumIndex")
+               for s in funding)
     # Per-symbol, not the whole-market form: the all-symbols call returns every
     # perp on the venue at request weight 10, and writing 500 instruments to
     # disk to read 3 of them is not a raw archive of what was asked for.
@@ -372,7 +376,8 @@ def test_spot_does_not_subscribe_to_feeds_that_do_not_exist_on_spot():
     channels = {s.channel for s in v.core_specs(["BTCUSDT"])} | \
                {s.channel for s in v.tail_specs(["BTCUSDT"])}
     assert not any("forceOrder" in c for c in channels)
-    assert v.poll_specs(["BTCUSDT"]) == []
+    # Spot polls a depth snapshot, but must never poll funding - there is none.
+    assert not any(s.stream == "premiumIndex" for s in v.poll_specs(["BTCUSDT"]))
 
 
 def test_spot_parses_only_tradeable_symbols():
@@ -393,3 +398,36 @@ def test_the_whole_spot_universe_shards_into_a_handful_of_connections():
     assert 2 <= len(shards) <= 8
     for shard in shards:
         assert len(v.ws_url(shard)) <= v.max_url_bytes
+
+
+# --- depth snapshots, the missing half of a reconstructable book -------------
+# Captured depth frames are depthUpdate diffs (U/u/pu chained), not books.
+# Replaying them into a book needs an initial snapshot to apply them onto, and
+# none was ever captured - so no book dataset could be built at all.
+
+def test_binance_polls_a_depth_snapshot_for_every_core_symbol():
+    specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
+    assert "depthSnapshot" in specs
+    assert "/fapi/v1/depth" in specs["depthSnapshot"].url
+    assert "BTCUSDT" in specs["depthSnapshot"].url
+
+
+def test_spot_polls_its_own_depth_endpoint():
+    specs = {s.stream: s for s in BinanceSpotVenue().poll_specs(["BTCUSDT"])}
+    assert "/api/v3/depth" in specs["depthSnapshot"].url
+
+
+def test_the_snapshot_polls_far_slower_than_the_funding_poll():
+    """Measured 2026-08-08 off the x-mbx-used-weight header: a limit=1000 spot
+    snapshot costs 50 request-weight, against 1 for premiumIndex. At the
+    funding cadence it would spend the whole budget on books."""
+    specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
+    assert specs["depthSnapshot"].interval_seconds is not None
+    assert specs["depthSnapshot"].interval_seconds >= 30
+    assert specs["premiumIndex"].interval_seconds is None      # keeps the run cadence
+
+
+def test_spot_still_polls_no_funding():
+    """Spot has no funding. Adding a snapshot poll must not smuggle one in."""
+    streams = {s.stream for s in BinanceSpotVenue().poll_specs(["BTCUSDT"])}
+    assert streams == {"depthSnapshot"}

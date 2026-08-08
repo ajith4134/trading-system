@@ -1075,3 +1075,30 @@ async def test_spot_and_futures_never_share_a_file(tmp_path: Path):
                      for p in (tmp_path / "raw").rglob("trade_BTCUSDT_*.ndjson.zst"))
     assert len(written) == 2, written
     assert any("binance-spot" in p for p in written)
+
+
+@pytest.mark.asyncio
+async def test_a_polled_frame_is_routed_by_the_spec_that_requested_it(tmp_path: Path):
+    """Measured 2026-08-08: /fapi/v1/depth returns [E, T, asks, bids,
+    lastUpdateId] and carries no symbol at all. premiumIndex does, which is why
+    polling has worked so far. Routing a snapshot from its body would file every
+    symbol as `unknown` - the same bucket bug the CJK symbols hit this morning.
+
+    The subscription knows which symbol it asked for, so the frame is routed by
+    its PollSpec. Nothing is synthesised into the payload; it is stored exactly
+    as the venue sent it."""
+    from capture.rest_poller import PolledFrame
+    from capture.venues import PollSpec
+
+    venue = BinanceVenue()
+    spec = PollSpec("binance", "depthSnapshot", "BTCUSDT", "http://depth")
+    rec = VenueRecorder(venue, [spec], tmp_path,
+                        clock_ns=lambda: 1785648600_000_000_000)
+    # A real snapshot shape: no symbol anywhere in it.
+    body = json.dumps({"lastUpdateId": 7, "E": 1, "T": 1,
+                       "bids": [["100.0", "1"]], "asks": [["100.1", "1"]]})
+    await rec.consume(_frames([PolledFrame(spec, body)]))
+
+    names = [p.name for p in (tmp_path / "raw" / "binance" / "2026-08-02").iterdir()]
+    assert any(n.startswith("depthSnapshot_BTCUSDT_") for n in names), names
+    assert not any("unknown" in n for n in names), names

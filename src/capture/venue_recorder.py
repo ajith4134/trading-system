@@ -435,14 +435,19 @@ class VenueRecorder:
         # already appended) rather than leaked - hence the try/finally around
         # the whole loop rather than just around the happy path.
         try:
-            async for payload in frames:
+            async for frame in frames:
                 t_recv_ns = self._clock_ns()
+                # A polled frame travels with the spec that requested it,
+                # because some REST bodies name no symbol. The payload itself
+                # is untouched either way.
+                route_hint = getattr(frame, "spec", None)
+                payload = getattr(frame, "payload", frame)
                 try:
                     parsed = json.loads(payload)
                 except json.JSONDecodeError:
                     self._record_malformed_frame(payload, t_recv_ns)
                 else:
-                    self._route_frame(parsed, payload, t_recv_ns)
+                    self._route_frame(parsed, payload, t_recv_ns, route_hint)
                 # After the frame is routed, never before: a stream whose first
                 # frame is this one has already been counted as having spoken,
                 # so it cannot be reported silent in the same breath.
@@ -462,14 +467,24 @@ class VenueRecorder:
             "unknown", "unknown", payload, t_recv_ns, None, None,
             kind="malformed")
 
-    def _route_frame(self, parsed, payload: str, t_recv_ns: int) -> None:
-        """Send one parsed frame to its writer, tracker and - on a gap - the ledger."""
+    def _route_frame(self, parsed, payload: str, t_recv_ns: int,
+                     route_hint=None) -> None:
+        """Send one parsed frame to its writer, tracker and - on a gap - the ledger.
+
+        `route_hint` is the PollSpec that requested a polled frame. It wins over
+        whatever `extract` could work out, because the subscription knows what
+        it asked for and some REST bodies do not say.
+        """
         meta = self._venue.extract(parsed)
         if meta.kind == "control":
             self._stats["control"] += 1
 
-        stream = _safe_path_token(meta.stream)
-        symbol = _safe_path_token(meta.symbol)
+        if route_hint is not None:
+            stream = _safe_path_token(route_hint.stream)
+            symbol = _safe_path_token(route_hint.symbol)
+        else:
+            stream = _safe_path_token(meta.stream)
+            symbol = _safe_path_token(meta.symbol)
 
         tracker = self._tracker_for(stream, symbol)
         if tracker is not None and meta.kind == "data":
