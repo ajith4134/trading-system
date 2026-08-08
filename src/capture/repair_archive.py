@@ -65,14 +65,29 @@ def repair_archive(root: Path) -> dict:
     the pass, because the hours after it are the ones the recorder is about to
     need.
     """
-    repaired, skipped_live, failed = [], [], []
+    repaired, skipped_live, failed, cleared_markers = [], [], [], []
     healthy = 0
 
     for raw_path, idx_path in find_pairs(Path(root)):
+        # Asked for every pair, not only damaged ones. A healthy hour used to
+        # `continue` before its marker was ever looked at, which is how a marker
+        # from a process that died on 2026-08-02 was still on disk six days
+        # later - and how that hour stayed out of every backup, silently,
+        # because the offload correctly refuses to copy an hour a writer holds.
+        is_live, marker, pid = is_hour_being_written(raw_path)
+        if not is_live and marker.exists():
+            # `is_hour_being_written` has already established the process is
+            # gone. Removing the marker is what makes that judgement stick;
+            # leaving it means the same dead pid blocks the hour forever.
+            try:
+                marker.unlink()
+                cleared_markers.append(str(marker))
+            except OSError as exc:
+                failed.append((str(marker), f"{type(exc).__name__}: {exc}"))
+
         if is_pair_readable(raw_path, idx_path):
             healthy += 1
             continue
-        is_live, _, pid = is_hour_being_written(raw_path)
         if is_live:
             skipped_live.append((str(raw_path), pid))
             continue
@@ -93,6 +108,7 @@ def repair_archive(root: Path) -> dict:
         "healthy": healthy,
         "repaired": repaired,
         "skipped_live": skipped_live,
+        "cleared_markers": cleared_markers,
         "failed": failed,
     }
 
