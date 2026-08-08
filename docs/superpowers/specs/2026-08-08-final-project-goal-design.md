@@ -305,28 +305,67 @@ attacks) · a **per-symbol tradability gate evaluated before the setup gate**.
 
 Everything else is autonomous.
 
-### Self-modification of safety controls — decided 2026-08-08
+### Self-modification of safety controls — decided 2026-08-08, amended the same day
 
 **The system may raise and lower its own risk limits, and clear its own halts, inside a ceiling the
 user sets once.** The ceiling is the tail-loss cap of §0 — the same object, named twice.
 
-This was chosen after the counter-argument was put and reaffirmed. The counter-argument is recorded
-here so it is a decision and not an oversight:
+**Amendment: every self-modification passes through a bounded canary before it takes effect.** The
+system still changes itself without asking. It simply cannot change itself faster than it can
+measure whether the change helped.
 
-> `DECISIONS.md` §7 records that Sakana's AI Scientist edited its own code to extend a timeout
-> rather than fix the speed problem, and concludes: *"the evaluator must be outside the system's
-> write access… our system will otherwise widen a stop, extend a lookback, or relax a threshold —
-> cheapest path to a better metric."* An optimiser that can raise its own cap will eventually
-> discover that raising the cap scores better than earning under it.
+#### Why the amendment exists — first-party evidence, not an argument from analogy
+
+The original ruling was made against the Sakana precedent in `DECISIONS.md` §7, and reaffirmed.
+Then the repo mining found the same experiment already run **on this project's own money**.
+
+`ai-crypto-trading-bot` contains two internal audits — `PROFESSOR_AUDIT.md` and
+`BLUEPRINT_COMPLIANCE_AUDIT.md` — recording, with code citations:
+
+| Finding | Detail |
+|---|---|
+| **Net −$837 over 10,240 live trades** | Empirically measured. Not a backtest |
+| **Fake attribution** | The feature-governance controller credited the same bot-wide win/loss to *every* active feature. It **deactivated all 36 features simultaneously, twice, in production** |
+| **~775 lines of dead code** | In the exit-management monolith |
+| **Three concurrent self-modification loops** | Daily code-rewriting, prompt evolution, and a genetic algorithm — all running against the system being debugged |
+
+**The market did not beat it. The self-modification loops corrupted the measurement they fed on.**
+With attribution wrong and three rewrite loops competing, the system could not tell what was
+working, and responded by switching everything off. Over 10,240 trades it did not learn its way to
+profit.
+
+That failure mode is fatal to this design specifically, because §0 rests on *"the failures are the
+asset."* If attribution is wrong, the ledger is wrong, the Deflated Sharpe is wrong, and the
+learning curve of §1 measures noise.
+
+#### The canary contract
+
+Adapted from `signals/scibrain/` in `nse-crypto-bot-final`, which already implements this shape —
+`changespec.py`, `evaluator.py`, `rigor.py`, `validator.py`, `change_report.py`, `canary.py`.
+
+Every self-initiated change to a risk limit, threshold, or strategy parameter must:
+
+1. Be expressed as a **typed `ChangeSpec`** — bounded, validated, no free-form code path.
+2. Be evaluated against a **matched cohort**, not against its own post-hoc performance.
+3. Pass a **statistical rigor gate** before promotion, with the trial counted in the Trial Registry.
+4. Run as a **canary** on a bounded slice before applying broadly.
+5. **Auto-roll-back** on failure, with a change report written to the ledger either way.
+
+**Only one self-modification loop may be active at any moment.** Three concurrent loops was the
+documented root cause, and this rule is not negotiable by the system.
+
+**Per-feature attribution must be correct before any loop runs at all.** A loop fed by bot-wide
+P&L credited to every feature is not learning; it is amplifying noise with authority. See §10.8.
+
+#### What still holds from the original ruling
 
 **Consequence, accepted:** the optimiser will drift toward the outer bound. **The ceiling the user
 sets is the real risk level, not the intended one.** Set it as though the system will live there,
 because it will.
 
-**The one mitigation, which does not violate the decision:** the ceiling itself is **outside the
-system's write access** — a checksummed configuration the risk gate enforces, which no component,
-LLM or otherwise, can edit. The status wall shows current limits against the ceiling, so limit
-creep is visible rather than silent.
+**The ceiling is outside the system's write access** — a checksummed configuration the risk gate
+enforces, which no component, LLM or otherwise, can edit. The status wall shows current limits
+against the ceiling, so limit creep is visible rather than silent.
 
 ### Rules that hold regardless of autonomy level
 
@@ -475,6 +514,29 @@ green-day rate moving together (§1). A wall tile and a digest line. Does not ex
 
 A checksummed risk-limit ceiling outside all component write access, enforced by the risk gate,
 with current-limits-vs-ceiling displayed (§6).
+
+---
+
+### 10.8 Correct per-feature attribution — **prerequisite for every learning loop**
+
+The documented cause of the −$837 / 10,240-trade result was not a bad model. It was that the
+feature-governance controller credited **the same bot-wide win/loss to every active feature**, so
+every feature's score moved together and carried no information. Acting on it deactivated all 36
+features at once, twice, in production.
+
+Nothing in the current plan specifies how credit is assigned to a feature, a signal, or a strategy.
+Until that is correct and tested, **no self-modification loop, no meta-model over the ledger, and no
+learning curve (§1) means anything** — they would all be reading the same corrupted signal.
+
+Required: attribution that can distinguish one feature's contribution from another's, validated
+against a synthetic case where the true contributions are known before it is trusted on real fills.
+
+### 10.9 The bounded canary
+
+Implement the §6 canary contract: typed `ChangeSpec`, matched-cohort evaluator, statistical rigor
+gate, canary trial on a bounded slice, auto-rollback, change report to the ledger, and the
+one-loop-at-a-time constraint. `signals/scibrain/` in `nse-crypto-bot-final` is the reference
+implementation to adapt, not to copy blind — it has never been validated against a gate.
 
 ---
 
