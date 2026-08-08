@@ -25,7 +25,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from cost.fee_schedule import DECLARED_SCHEDULES, FeeSchedule
-from cost.funding_carry import NoFundingAvailable, load_funding_rates_as_of, settlements_between
+from cost.funding_carry import (
+    NoFundingAvailable, funding_cost_bps, load_funding_rates_as_of,
+    settlements_between,
+)
 
 _ORDER_TYPES = ("maker", "taker")
 
@@ -138,11 +141,21 @@ def quote_round_trip_cost(venue: str, symbol: str, notional: Decimal, *,
             # cannot be skipped. Charging zero here would understate exactly
             # the family the prime directive rests on.
             try:
-                load_funding_rates_as_of(store_root or Path.home() / "capture" / "store",
-                                         venue, symbol, at_ns, at_ns + holding_ns)
+                rates = load_funding_rates_as_of(
+                    store_root or Path.home() / "capture" / "store",
+                    venue, symbol, at_ns, at_ns + holding_ns)
             except NoFundingAvailable as exc:
                 return CostRefused(venue=venue, symbol=symbol, missing="funding",
                                    reason=str(exc))
+            # Assigned, not merely computed. An earlier version loaded the
+            # rates and dropped them on the floor, so every carry priced as
+            # though funding were free - the one cost line that decides
+            # whether a carry trade is worth doing at all.
+            funding_bps = funding_cost_bps(rates, side=side)
+            funding_input = CostInput(
+                name="funding", verified=True, age_ns=None,
+                detail=f"{len(rates)} archived settlement rate(s) from the "
+                       f"clock-gated funding dataset")
 
     inputs = [
         CostInput(name="fee", detail=schedule.source_detail,

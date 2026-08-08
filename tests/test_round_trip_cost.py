@@ -148,3 +148,34 @@ def test_a_fetched_schedule_makes_the_quote_verified():
     assert isinstance(quote, CostQuote)
     assert quote.fee_bps == Decimal("9.0")          # 4.5 bps each leg, measured live
     assert any(s.name == "fee" and s.verified for s in quote.inputs)
+
+
+def test_funding_is_actually_charged_when_a_settlement_is_crossed(tmp_path):
+    """Found 2026-08-08 by pricing a real carry: the quote loaded the archived
+    rates, then returned funding_bps = 0 because nothing assigned them. The
+    work was done and the result thrown away - so a carry held across three
+    settlements priced as though it were free, in the exact family the prime
+    directive rests on."""
+    import datetime as dt
+    from decimal import Decimal as D
+    from store.funding_rates import FundingObservation, build_funding_frame
+    from store.parquet_partition import append_partition
+
+    settlement = int(dt.datetime(2026, 8, 8, 8, 0, tzinfo=dt.timezone.utc).timestamp() * 1e9)
+    append_partition(tmp_path, "funding", build_funding_frame([
+        FundingObservation(symbol="BTCUSDT", venue="binance",
+                           funding_rate=D("0.0001"), mark_price=D("1"),
+                           index_price=D("1"), next_funding_time_ns=0,
+                           event_time_ns=settlement - 10**9,
+                           ingestion_time_ns=settlement - 10**9)]),
+        snapshot_id="test")
+
+    quote = quote_round_trip_cost(
+        "binance", "BTCUSDT", Decimal("5000"), order_type="taker",
+        at_ns=settlement - 3600 * 10**9, instrument_kind="perp",
+        holding_ns=2 * 3600 * 10**9, store_root=tmp_path)
+
+    assert isinstance(quote, CostQuote)
+    assert quote.funding_bps == Decimal("1"), "one settlement at 1bp"
+    assert quote.breakeven_bps == quote.fee_bps + Decimal("1")
+    assert any(s.name == "funding" for s in quote.inputs)
