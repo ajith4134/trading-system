@@ -57,6 +57,8 @@ start_as_user "boards_supervisor.sh" \
 # the cost of leaving it running is bounded and the cost of not is not.
 start_as_user "capture_supervisor.sh binance" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT ALL"
+start_as_user "offload_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/offload_supervisor.sh gs://capture-raw-data4134"
 start_as_user "capture_supervisor.sh binance-spot" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-spot BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "capture_supervisor.sh hyperliquid" \

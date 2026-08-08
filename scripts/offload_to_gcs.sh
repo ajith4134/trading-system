@@ -28,37 +28,53 @@ RAW_ROOT="$CAPTURE_ROOT/raw"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not on PATH" >&2; exit 1; }
 [ -d "$RAW_ROOT" ] || { echo "no archive at $RAW_ROOT" >&2; exit 1; }
 
-# One rsync rather than a copy per file. Measured 2026-08-08: per-file
-# `gcloud storage cp` moved 98 of 8,138 files before it was killed - the
-# per-invocation overhead dominates completely, and a backup slower than the
-# data it protects is not a backup. rsync parallelises and skips what already
-# matches.
+# Batched copies of exactly the completed files - not a regex exclude, and not
+# a copy per file. Both of those were tried on 2026-08-08 and both were wrong:
 #
-# Live hours are excluded by name, derived from the `.writing` markers actually
-# on disk rather than by assuming only the current hour is open: a stream that
-# receives a late frame can reopen an older hour, and uploading it would copy a
-# zstd frame mid-write - a truncated archive that reads as complete.
-mapfile -t live_stems < <(find "$RAW_ROOT" -type f -name '*.writing' \
-                          -printf '%f\n' 2>/dev/null | sed 's/\.writing$//' | sort -u)
-
-exclude_args=()
-if [ "${#live_stems[@]}" -gt 0 ]; then
-  pattern=""
-  for stem in "${live_stems[@]}"; do
-    escaped=$(printf '%s' "$stem" | sed 's/[.[\*^$()+?{|]/\\&/g')
-    pattern="${pattern}${pattern:+|}.*${escaped}\..*"
-  done
-  exclude_args=(--exclude "$pattern")
-fi
-
-echo "excluding ${#live_stems[@]} live hour(s) still being written" >&2
-
+#   Per-file `gcloud storage cp` moved 98 of 8,138 files before being killed.
+#   The per-invocation overhead dominates completely.
+#
+#   `rsync --exclude` with one alternation per live stem builds a ~70KB regex
+#   from ~1,750 stems, and gcloud silently over-matched it: files from a
+#   *finished* hour were skipped because a *different* hour was open. The gap
+#   was 38 files that direct copy uploaded without complaint.
+#
+# So: list the files that are genuinely complete, and hand them to cp in
+# batches. `-n` means a re-run cannot replace a good object, which makes this
+# safe to put on a timer without tracking state. Integrity is gcloud's own
+# CRC32C check per object, so a corrupted transfer fails rather than lands.
+#
+# A file is complete when `RawWriter` is not holding it - marked by a sibling
+# `.writing`. Deciding per file rather than per hour matters: markers were
+# found from three different hours at once, including a stale one from a
+# session that crashed six days earlier.
+BATCH=400
 failed=0
-if ! gcloud storage rsync -r "${exclude_args[@]}" \
-      "$RAW_ROOT" "${BUCKET}/raw" >/dev/null 2>&1; then
-  echo "FAILED: raw archive rsync" >&2
-  failed=1
-fi
+completed_list=$(mktemp)
+trap 'rm -f "$completed_list"' EXIT
+
+find "$RAW_ROOT" -type f \( -name '*.ndjson.zst' -o -name '*.idx.zst' \) |
+  while IFS= read -r path; do
+    stem="${path%.ndjson.zst}"; stem="${stem%.idx.zst}"
+    [ -e "${stem}.writing" ] || printf '%s\n' "$path"
+  done | sort > "$completed_list"
+
+total=$(wc -l < "$completed_list")
+live=$(find "$RAW_ROOT" -name '*.writing' | wc -l)
+echo "offloading $total completed files, $live still being written" >&2
+
+# `cp` takes many sources and one destination, and preserves nothing about the
+# local tree - so each batch is copied per source directory to keep the layout.
+while IFS= read -r dir; do
+  find "$RAW_ROOT/$dir" -maxdepth 1 -type f \( -name '*.ndjson.zst' -o -name '*.idx.zst' \) \
+    | while IFS= read -r f; do
+        stem="${f%.ndjson.zst}"; stem="${stem%.idx.zst}"
+        [ -e "${stem}.writing" ] || printf '%s\0' "$f"
+      done \
+    | xargs -0 -r -n "$BATCH" -- sh -c \
+        'gcloud storage cp -n "$@" "'"${BUCKET}"'/raw/'"$dir"'/" >/dev/null 2>&1 || exit 1' _ \
+    || { echo "FAILED: $dir" >&2; failed=$((failed + 1)); }
+done < <(cd "$RAW_ROOT" && find . -mindepth 2 -maxdepth 2 -type d | sed 's|^\./||' | sort)
 
 # The ledger and the universe record are small and are the only way to know
 # later what the archive was missing and who was listed when. They belong with
@@ -70,9 +86,8 @@ for extra in ledger universe; do
 done
 
 remote=$(gcloud storage ls -r "${BUCKET}/raw/**" 2>/dev/null | grep -c 'zst$' || echo 0)
-local_files=$(find "$RAW_ROOT" -type f \( -name '*.ndjson.zst' -o -name '*.idx.zst' \) | wc -l)
-printf '{"local":%d,"in_bucket":%d,"live_excluded":%d,"failed":%d,"bucket":"%s"}\n' \
-  "$local_files" "$remote" "${#live_stems[@]}" "$failed" "$BUCKET"
+printf '{"completed_local":%d,"in_bucket":%d,"still_writing":%d,"failed":%d,"bucket":"%s"}\n' \
+  "$total" "$remote" "$live" "$failed" "$BUCKET"
 
 # Non-zero on any failure so a timer cannot report success while the archive
 # quietly stops being backed up - the failure mode this exists to prevent.

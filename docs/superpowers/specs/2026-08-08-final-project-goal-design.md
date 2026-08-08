@@ -749,9 +749,19 @@ of why this document prefers a measurement to an estimate, and the estimate was 
 
 **Consequence:** the thing that must never stop needs a fraction of one core, and it is being stopped
 to avoid paying for twelve. Capture belongs on its own minimal always-on instance, with this machine
-free to be stopped whenever it is not building. Dollar figures deliberately not quoted — `gcloud`
-here is authenticated to a different project than the one hosting this instance, and the Cloud
+free to be stopped whenever it is not building. Dollar figures deliberately not quoted — the Cloud
 Billing API rejects unauthenticated callers. **Price it before it sizes anything.**
+
+*Correction, later the same day: an earlier version of this paragraph said gcloud was authenticated
+to a different project than the instance. That was wrong — both are `project-e760fdd7-f8da-46a5-8c4`,
+and the `gcloud compute instances describe` failure that suggested otherwise was the zone or the
+instance name. Left visible rather than deleted, on the same principle as the storage estimate above.*
+
+**The archive now has a backup**, which it did not this morning: `scripts/offload_supervisor.sh`
+copies every completed hour to `gs://capture-raw-data4134` on a 30-minute loop, wired into the boot
+script. Verified 2026-08-08: **0 completed files missing from the bucket.** Live hours are excluded
+per file via `RawWriter`'s own `.writing` marker, because copying a zstd frame mid-write produces a
+truncated archive that reads as complete.
 
 ### 10.4 Capital feasibility gate
 
