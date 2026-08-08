@@ -56,7 +56,7 @@ start_as_user "boards_supervisor.sh" \
 # failed to record. Disk runway measured 909 days at the observed write rate, so
 # the cost of leaving it running is bounded and the cost of not is not.
 start_as_user "capture_supervisor.sh binance" \
-  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT"
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "capture_supervisor.sh hyperliquid" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
 

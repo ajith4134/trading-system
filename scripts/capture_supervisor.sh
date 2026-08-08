@@ -15,12 +15,20 @@
 # that, a process that runs happily for six hours and then drops once would come
 # back with the full accumulated delay of every restart before it.
 #
-# Usage: capture_supervisor.sh <venue> <symbols>
-#   e.g. capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT
+# Usage: capture_supervisor.sh <venue> <core-symbols> [tail-symbols]
+#   e.g. capture_supervisor.sh binance BTCUSDT,ETHUSDT,SOLUSDT ALL
+#
+# The third argument is the broad tail - the cheap channels across the wide
+# universe, with no depth. "ALL" means "whatever the venue lists right now",
+# resolved at startup and recorded as point-in-time membership before a frame
+# is captured. Omitting it keeps the core-only behaviour this script had before
+# the tail existed. Widening the tail is cheap today and impossible to backfill,
+# so the default here is the one decision worth revisiting.
 set -uo pipefail
 
 VENUE=${1:?venue required}
 SYMBOLS=${2:?comma-separated symbols required}
+TAIL_SYMBOLS=${3:-}
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CAPTURE_ROOT=${CAPTURE_ROOT:-$HOME/capture}
@@ -57,7 +65,7 @@ forward_stop() {
 trap forward_stop INT TERM
 
 printf '{"ts":"%s","venue":"%s","event":"supervisor_started","symbols":"%s","pid":%d}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$VENUE" "$SYMBOLS" "$$" >>"$RESTART_LOG"
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$VENUE" "$SYMBOLS${TAIL_SYMBOLS:++tail:$TAIL_SYMBOLS}" "$$" >>"$RESTART_LOG"
 
 delay=$MIN_DELAY
 while true; do
@@ -71,9 +79,18 @@ while true; do
     PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.repair_archive \
         --root "$CAPTURE_ROOT" >>"$RESTART_LOG" 2>>"$LOG"
 
-    PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.cli \
-        --venue "$VENUE" --symbols "$SYMBOLS" \
-        --root "$CAPTURE_ROOT" --seconds 0 >>"$LOG" 2>&1 &
+    # The tail argument is passed only when set, so a core-only invocation
+    # builds exactly the command line it did before this existed.
+    if [ -n "$TAIL_SYMBOLS" ]; then
+        PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.cli \
+            --venue "$VENUE" --symbols "$SYMBOLS" \
+            --tail-symbols "$TAIL_SYMBOLS" \
+            --root "$CAPTURE_ROOT" --seconds 0 >>"$LOG" 2>&1 &
+    else
+        PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.cli \
+            --venue "$VENUE" --symbols "$SYMBOLS" \
+            --root "$CAPTURE_ROOT" --seconds 0 >>"$LOG" 2>&1 &
+    fi
     child_pid=$!
     wait "$child_pid"
     exit_code=$?

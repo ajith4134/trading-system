@@ -724,9 +724,15 @@ none of it is recoverable: Layer 0's contract is never re-pull history.
 
 **Measured sizing, 2026-08-08.** Capture uses **3.1% of one vCPU and 117 MB RSS** for six symbols,
 on an `e2-custom-12-30720` — 12 vCPU, 30 GB. Data rate 31.2 MB/hour for six symbols, of which
-`depth@100ms` is roughly 95%; the broad tail uses only `trade` and `forceOrder`, so widening to
-~1,290 symbols is nothing like 215× the cost. Extrapolated tail estimate ~15 GB/day, ~5.5 TB/year —
-**an estimate from a six-symbol sample, not a measurement.**
+`depth@100ms` is roughly 95%; the broad tail uses only `trade` and `forceOrder`.
+
+**Then measured properly, on the full tail.** A 30-second run over all 569 Binance perpetuals plus a
+three-symbol core: **111 MB/hour, 2.7 GB/day, roughly 1 TB/year.** Against 89 GB free that is about
+33 days of runway before storage needs a decision.
+
+*The earlier extrapolation in this section said ~15 GB/day and ~5.5 TB/year — wrong by 5×, from a
+six-symbol sample dominated by depth. Left visible rather than deleted: it is a small worked example
+of why this document prefers a measurement to an estimate, and the estimate was mine.*
 
 **Consequence:** the thing that must never stop needs a fraction of one core, and it is being stopped
 to avoid paying for twelve. Capture belongs on its own minimal always-on instance, with this machine

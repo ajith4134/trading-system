@@ -25,6 +25,7 @@ from capture import cli
 from capture.cli import main, run_capture
 from capture.capture_ledger import read_all
 from capture.raw_writer import hour_key, paths_for, read_pair
+from capture.universe_tracker import UniverseTracker
 from capture.venues.binance import BinanceVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
@@ -584,3 +585,58 @@ def test_a_core_only_run_still_uses_exactly_one_connection(tmp_path: Path,
                  "--root", str(tmp_path), "--seconds", "1"]) == 0
 
     assert calls[0]["stream_shards"] == [BinanceVenue().core_specs(["BTCUSDT", "ETHUSDT"])]
+
+
+# --- Discovering the tail from the venue, and recording who was listed -------
+# A hand-maintained tail list goes stale the first time a symbol lists or
+# delists. UniverseTracker was written for exactly this and, like tail_specs
+# before it, was called by nothing outside its own tests.
+
+def test_tail_all_subscribes_the_venues_whole_universe_minus_the_core(
+        tmp_path: Path, monkeypatch, capsys):
+    calls = record_run_capture_calls(monkeypatch)
+    monkeypatch.setattr(cli, "fetch_universe",
+                        lambda venue: ["BTCUSDT", "XRPUSDT", "ADAUSDT"])
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", "ALL",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    tail = [s for shard in calls[0]["stream_shards"][1:] for s in shard]
+    assert {s.symbol for s in tail} == {"XRPUSDT", "ADAUSDT"}
+
+
+def test_tail_all_records_point_in_time_universe_membership(
+        tmp_path: Path, monkeypatch, capsys):
+    """R2 in DESIGN-NOTE-universe-wide-scanning.md: backtesting "watch every
+    symbol" against today's list silently conditions on survival, and no
+    purge/embargo scheme catches it. Trivial to record now, impossible to
+    reconstruct later."""
+    record_run_capture_calls(monkeypatch)
+    monkeypatch.setattr(cli, "fetch_universe",
+                        lambda venue: ["BTCUSDT", "XRPUSDT"])
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", "ALL",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    tracker = UniverseTracker(tmp_path, "binance")
+    assert sorted(tracker.load_last(2_000_000_000_000_000_000)) == ["BTCUSDT", "XRPUSDT"]
+
+
+def test_a_failed_universe_fetch_refuses_the_run_instead_of_shrinking_it(
+        tmp_path: Path, monkeypatch):
+    """Falling back to core-only would be six symbols out of 569, captured
+    silently, with the archive showing a normal healthy run. The missing day
+    cannot be backfilled."""
+    record_run_capture_calls(monkeypatch)
+
+    def unreachable(venue):
+        raise OSError("venue unreachable")
+
+    monkeypatch.setattr(cli, "fetch_universe", unreachable)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--venue", "binance", "--symbols", "BTCUSDT",
+              "--tail-symbols", "ALL", "--root", str(tmp_path), "--seconds", "1"])
+    assert exit_info.value.code != 0

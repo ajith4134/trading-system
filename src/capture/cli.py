@@ -14,12 +14,14 @@ import json
 import math
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import AsyncIterator
 
 import websockets
 
 from capture.rest_poller import merge_frame_sources, poll_frames
+from capture.universe_tracker import UniverseTracker
 from capture.venue_recorder import VenueRecorder
 from capture.venues import shard_by_url_budget
 from capture.venues.binance import BinanceVenue
@@ -28,6 +30,7 @@ from capture.venues.hyperliquid import HyperliquidVenue
 _VENUES = {"binance": BinanceVenue, "hyperliquid": HyperliquidVenue}
 
 _OPEN_TIMEOUT_SECONDS = 20
+_UNIVERSE_TIMEOUT_SECONDS = 20
 _INTERRUPTED_EXIT_CODE = 130       # 128 + SIGINT, the shell convention
 
 
@@ -69,6 +72,29 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
                     timeout=None if math.isinf(remaining) else remaining)
             except TimeoutError:
                 return
+
+
+TAIL_ALL = "ALL"
+
+
+def fetch_universe(venue) -> list[str]:
+    """Every symbol the venue currently lists as tradeable.
+
+    Synchronous and blocking on purpose: this runs once, before the capture
+    loop starts, and a tail built from a stale list is the thing it exists to
+    prevent. Uses the venue's own `instruments_request` / `parse_instruments`
+    pair, so a venue that describes its universe differently needs no change
+    here.
+    """
+    import urllib.request
+
+    method, url, payload = venue.instruments_request()
+    body = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(
+        url, data=body, method=method,
+        headers={"Content-Type": "application/json"} if body else {})
+    with urllib.request.urlopen(request, timeout=_UNIVERSE_TIMEOUT_SECONDS) as response:
+        return venue.parse_instruments(json.loads(response.read().decode()))
 
 
 async def run_capture(venue, specs, root: Path, duration_seconds: float,
@@ -198,9 +224,32 @@ def main(argv: list[str] | None = None) -> int:
     # market. `dict.fromkeys` drops repeats within the tail list too, and keeps
     # the order the operator gave.
     core_symbols = set(symbols)
-    tail_symbols = [symbol for symbol in dict.fromkeys(
-        s.strip() for s in args.tail_symbols.split(",") if s.strip())
-        if symbol not in core_symbols]
+    if args.tail_symbols.strip().upper() == TAIL_ALL:
+        # A hand-maintained tail list goes stale the first time a symbol lists
+        # or delists, and the stale day cannot be backfilled. Refusing beats
+        # falling back to the core: six symbols out of several hundred,
+        # captured silently, would leave the archive looking like a healthy run.
+        try:
+            discovered = fetch_universe(venue)
+        except Exception as exc:
+            parser.error(f"--tail-symbols ALL could not read {args.venue}'s "
+                         f"universe, so the tail would silently shrink to the "
+                         f"core: {exc}")
+        if not discovered:
+            parser.error(f"{args.venue} reported an empty universe; refusing "
+                         f"rather than capturing only the core")
+        # Point-in-time membership, recorded before a single frame is captured.
+        # Backtesting "watch every symbol" against today's list conditions on
+        # survival, and no purge or embargo scheme catches it. Trivial now,
+        # impossible to reconstruct later.
+        UniverseTracker(Path(args.root), venue.name).record_snapshot(
+            sorted(discovered), time.time_ns())
+        tail_source = discovered
+    else:
+        tail_source = [s.strip() for s in args.tail_symbols.split(",") if s.strip()]
+
+    tail_symbols = [symbol for symbol in dict.fromkeys(tail_source)
+                    if symbol not in core_symbols]
 
     # The core gets a socket to itself. Depth is the expensive feed and the one
     # least recoverable if it drops, and sharing a connection with several
