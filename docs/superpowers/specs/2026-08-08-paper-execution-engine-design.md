@@ -126,7 +126,7 @@ never loads the rows it was refused.
 
 ## The two tiers, and what tier 1 honestly cannot do
 
-**Tier 1 — 746 symbols today, from 2026-08-08 09:00 UTC.** Trades and book ticker, no depth.
+**Tier 1 — 2,109 symbols today, from 2026-08-08 09:00 UTC.** Trades and book ticker, no depth.
 `impact_bps` in `src/cost/spread_and_depth.py` **refuses** rather than extrapolating, and
 `quote_round_trip_cost` returns `CostRefused` rather than a number. That behaviour is
 inherited, not re-implemented.
@@ -139,13 +139,28 @@ the archive on 2026-08-08:
 |---|---|---|---|
 | binance perp | 569 | **569** | |
 | hyperliquid | 177 | **177** | |
-| binance spot | 1,363 | **0** | no entry in `_TRADE_STREAMS` (`src/store/cli.py`) — the builder cannot read this venue at all |
-| **total** | **2,109** | **746** | |
+| binance spot | 1,363 | **1,363** | unbuildable until 2026-08-08; `_TRADE_STREAMS` mapped only two venues |
+| **total** | **2,109** | **2,109** | |
 
-**2,123 was a capture figure, not a discovery figure.** It counts symbols across three venues
-that the tape records; the spot majority cannot currently be built into bars, so discovery
-runs on 746. Either widen `_TRADE_STREAMS` to cover spot or say 746 — the number that must
-never appear again is the one that counts symbols nothing can read.
+**2,123 was a capture figure being used as a discovery figure**, and at the time it was
+written only 746 of those symbols could be built at all — binance spot was absent from
+`_TRADE_STREAMS` in `src/store/cli.py`, so 1,363 captured symbols were unreadable and nothing
+said so. Spot was registered the same day; its frames needed no new extractor, sharing the
+futures shape exactly in the five fields the extractor reads. Measured after: 1,354 spot
+symbols build in 64.7s and 495 MB for five hours of tape, producing 131,170 bars.
+
+**Spot and perp share symbol strings and are not the same instrument.** BTCUSDT is listed on
+both, at different prices and different fees. `build_bars` keys on (symbol, venue, bar) and
+`ClockGatedReader` de-duplicates on (symbol, venue, event_time), so they stay distinct — but
+only because the venue is carried rather than normalised away. Verified through the reader on
+real data: 588 perp bars and 268 spot bars for BTCUSDT, closing at 64,965.90 and 65,026.79.
+
+**Not all of spot is denominated in dollars, and this is not yet handled.** Of 1,354 symbols:
+488 USDT, 312 TRY, 272 USDC, 41 BTC, 35 FDUSD, 28 EUR, 27 JPY, 20 USD1, 18 BRL, 12 ETH, 9 BNB.
+So roughly 815 are dollar-quoted and roughly 540 are not. A TRY-quoted pair's returns carry
+Turkish lira moves, and a BTC-quoted pair's carry bitcoin's; feeding either into a
+dollar-denominated P&L without conversion measures something nobody asked about. Discovery
+must either filter to dollar quotes or convert, and that decision is open — see below.
 
 **And the history is hours, not days.** Broad capture began at 09:00 UTC on 2026-08-08; every
 day before it holds three symbols per venue and no spot at all. "Since Aug 3" described a
@@ -218,10 +233,10 @@ step toward placing an order — that remains an explicit, separately-authorised
    distribution measured before a fraction is picked.
 3. **Forward-supervisor cadence** — event-driven off the capture feed vs a fixed tick. Affects
    ops cost more than correctness.
-4. **Whether spot joins tier 1** — 1,363 captured symbols, none buildable, because
-   `_TRADE_STREAMS` in `src/store/cli.py` maps only `binance` and `hyperliquid`. Adding it is
-   a small change to that map plus whatever the spot trade frame's shape demands; the decision
-   is whether spot belongs in discovery at all, not whether it is possible.
+4. **Which spot pairs discovery accepts** — spot is buildable as of 2026-08-08, but ~540 of
+   its 1,354 symbols are quoted in TRY, EUR, JPY, BRL, BTC, ETH or BNB rather than dollars.
+   Filter to dollar quotes, or convert through a rate the archive does not yet capture. Until
+   this is decided, a non-dollar pair's P&L is denominated in something nobody chose.
 5. **Whether the supervisor builds the broad universe** — it currently builds three symbols per
    venue. Measured 2026-08-08: 569 symbols cost 367s and 2.7 GB peak in batches of five for
    five hours of tape, extrapolating to ~34 min for a full day, ~70 MB/day on disk. Feasible;

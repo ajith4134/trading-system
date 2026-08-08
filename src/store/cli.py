@@ -57,7 +57,12 @@ from store.parquet_partition import (
 from store.temporal_schema import EVENT_TIME
 from store.trade_bars import Trade, build_bars, extract_trades
 
-_TRADE_STREAMS = {"binance": "trade", "hyperliquid": "trades"}
+# The capture stream carrying trades, per venue. A venue absent here cannot be
+# built at all, and until 2026-08-08 spot was absent - 1,363 captured symbols the
+# builder could not read, while the paper-engine design called tier 1 "2,123
+# symbols". Nothing reported the gap, because a venue that is never asked for
+# never refuses.
+_TRADE_STREAMS = {"binance": "trade", "binance-spot": "trade", "hyperliquid": "trades"}
 DEFAULT_INTERVAL_NS = 60_000_000_000
 DEFAULT_LOOKAHEAD_HOURS = 2
 

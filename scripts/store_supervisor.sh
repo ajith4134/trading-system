@@ -76,7 +76,7 @@ while true; do
   # polled datasets kept writing a line every pass, and nothing in the run log
   # said bars had been attempted at all - because they never had been. Every
   # pass now leaves a line naming the venue-day and whether it built.
-  for spec in "binance $CORE" "hyperliquid $CORE_HYPERLIQUID"; do
+  for spec in "binance $CORE" "binance-spot $CORE" "hyperliquid $CORE_HYPERLIQUID"; do
     set -- $spec
     # Three states, not two. The partition writer refuses a rewrite, so every
     # pass after the first exits non-zero on a day it already built - and

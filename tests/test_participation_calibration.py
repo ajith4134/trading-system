@@ -73,9 +73,9 @@ def readers(store_root):
 # --- silence is a refusal, never a default -----------------------------------
 
 def test_calibration_refuses_when_the_depth_archive_holds_no_book(tmp_path):
-    """Tier 1 has 746 buildable symbols and depth for three of them.
+    """Tier 1 has 2,109 buildable symbols and depth for three of them.
 
-    Defaulting the other 743 to some plausible-looking fraction would put an
+    Defaulting the other 2,106 to some plausible-looking fraction would put an
     invented number into every fill they produce, indistinguishable from the three
     that were actually measured.
     """

@@ -777,3 +777,35 @@ def test_the_module_runs_as_a_module(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "NameError" not in result.stderr
+
+
+def test_spot_is_a_venue_the_builder_can_read(tmp_path, monkeypatch):
+    """1,363 captured symbols were unbuildable for want of one map entry.
+
+    The design doc called tier 1 "2,123 symbols" while the builder could reach
+    746 of them, because `_TRADE_STREAMS` mapped only binance and hyperliquid and
+    nothing anywhere said so. Registering the venue is the whole fix; the frame
+    shape needed nothing.
+    """
+    from capture.frame_codec import IndexEntry
+    from store import cli as store_cli
+
+    source = tmp_path / "raw" / "binance-spot" / "2026-08-02"
+    source.mkdir(parents=True)
+    (source / "trade_BTCUSDT_2026-08-02T00.ndjson.zst").write_bytes(b"placeholder")
+    (source / "trade_BTCUSDT_2026-08-02T00.idx.zst").write_bytes(b"placeholder")
+
+    frame = ('{"stream":"btcusdt@trade","data":{"e":"trade","E":1785685177439,'
+             '"s":"BTCUSDT","t":1,"p":"64994.31000000","q":"0.00330000",'
+             '"T":1785685177439,"m":true,"M":true}}')
+    entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
+                       seq=None, kind="data", esc=False)
+    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [(frame, entry)])
+
+    summary = store_cli.build_bars_for_day(
+        capture_root=tmp_path, store_root=tmp_path / "store", venue="binance-spot",
+        date="2026-08-02", symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
+
+    assert summary["bars"] == 1
+    stored = tmp_path / "store" / "bars_60000000000ns" / "symbol=BTCUSDT"
+    assert stored.is_dir()

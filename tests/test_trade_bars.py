@@ -113,3 +113,48 @@ def test_ohlcv_is_computed_in_event_time_order():
 def test_bars_from_no_trades_are_empty_not_zero_filled():
     """A bar with no trades did not happen; inventing a flat one invents liquidity."""
     assert build_bars([], MINUTE_NS).empty
+
+
+# A real captured spot frame, byte for byte from
+# capture/raw/binance-spot/2026-08-08/trade_BTCUSDT_2026-08-08T10.ndjson.zst.
+# Copied rather than adapted from the perp fixture: the whole question this
+# answers is whether the two shapes are actually the same, and a fixture written
+# by editing the perp one would assume the answer.
+BINANCE_SPOT_FRAME = (
+    '{"stream":"btcusdt@trade","data":{"e":"trade","E":1786183200055,'
+    '"s":"BTCUSDT","t":6564147733,"p":"64994.31000000","q":"0.00330000",'
+    '"T":1786183200055,"m":true,"M":true}}'
+)
+
+
+def test_a_real_spot_frame_yields_its_trade():
+    """Spot carries `M` and no `X`/`st`; the fields that matter are identical.
+
+    1,363 captured symbols were unbuildable purely because the venue was not
+    registered - not because its frames needed anything new.
+    """
+    entry = _entry(1786183200100000000, 1786183200055)
+    trades = extract_trades(BINANCE_SPOT_FRAME, entry, "binance-spot", "BTCUSDT")
+
+    assert len(trades) == 1
+    assert trades[0].venue == "binance-spot"
+    assert trades[0].price == pytest.approx(64994.31)
+    assert trades[0].size == pytest.approx(0.0033)
+    assert trades[0].event_time_ns == 1786183200055 * 1_000_000
+
+
+def test_the_same_symbol_on_spot_and_perp_stays_two_instruments():
+    """BTCUSDT exists on both venues and they are not the same thing.
+
+    This is the actual risk in adding spot: the symbol strings collide. If venue
+    were not part of the bar key, spot prints would be folded into the perp's
+    OHLCV and the resulting bar would describe a market that does not exist.
+    """
+    entry = _entry(1786183200100000000, 1786183200055)
+    trades = (extract_trades(BINANCE_SPOT_FRAME, entry, "binance-spot", "BTCUSDT")
+              + extract_trades(BINANCE_FRAME, entry, "binance", "BTCUSDT"))
+
+    bars = build_bars(trades, 60_000_000_000)
+
+    assert len(bars) == 2
+    assert sorted(bars["venue"]) == ["binance", "binance-spot"]

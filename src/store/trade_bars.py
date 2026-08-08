@@ -94,6 +94,18 @@ def _extract_hyperliquid(body: dict, entry: IndexEntry, symbol: str, venue: str)
 
 _EXTRACTORS = {
     "binance": _extract_binance,
+    # Spot shares the futures frame shape exactly for the fields read above:
+    # `e`, `T`, `s`, `p`, `q`. It adds `M` and omits `X`/`st`, none of which are
+    # touched. Verified against a captured frame rather than assumed, because the
+    # cost of being wrong is a venue that reads as a quiet market.
+    #
+    # It stays a separate venue rather than folding into "binance": BTCUSDT is
+    # listed on both and they are different instruments with different prices and
+    # different fees. `build_bars` keys on (symbol, venue, bar) and the reader
+    # de-duplicates on (symbol, venue, event_time), so the two remain distinct
+    # everywhere downstream - but only because the venue is carried, never
+    # normalised away.
+    "binance-spot": _extract_binance,
     "hyperliquid": _extract_hyperliquid,
 }
 
