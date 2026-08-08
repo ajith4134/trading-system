@@ -41,7 +41,7 @@ why the systems that shipped them never noticed. See the addendum in
 ## Working rules for this repo
 
 - **Python 3.12** via `uv`. Never system Python (3.14.4 — too new for polars).
-- Tests: `.venv/bin/python -m pytest -q`. Baseline **651 passed, 1 skipped**.
+- Tests: `.venv/bin/python -m pytest -q`. Baseline **670 passed, 1 skipped**.
 - **Every market-data read goes through `store.clock_gated_reader`.** No direct Parquet reads, no
   live REST in a pricing path. That is the whole reason Layer 1 exists.
 - **No quote may be produced from a default.** A missing or stale input produces a refusal naming
