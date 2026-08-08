@@ -95,3 +95,44 @@ def test_loading_rates_refuses_when_no_funding_dataset_exists(tmp_path):
         load_funding_rates_as_of(tmp_path, "binance", "BTCUSDT",
                                  ns("2026-08-08T00:00:00"), ns("2026-08-09T00:00:00"))
     assert "funding" in str(excinfo.value).lower()
+
+
+# --- reading the dataset once it exists --------------------------------------
+
+def _write_funding_dataset(store_root, rows):
+    """A real dataset written through the real partition writer."""
+    from decimal import Decimal as D
+    from store.funding_rates import FundingObservation, build_funding_frame
+    from store.parquet_partition import append_partition
+    frame = build_funding_frame([
+        FundingObservation(symbol="BTCUSDT", venue="binance",
+                           funding_rate=D(rate), mark_price=D("1"),
+                           index_price=D("1"), next_funding_time_ns=0,
+                           event_time_ns=at, ingestion_time_ns=at)
+        for rate, at in rows])
+    append_partition(store_root, "funding", frame, snapshot_id="test")
+
+
+def test_rates_are_served_once_the_dataset_exists(tmp_path):
+    """The refusal is about a missing dataset, not a permanent state. Once
+    Layer 1 holds funding, the same call must answer."""
+    settlement = ns("2026-08-08T08:00:00")
+    _write_funding_dataset(tmp_path, [("0.0001", settlement - 10**9)])
+
+    got = load_funding_rates_as_of(tmp_path, "binance", "BTCUSDT",
+                                   ns("2026-08-08T00:00:01"),
+                                   ns("2026-08-08T08:00:00"))
+    assert got == [Decimal("0.0001")]
+
+
+def test_a_rate_published_after_the_settlement_is_not_used(tmp_path):
+    """The leakage case, end to end through the clock gate. A rate that landed
+    after the settlement it would be charged against must not be visible."""
+    settlement = ns("2026-08-08T08:00:00")
+    _write_funding_dataset(tmp_path, [("0.0001", settlement - 10**9),
+                                      ("0.0009", settlement + 60 * 10**9)])
+
+    got = load_funding_rates_as_of(tmp_path, "binance", "BTCUSDT",
+                                   ns("2026-08-08T00:00:01"),
+                                   ns("2026-08-08T08:00:00"))
+    assert got == [Decimal("0.0001")], "used a rate published after the settlement"
