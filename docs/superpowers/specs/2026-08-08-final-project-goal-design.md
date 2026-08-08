@@ -85,6 +85,160 @@ This is the operational meaning of "self-improving." It is measured, not asserte
 
 ---
 
+## 1a. The intelligence standard — what "real intelligence" means here, and how it is checked
+
+**Requirement, in the user's words:** the bots must have *real intelligence, real AI in the code —
+not hardcoded values or instructions*. And, clarified separately: **not only learning, but real
+intelligence.** Those are two different things and this section keeps them apart.
+
+**Sources.** `~/research/IDEAS-INTELLIGENCE.md` (the corpus already answers much of this),
+plus four reports commissioned 2026-08-08: `learned-vs-hardcoded-boundary.md`,
+`reasoning-vs-learning.md`, `what-makes-code-deep.md`, `strategies-as-evolved-programs.md`.
+Each carries its own `UNVERIFIED` appendix. Re-read those before overriding anything below.
+
+### 1a.0 The honest boundary — stated first, so the standard does not become the overclaim it exists to prevent
+
+`IDEAS-INTELLIGENCE.md` §0 opens with it:
+
+> No architecture available in 2026 produces understanding. LLMs do not know things; they produce
+> text conditioned on text. Anything promising "real intelligence" from a model swap is selling
+> something.
+
+The empirical answer to that hope is already in the corpus: **Alpha Arena, six frontier models given
+$10k each on Hyperliquid perps. In 17 days four of six lost 30–63%.** Causes were mundane —
+over-trading into fees, rigid directional bias, no stop discipline.
+
+**But the distance between a script and an adapting, self-aware system is real, and it is
+crossable.** What crosses it is not a smarter model. It is beliefs that carry provenance and expire;
+calibrated knowledge of its own competence; learning from its own history as data; self-directed
+acquisition of what it lacks; and modelling itself as a participant rather than a ghost. All five are
+buildable with unglamorous engineering, and are almost universally skipped for exactly that reason.
+
+**The failure mode this standard is designed against is not stupidity. It is confident staleness** —
+a system that learned something true, never noticed it stopped being true, and keeps betting on it.
+
+### 1a.1 Three axes, judged separately
+
+A module can pass one and fail the others. All three are review gates, not aspirations.
+
+| Axis | The question | Failure looks like |
+|---|---|---|
+| **Learning** | Where did this number come from? | A person's guess wearing a variable name |
+| **Reasoning** | Does it know *why*, and does it know when it doesn't? | Fluent causal-sounding language over pattern completion |
+| **Depth** | Is the code itself deep or shallow? | Elaborate interfaces hiding little |
+
+### 1a.2 The learning axis — tests
+
+From `learned-vs-hardcoded-boundary.md` §5. Apply to any module named, documented or described as
+learning, adaptive, AI, or intelligent.
+
+| # | Test | Disqualifier |
+|---|---|---|
+| L1 | **Provenance-of-constants audit** | Every numeric parameter in the decision path traces to a `fit()`/`train()` call with a logged loss and dataset reference, or to an explicitly disclosed design choice. "Someone typed it" is hardcoded, whatever the variable is named |
+| L2 | **Update-in-the-runtime-loop** | Does the live decision loop itself update parameters from post-deployment data? If the only path that changes parameters is a script a human invokes, that is scheduled retraining — a legitimate but *different* claim, and it must be labelled as such |
+| L3 | **Parameter-randomisation** | Swap trained values for random ones and rerun on held-out data. Materially unchanged output means the parameters are decorative |
+| L4 | **Ablation** | Freeze or remove the component, replace with its long-run average, rerun. Statistically indistinguishable means it contributes nothing measurable |
+| L5 | **Freezing / inner-loop** | For anything claiming fast adaptation: freeze the adaptable part at deployment. If performance barely moves, that is feature reuse, not rapid learning |
+| L6 | **Out-of-regime stress** | Edge must survive a *different* regime, not a held-out slice of the same one. Nov 20 2024 is a known boundary in crypto structure |
+| L7 | **Trial-count accounting** | Every search, retune and backtest counted, with DSR or PBO applied. Uncounted retuning makes the reported edge unverified by definition. **The count keys on candidates *evaluated*, never on candidates *retained*** — see the archive clause below |
+| L8 | **Objective-vs-intent audit** | Stress the reward against degenerate inputs and check whether the learner finds the exploit. ~60 catalogued real cases of specification gaming exist |
+| L9 | **Catastrophic-forgetting check** | Interleave a regression suite of past scenarios into every online update; alert when old competence degrades as new data arrives |
+| L10 | **Documentation reconciliation** | Every place the system is called AI, adaptive or self-improving must point at an artifact satisfying L1–L9 |
+
+> **If only two can be run: L1 + L4.** Show where the values came from, and show that removing the
+> component changes measured behaviour. Fail either and it is a parameterised script wearing the
+> costume of learning.
+
+This is not an abstract standard. **The SEC sanctioned Delphia and Global Predictions in March 2024
+for precisely this shape** — AI/ML claims with no underlying training artifact to point at.
+
+#### The archive clause — a diversity archive buys no discount on multiple testing
+
+From `strategies-as-evolved-programs.md`, and it is the single most important constraint that report
+imposes.
+
+Quality-diversity search — maintaining an archive of strategies that are good **and behaviourally
+different**, MAP-Elites style — is the right shape for this system. `IDEAS-INTELLIGENCE.md` §9 already
+rates it ★ HIGH, because correlation is what kills portfolios and a stable of decorrelated mediocre
+strategies beats one optimised strategy that dies in one regime.
+
+**But a diverse archive is a *larger* search, so the correction gets harsher, not gentler.**
+
+> **The multiple-testing correction keys on the total number of candidates evaluated to build the
+> archive — never on the number retained in it.**
+
+The report's finding on why this matters: **five of the six finance-specific evolved-alpha papers
+surveyed omit exactly that number.** It is the one figure needed before any of their out-of-sample
+claims can be trusted, and it is the one figure missing.
+
+The Trial Registry must therefore be **structurally impossible to bypass** during archive
+construction, not merely conventionally used — which is already its contract in `ARCHITECTURE.md`
+Layer 2.
+
+### 1a.3 The reasoning axis — tests
+
+From `reasoning-vs-learning.md` §6. **None of these requires trusting the component's self-report.**
+That is the point — every one is checkable from outside, on data you control.
+
+| # | Test | What it catches |
+|---|---|---|
+| R1 | **Falsifiable side-prediction** | Ask for an auxiliary consequence of the explanation that has not been checked, then check it. No checkable side-prediction, or one that merely restates the claim, means pattern-matching in causal language |
+| R2 | **DoWhy refutation battery** | Placebo-treatment, random-common-cause, data-subset refuters. Passing is necessary, not sufficient — **failing any one is a hard mechanical disqualifier** |
+| R3 | **Evidence-order permutation** | Same facts, different order. A component reasoning over structure is invariant. Measured LLM-as-judge position bias: Claude-v1 flipped 76% of the time, GPT-4 30% — on a task with no principled order dependence |
+| R4 | **Abstention with teeth** | "I don't know" must be backed by a coverage guarantee (conformal `q̂`, or an SGR bound), not a verbalised hedge. Track realised accuracy on non-abstained predictions against the promised bound |
+| R5 | **Counterfactual on held-out structure** | Synthetic environment with a known confounder; train on observational data only; ask for an intervention never shown. The only test here that separates Pearl's rung 1 from rung 2 |
+| R6 | **Self-correction without ground truth** | Let it self-correct with no external feedback and measure before/after. Real systems *degrade* — one documented case 75.8% → 38.1%. If accuracy does not improve, the correction step is theatre |
+| R7 | **Multi-voice vs single-voice + resampling** | Benchmark any debate or committee design against one agent with self-consistency at matched compute. An ICML 2024 replication found debate does not reliably beat it, and an assigned adversarial persona made it worse |
+| R8 | **Model-trust boundary** | Does planning depth *shrink as the world model's measured error grows*, or is lookahead a fixed hyperparameter? MBPO's own bound implies planning zero steps into an uncalibrated model; a documented 45% reward collapse (176→98) came from a model whose training loss never moved |
+| R9 | **Mechanism-swap / label invariance** | Rename `funding_rate` to `widget_7`, preserving its statistical role. A component reasoning over structure answers identically; one leaning on lexical association does not |
+
+### 1a.4 The depth axis — tests
+
+From `what-makes-code-deep.md`. Depth is a defined concept, not a compliment. Ousterhout:
+*"It is more important for a module to have a simple interface than a simple implementation."*
+
+| # | Test | Threshold |
+|---|---|---|
+| D1 | **Interface-to-implementation ratio** | Public symbols exposed, against lines of implementation behind them. The defining criterion, and the only one applicable from a module's own source without tracing call sites |
+| D2 | **Concepts a caller must hold** | A caller needing to understand the internals to use it correctly means the abstraction leaks |
+| D3 | **Error paths per happy path** | Institutional code is mostly non-happy-path. A module with one error branch per twenty happy-path lines has not been written for production |
+| D4 | **No shallow-module proliferation** | Many small classes each exposing nearly as much interface as implementation is the documented failure pattern, and the one generated code tends to produce |
+
+**Honest gap, recorded rather than papered over:** the depth report found **no published study
+measuring module depth in LLM-generated code directly.** Adjacent evidence exists on duplication and
+defect density; the specific claim does not. D1–D4 are therefore applied as a review discipline
+grounded in design literature, not as an empirically validated predictor.
+
+### 1a.5 The master test
+
+From `IDEAS-INTELLIGENCE.md`, and it governs everything above:
+
+> ### Does it change what the system does when it is wrong?
+
+Features that only improve behaviour when the system is already right are decoration. Every
+capability admitted under this standard must change behaviour *under error* — by refusing to act, by
+expiring a belief, by catching a contradiction, by rolling back, or by noticing the world moved.
+
+### 1a.6 How this binds
+
+- **No module ships without an axis verdict.** Learning / reasoning / depth, each pass or fail with
+  the evidence named. A module may legitimately be *not applicable* on an axis — a Parquet writer
+  does not reason — but that must be stated, not left blank.
+- **The status wall carries the verdicts** (Rule 8). A module claimed intelligent with no passing
+  test renders as `NOT MEASURED`, never as green.
+- **Ledger rows inherit it.** Any Requirements Ledger row describing an intelligent capability
+  carries its axis tests; without them the row cannot move to CLAIMED.
+- **The ten to build first** are already ordered in `IDEAS-INTELLIGENCE.md` by leverage per unit of
+  effort: belief records with provenance and half-life · read/verified/observed epistemic classes
+  where **only observed may size a position** · verification-before-ingestion · abstention as a real
+  action with its P&L measured · calibration scoring · "who loses when I win?" as a required
+  declaration · meta-analysis over the Trial Registry · own-footprint attribution · cost of operation
+  inside the objective · property-based invariants across backtest, shadow and live.
+
+That list is deliberately boring, and `IDEAS-INTELLIGENCE.md` says why: **boring is what compounds.**
+
+---
+
 ## 2. What the finished system does on a normal day
 
 Nobody touches it.
