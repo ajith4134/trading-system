@@ -464,6 +464,66 @@ def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
                        evidence)
 
 
+def probe_bar_price_validity(facts: SystemFacts) -> ProbeResult:
+    """Are the prices in the store prices at all?
+
+    Nothing was asking. The store tile reports rows, then freshness, then coverage,
+    and all three were green on 2026-08-08 while 746 of 1,671 bars carried a
+    non-positive price. Binance emits placeholder frames on its `@trade` stream -
+    `p` "0", `q` "0", `X` "NA" - and `_extract_binance` turned each into a trade at
+    0.0, where `low=("price", "min")` needs exactly one to ruin a bar. The ruined
+    bars looked perfect otherwise: correct open, correct high, hundreds of trades.
+    Found by a paper-plumbing run refusing to divide by a zero price, which is luck,
+    not monitoring.
+
+    FAILING, not DEGRADED: an impossible price is not a smaller truth, it is a wrong
+    one, and every number computed from it is wrong without saying so.
+
+    Judged on what `ClockGatedReader` SERVES, never on the parquet files. The store
+    is append-only and corrections are new rows, so the poisoned bars remain on disk
+    permanently after remediation. A probe reading the files would report FAILING
+    forever with no way to clear it, and a permanently red tile is one everybody
+    learns to skip - which is how the next real failure gets missed.
+    """
+    datasets = _bar_datasets(facts)
+    if not datasets:
+        return ProbeResult(NOT_BUILT, "no store to check prices in", "capture/store")
+
+    from store.clock_gated_reader import ClockGatedReader
+    served = ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(2**62)
+    evidence = f"capture/store/{datasets[0].name}"
+    if served.empty:
+        return ProbeResult(DEGRADED, "store reads empty, so no price can be checked",
+                           evidence)
+
+    columns = [c for c in ("open", "high", "low", "close") if c in served.columns]
+    if not columns:
+        return ProbeResult(
+            DEGRADED,
+            f"no OHLC columns in {datasets[0].name}; nothing here knows what a price is",
+            evidence)
+
+    impossible = served[(served[columns] <= 0).any(axis=1)]
+    if impossible.empty:
+        return ProbeResult(
+            OK,
+            f"every price positive across {len(served)} bar(s) and {len(columns)} "
+            f"OHLC column(s)",
+            evidence)
+
+    # Named, not just counted. A count tells a reader something is wrong; the symbols
+    # and the worst column tell them where to go and look.
+    from store.temporal_schema import SYMBOL
+    symbols = sorted(impossible[SYMBOL].unique().tolist())
+    worst = {c: int((served[c] <= 0).sum()) for c in columns if (served[c] <= 0).any()}
+    return ProbeResult(
+        FAILING,
+        f"{len(impossible)} of {len(served)} served bar(s) carry a non-positive price "
+        f"- {', '.join(f'{c}:{n}' for c, n in sorted(worst.items()))} - "
+        f"in {', '.join(symbols[:6])}{' ...' if len(symbols) > 6 else ''}",
+        evidence)
+
+
 def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
     """Reports on the gate by exercising it, not by checking the file exists.
 
@@ -604,6 +664,7 @@ PROBES = {
     "reconnect with full jitter backoff honour retry after": probe_capture_supervisor,
     "strategy health board": probe_status_wall,
     "bitemporal store": probe_bitemporal_store,
+    "stored bar price validity gate": probe_bar_price_validity,
     "clock gated access api": probe_clock_gated_access,
     "cost engine round trip breakeven gate": probe_cost_engine,
 }

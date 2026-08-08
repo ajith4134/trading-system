@@ -464,7 +464,8 @@ def test_no_receipt_at_all_still_reports_declared(tmp_path):
     assert "never" in r.detail.lower() or "declared" in r.detail.lower()
 
 
-def _bars_partition(tmp_path, snapshot: str, symbol: str = "BTCUSDT"):
+def _bars_partition(tmp_path, snapshot: str, symbol: str = "BTCUSDT",
+                    low: float = 63000.0, available_at: int = 1_100):
     """One readable bar partition, so the probe has something real to read."""
     import pandas as pd
     from store.parquet_partition import append_partition
@@ -473,7 +474,8 @@ def _bars_partition(tmp_path, snapshot: str, symbol: str = "BTCUSDT"):
 
     frame = pd.DataFrame({
         SYMBOL: [symbol], VENUE: ["binance"], EVENT_TIME: [1_000],
-        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [1_100], "close": [63113.2],
+        INGESTION_TIME: [1_050], AVAILABILITY_TIME: [available_at],
+        "open": [63100.0], "high": [63200.0], "low": [low], "close": [63113.2],
     }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
     append_partition(tmp_path / "store", "bars_60000000000ns", frame, snapshot)
 
@@ -548,3 +550,58 @@ def test_coverage_that_cannot_be_measured_is_named_not_assumed(tmp_path):
 
     assert result.state == OK
     assert "coverage not measured" in result.detail, result.detail
+
+
+def test_price_validity_probe_fails_on_a_stored_bar_whose_price_is_zero(tmp_path):
+    """A price of zero is not a price, and nothing on the wall was checking.
+
+    The store tile counts rows, then freshness, then coverage - and every one of
+    those was green while 746 of 1,671 bars carried `low <= 0`. Binance emits
+    placeholder frames on its trade stream (`p` "0", `q` "0", `X` "NA") and one of
+    them reaching `low=("price", "min")` ruins a bar that otherwise looks perfect:
+    right open, right high, hundreds of trades. It was found by a paper-plumbing run
+    refusing to divide by zero, which is not a monitoring strategy.
+
+    FAILING rather than DEGRADED: a bar with an impossible price is not a smaller
+    truth, it is a wrong one, and anything that reads it computes a wrong number.
+    """
+    from statuswall.evidence import FAILING, probe_bar_price_validity
+
+    _bars_partition(tmp_path, "good", symbol="BTCUSDT")
+    _bars_partition(tmp_path, "bad", symbol="ETHUSDT", low=0.0)
+
+    result = probe_bar_price_validity(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "1 of 2" in result.detail, result.detail
+    assert "ETHUSDT" in result.detail, "the tile must name what to go and look at"
+
+
+def test_price_validity_probe_is_ok_when_every_served_price_is_positive(tmp_path):
+    from statuswall.evidence import OK, probe_bar_price_validity
+
+    _bars_partition(tmp_path, "good", symbol="BTCUSDT")
+    result = probe_bar_price_validity(_facts(capture_root=tmp_path))
+
+    assert result.state == OK
+    assert "1 bar(s)" in result.detail, result.detail
+
+
+def test_price_validity_probe_reports_not_built_before_any_store_exists(tmp_path):
+    from statuswall.evidence import NOT_BUILT, probe_bar_price_validity
+    assert probe_bar_price_validity(_facts(capture_root=tmp_path)).state == NOT_BUILT
+
+
+def test_price_validity_probe_judges_what_the_reader_serves_not_the_files(tmp_path):
+    """A corrupt row already superseded by a correction is not a live defect.
+
+    The store is append-only and corrections are new rows, so the poisoned bars are
+    still on disk after remediation - permanently. A probe reading the parquet files
+    would report FAILING forever and could never be cleared, which trains everyone
+    to ignore it.
+    """
+    from statuswall.evidence import OK, probe_bar_price_validity
+
+    _bars_partition(tmp_path, "bad", symbol="BTCUSDT", low=0.0, available_at=1_100)
+    _bars_partition(tmp_path, "fixed", symbol="BTCUSDT", low=63870.0, available_at=9_999)
+
+    assert probe_bar_price_validity(_facts(capture_root=tmp_path)).state == OK
