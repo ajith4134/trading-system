@@ -55,15 +55,37 @@ from cost.round_trip_cost import CostRefused, quote_round_trip_cost
 from execution.order_intent_wal import OrderIntent, OrderIntentWal
 from execution.order_lifecycle import Order
 from paper.fill_model import (
-    MarketEvent, Participation, RestingOrder, signed_cash, simulate_fills,
+    MarketEvent, PaperFill, Participation, RestingOrder, signed_cash,
+    simulate_fills,
 )
 from store.clock_gated_reader import ClockGatedReader
 
 BARS_DATASET = "bars_60000000000ns"
+# One bar, matching BARS_DATASET. Used to tell the cost engine how long the position
+# is expected to be held, which is what makes funding a real line on a perp rather
+# than an omitted one.
+interval_hint = 60_000_000_000
 STRATEGY = "prove-plumbing-crude-momentum"
 # One bar. An intent that outlives the bar it was decided on would fire against a
 # market it never saw, which is the failure `valid_for_ns` exists to prevent.
 INTENT_VALID_NS = 60_000_000_000
+
+
+@dataclass
+class _Position:
+    """One open long, its entry cost, and how long it has waited to be closed.
+
+    The entry cash is carried here rather than added to the tally when the entry
+    fills, so the reported totals are REALISED: both legs or neither. A position
+    still open at the end has paid an entry and earned nothing back, and letting that
+    into the total produces a loss that is really an unfinished trade.
+    """
+
+    quantity: Decimal
+    target: Decimal
+    bars_held: int
+    entry_optimistic: Decimal
+    entry_pessimistic: Decimal
 
 
 @dataclass
@@ -78,6 +100,10 @@ class Tally:
     orders_journalled: int = 0
     filled: int = 0
     unfilled: int = 0
+    exits_at_target: int = 0
+    exits_by_time_stop: int = 0
+    round_trips: int = 0
+    still_open_at_end: int = 0
     optimistic_cash: Decimal = Decimal("0")
     pessimistic_cash: Decimal = Decimal("0")
     uncalibrated_fills: int = 0
@@ -96,7 +122,7 @@ def _paper_transport(intent: OrderIntent, client_order_id: str) -> dict:
 
 def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
         participation: Decimal, target_bps: Decimal,
-        notional: Decimal, out=sys.stdout) -> Tally:
+        notional: Decimal, max_hold_bars: int = 5, out=sys.stdout) -> Tally:
     """Walk the tape one bar at a time and report every outcome."""
     reader = ClockGatedReader(store_root, BARS_DATASET)
     # Read once at the end of time only to learn WHICH bars exist; every decision
@@ -111,6 +137,11 @@ def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
     tally = Tally()
     schedule_bps_maker = Decimal("0")
     previous_close: Decimal | None = None
+    position_state: _Position | None = None
+    # Carried so the exit leg can charge fees on a bar where no entry quote was
+    # taken. Zero until the first quote, and the first quote always precedes the
+    # first position, so no exit is ever priced at zero.
+    quote_fee_bps = Decimal("0")
 
     for row in catalogue.itertuples(index=False):
         available_at = int(row.availability_time_ns)
@@ -144,6 +175,74 @@ def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
             previous_close = close
             continue
 
+        # --- exit leg -----------------------------------------------------------
+        # Taken before any new signal, so the demo holds at most one position and a
+        # signal can never stack a second entry on an unclosed one.
+        if position_state is not None:
+            exit_event = MarketEvent(trade_price=close, trade_quantity=volume,
+                                     best_bid=low, best_ask=high)
+            exiting = simulate_fills(
+                RestingOrder(side="SELL", limit_price=position_state.target,
+                             remaining=position_state.quantity),
+                (exit_event,),
+                participation=Participation(fraction=participation, calibrated=False))
+
+            exit_intent = OrderIntent(
+                strategy=STRATEGY, symbol=symbol, venue=venue, side="SELL",
+                quantity=position_state.quantity, created_at_ns=int(row.event_time_ns),
+                valid_for_ns=INTENT_VALID_NS, price=position_state.target,
+                reduce_only=True)
+            exit_receipt = wal.submit(exit_intent, _paper_transport,
+                                      now_ns=int(row.event_time_ns))
+            tally.orders_journalled += 1
+
+            if exiting.optimistic:
+                tally.exits_at_target += 1
+                tally.round_trips += 1
+                tally.optimistic_cash += position_state.entry_optimistic + signed_cash(
+                    exiting.optimistic, side="SELL",
+                    maker_bps=schedule_bps_maker, taker_bps=quote_fee_bps)
+                tally.pessimistic_cash += position_state.entry_pessimistic + signed_cash(
+                    exiting.pessimistic, side="SELL",
+                    maker_bps=schedule_bps_maker, taker_bps=quote_fee_bps)
+                wal.resolve(exit_receipt["client_order_id"], "filled",
+                            f"paper exit at target {position_state.target}",
+                            now_ns=int(row.event_time_ns) + 1)
+                position_state = None
+            elif position_state.bars_held + 1 >= max_hold_bars:
+                # Time stop: the target never printed, so the position is closed by
+                # crossing. Built as fills directly rather than through
+                # `simulate_fills`, which models a resting order and not a market
+                # one - and the two accountings stay apart here too: optimistic
+                # sells at the close print, pessimistic at the bar's low, which is
+                # the worst a seller could have done inside the bar.
+                tally.exits_by_time_stop += 1
+                tally.round_trips += 1
+                tally.optimistic_cash += position_state.entry_optimistic + signed_cash(
+                    (PaperFill(quantity=position_state.quantity, price=close,
+                               liquidity="taker"),),
+                    side="SELL", maker_bps=schedule_bps_maker, taker_bps=quote_fee_bps)
+                tally.pessimistic_cash += position_state.entry_pessimistic + signed_cash(
+                    (PaperFill(quantity=position_state.quantity, price=low,
+                               liquidity="taker"),),
+                    side="SELL", maker_bps=schedule_bps_maker, taker_bps=quote_fee_bps)
+                wal.resolve(exit_receipt["client_order_id"], "filled",
+                            f"time stop after {position_state.bars_held + 1} bar(s), "
+                            f"crossed at {close}",
+                            now_ns=int(row.event_time_ns) + 1)
+                position_state = None
+            else:
+                position_state = _Position(
+                    quantity=position_state.quantity, target=position_state.target,
+                    bars_held=position_state.bars_held + 1,
+                    entry_optimistic=position_state.entry_optimistic,
+                    entry_pessimistic=position_state.entry_pessimistic)
+                wal.resolve(exit_receipt["client_order_id"], "cancelled",
+                            "target did not print in this bar",
+                            now_ns=int(row.event_time_ns) + INTENT_VALID_NS)
+            previous_close = close
+            continue
+
         # The crude signal, stated plainly so nobody mistakes it for research: rest a
         # BUY one tick below the previous close and hope the bar trades through it.
         # It is a coin flip with extra steps.
@@ -153,12 +252,14 @@ def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
 
         quote = quote_round_trip_cost(
             venue, symbol, notional, order_type="maker",
-            at_ns=int(row.event_time_ns), store_root=store_root)
+            at_ns=int(row.event_time_ns), store_root=store_root,
+            holding_ns=max_hold_bars * interval_hint)
         if isinstance(quote, CostRefused):
             tally.refused_by_cost_engine += 1
             print(f"  REFUSED (cost) {symbol} @ {limit}: {quote.reason}", file=out)
             continue
         schedule_bps_maker = quote.fee_bps
+        quote_fee_bps = quote.fee_bps
 
         if target_bps <= quote.breakeven_bps:
             tally.refused_below_breakeven += 1
@@ -201,13 +302,23 @@ def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
                     now_ns=int(row.event_time_ns) + 1)
 
         taker_bps = quote.fee_bps
-        tally.optimistic_cash += signed_cash(
+        entry_optimistic = signed_cash(
             outcome.optimistic, side="BUY",
             maker_bps=schedule_bps_maker, taker_bps=taker_bps)
-        tally.pessimistic_cash += signed_cash(
+        entry_pessimistic = signed_cash(
             outcome.pessimistic, side="BUY",
             maker_bps=schedule_bps_maker, taker_bps=taker_bps)
 
+        # Both accountings hold the same quantity - `simulate_fills` differs only in
+        # price - so one position variable describes both.
+        position = sum((f.quantity for f in outcome.optimistic), Decimal("0"))
+        target = limit * (Decimal("1") + target_bps / Decimal("10000"))
+        position_state = _Position(quantity=position, target=target, bars_held=0,
+                                   entry_optimistic=entry_optimistic,
+                                   entry_pessimistic=entry_pessimistic)
+
+    if position_state is not None:
+        tally.still_open_at_end += 1
     return tally
 
 
@@ -218,25 +329,27 @@ def _report(tally: Tally, symbol: str, venue: str, out=sys.stdout) -> None:
     print(f"  refused, non-positive price      : {tally.refused_non_positive_price}", file=out)
     print(f"  refused by the cost engine       : {tally.refused_by_cost_engine}", file=out)
     print(f"  refused below breakeven          : {tally.refused_below_breakeven}", file=out)
-    print(f"  intents journalled to the WAL    : {tally.orders_journalled}", file=out)
+    print(f"  intents journalled, entry + exit : {tally.orders_journalled}", file=out)
     print(f"  filled / unfilled                : {tally.filled} / {tally.unfilled}", file=out)
     print(f"  fills carrying `uncalibrated`     : {tally.uncalibrated_fills}", file=out)
-    # Labelled as spend, not as P&L, because this demo never closes a position:
-    # every order is a BUY and no exit leg is simulated. A figure called "P&L" here
-    # would be a loss that is really just the cost of buying, which is precisely the
-    # kind of number that gets quoted later without its caveat.
-    print(f"  entry spend, optimistic fills    : {tally.optimistic_cash:.2f} "
-          f"(NOT P&L - no exit leg)", file=out)
-    print(f"  entry spend, pessimistic fills   : {tally.pessimistic_cash:.2f} "
-          f"(NOT P&L - no exit leg)", file=out)
+    print(f"  exits at target / by time stop   : {tally.exits_at_target} / "
+          f"{tally.exits_by_time_stop}", file=out)
+    print(f"  closed round trips               : {tally.round_trips}", file=out)
+    print(f"  positions still open at the end  : {tally.still_open_at_end}", file=out)
+    # Realised: both legs or neither. An unclosed position contributes nothing here,
+    # so these cannot be an unfinished trade wearing the name of a loss.
+    print(f"  realised P&L, optimistic         : {tally.optimistic_cash:.2f} "
+          f"over {tally.round_trips} round trip(s)", file=out)
+    print(f"  realised P&L, pessimistic       : {tally.pessimistic_cash:.2f} "
+          f"over {tally.round_trips} round trip(s)", file=out)
     # Never one blended number, and the invariant is asserted rather than trusted:
     # pessimistic must never look better than optimistic, or the accounting is
     # producing a free lunch the strategy did not earn.
     if tally.filled and tally.pessimistic_cash > tally.optimistic_cash:
         print("  INVARIANT VIOLATED: pessimistic beat optimistic", file=out)
     print("\n  This is a wiring proof. No purge, no embargo, no holdout, no "
-          "Deflated Sharpe,\n  and no exit leg - positions are opened and never "
-          "closed. It says the pipes\n  connect. It says nothing about edge.",
+          "Deflated Sharpe,\n  and a signal chosen for being trivial to state. It "
+          "says the pipes connect,\n  both legs. It says nothing about edge.",
           file=out)
 
 
@@ -255,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-bps", default=Decimal("50"), type=Decimal,
                         help="the move the signal claims, in bps. Must clear breakeven")
     parser.add_argument("--notional", default=Decimal("1000"), type=Decimal)
+    parser.add_argument("--max-hold-bars", default=5, type=int,
+                        help="bars to wait for the target before crossing out")
     parser.add_argument("--store-root", default=str(Path.home() / "capture" / "store"))
     parser.add_argument("--wal-root", required=True,
                         help="where the order intent WAL is written. Required so a "
@@ -265,7 +380,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--participation must be in (0, 1]")
 
     tally = run(Path(args.store_root), Path(args.wal_root), args.symbol, args.venue,
-                args.participation, args.target_bps, args.notional)
+                args.participation, args.target_bps, args.notional,
+                max_hold_bars=args.max_hold_bars)
     _report(tally, args.symbol, args.venue)
     return 0
 
