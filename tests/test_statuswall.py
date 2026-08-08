@@ -409,3 +409,56 @@ def test_no_datasets_at_all_reads_not_built(tmp_path):
     from statuswall.evidence import NOT_BUILT, probe_cost_engine
 
     assert probe_cost_engine(_facts_with_store(tmp_path, [])).state == NOT_BUILT
+
+
+def _write_receipt(tmp_path, venues, age_hours=0.0):
+    import json, time
+    d = tmp_path / "fee-verification"; d.mkdir(parents=True, exist_ok=True)
+    now = time.time_ns()
+    (d / "latest.json").write_text(json.dumps({
+        "measured_at_ns": now - int(age_hours * 3_600 * 1e9),
+        "venues": {v: {"verified": ok, "maker_bps": "2", "taker_bps": "5",
+                       "tier": "account", "source": "venue_api",
+                       "fetched_at_ns": now - int(age_hours * 3_600 * 1e9)}
+                   for v, ok in venues.items()}}), encoding="utf-8")
+
+
+def test_the_tile_reads_ok_once_a_fetch_is_recorded_and_fresh(tmp_path):
+    """The tile was stale in the pessimistic direction: it measured the static
+    declared table, so it kept saying "declared rather than fetched" after a
+    live signed fetch had already succeeded. Wrong safely is still wrong."""
+    from statuswall.evidence import OK, probe_cost_engine
+
+    _write_receipt(tmp_path, {"binance:perp": True, "hyperliquid:perp": True})
+    r = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
+    assert r.state == OK, r.detail
+    assert "binance" in r.detail
+
+
+def test_an_old_verification_does_not_still_read_as_verified(tmp_path):
+    """Fee tiers move with 30-day volume. A fetch from days ago is a historical
+    fact, not a current one - so it caps the tile rather than passing it."""
+    from statuswall.evidence import OK, probe_cost_engine
+
+    _write_receipt(tmp_path, {"binance:perp": True}, age_hours=72)
+    r = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
+    assert r.state != OK
+    assert "stale" in r.detail.lower() or "old" in r.detail.lower()
+
+
+def test_a_refused_venue_is_named_in_the_tile(tmp_path):
+    from statuswall.evidence import OK, probe_cost_engine
+
+    _write_receipt(tmp_path, {"binance:perp": False, "hyperliquid:perp": True})
+    r = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
+    assert r.state != OK
+    assert "binance" in r.detail
+
+
+def test_no_receipt_at_all_still_reports_declared(tmp_path):
+    """Absence of a verification is its own state, not a pass."""
+    from statuswall.evidence import OK, probe_cost_engine
+
+    r = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
+    assert r.state != OK
+    assert "never" in r.detail.lower() or "declared" in r.detail.lower()

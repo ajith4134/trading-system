@@ -401,6 +401,12 @@ def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
                        "ClockGatedReader.read_as_of, exercised live")
 
 
+# How long a fetched fee schedule stays current. Tiers move with 30-day rolling
+# volume, so a fetch from days ago describes a rate that may no longer apply -
+# and a tile still reading "verified" would be asserting a stale measurement.
+_FEE_VERIFICATION_MAX_AGE_HOURS = 24.0
+
+
 def probe_cost_engine(facts: SystemFacts) -> ProbeResult:
     """What the cost engine can actually price right now, and on what evidence.
 
@@ -416,44 +422,68 @@ def probe_cost_engine(facts: SystemFacts) -> ProbeResult:
     is charged as zero, which understates cost - the dangerous direction - so
     it caps this tile below OK however healthy everything else looks.
     """
+    import json
+    import time
+
     from cost.fee_schedule import DECLARED_SCHEDULES
 
     store = Path(facts.capture_root) / "store"
-    have_funding = (store / "funding").is_dir()
-    have_book = (store / "book").is_dir()
+    missing = [name for name in ("funding", "book")
+               if not (store / name).is_dir()]
 
-    verified = sorted({v for (v, _), sched in DECLARED_SCHEDULES.items()
-                       if sched.is_verified})
+    # The receipt left by scripts/verify_fee_schedules.sh. Read rather than
+    # re-fetched: a display that authenticates on every render puts credentials
+    # in the render path and spends rate limit to draw a tile. Verification is a
+    # separate act; this reports what it recorded, and how long ago.
+    receipt_path = Path(facts.capture_root) / "fee-verification" / "latest.json"
+    verified, refused, age_hours = [], [], None
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        receipt = None
+    else:
+        measured = receipt.get("measured_at_ns")
+        if isinstance(measured, int):
+            age_hours = (time.time_ns() - measured) / 3.6e12
+        for venue, entry in (receipt.get("venues") or {}).items():
+            (verified if entry.get("verified") else refused).append(venue)
+
     declared = sorted({v for (v, _), sched in DECLARED_SCHEDULES.items()
                        if not sched.is_verified})
+    proof = "capture/fee-verification + capture/store"
 
-    missing = [name for name, present in
-               (("funding", have_funding), ("book", have_book)) if not present]
+    if receipt is None:
+        detail = (f"no fee schedule has ever been verified - running on the "
+                  f"declared table ({', '.join(declared)}). Run "
+                  f"scripts/verify_fee_schedules.sh")
+        return ProbeResult(NOT_BUILT if missing else PARTIAL,
+                           detail + (f"; missing dataset(s): {', '.join(missing)}"
+                                     f" - spread and impact charge zero"
+                                     if missing else ""), proof)
 
-    proof = "cost/fee_schedule.py + capture/store"
-    if not verified and missing:
-        return ProbeResult(
-            NOT_BUILT,
-            f"no venue schedule fetched (declared only: {', '.join(declared)}); "
-            f"missing dataset(s): {', '.join(missing)} - spread and impact "
-            f"charge zero, which understates cost",
-            proof)
     if missing:
         return ProbeResult(
             PARTIAL,
-            f"quotes priceable, but {', '.join(missing)} dataset(s) absent so "
-            f"those components charge zero; fees declared for "
-            f"{', '.join(declared)} and never fetched",
-            proof)
-    if declared:
+            f"verified {', '.join(verified) or 'nothing'}, but "
+            f"{', '.join(missing)} dataset(s) absent so those components charge "
+            f"zero, which understates cost", proof)
+    if refused:
         return ProbeResult(
             PARTIAL,
-            f"all datasets present, but {', '.join(declared)} fee(s) are "
-            f"declared rather than fetched - a quote resting on them reports "
-            f"itself unverified",
+            f"{', '.join(refused)} would not serve a schedule, so quotes there "
+            f"rest on the declared table; verified {', '.join(verified) or 'none'}",
             proof)
-    return ProbeResult(OK, f"every schedule fetched ({', '.join(verified)}); "
-                           f"funding and book datasets present", proof)
+    if age_hours is not None and age_hours > _FEE_VERIFICATION_MAX_AGE_HOURS:
+        return ProbeResult(
+            PARTIAL,
+            f"every schedule verified, but the last fetch is stale - "
+            f"{age_hours:.0f}h old against a {_FEE_VERIFICATION_MAX_AGE_HOURS:.0f}h "
+            f"limit. Fee tiers move with 30-day volume, so an old fetch is a "
+            f"historical fact rather than a current one", proof)
+    return ProbeResult(
+        OK,
+        f"every schedule fetched and verified ({', '.join(sorted(verified))}), "
+        f"newest {age_hours:.1f}h old; funding and book datasets present", proof)
 
 
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
