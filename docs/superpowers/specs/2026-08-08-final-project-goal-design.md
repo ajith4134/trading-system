@@ -447,11 +447,24 @@ The feature set is scattered across five uninventoried sources and **nothing rec
 | `ai-crypto-trading-bot` | 512 files / 316 Python | Postmortem only |
 | `ai-advanced-crypto-bot-final`, `ajith-ai-crypto-trading-bot`, `crypto-linix-server-bot` | ~370 files each | Postmortem only |
 | `pattern-brain` | 162 files / 119 Python / 48 tests | Postmortem only |
-| **`crypto-bot`** (104 MB) | unknown | **No — appears in no document** |
-| **`nse-botonly`** (16 MB) | unknown | **No — appears in no document** |
+| **`crypto-bot`** (104 MB) | **not a prior bot** — a publish mirror of the *current* work | Mined; see correction below |
+| **`nse-botonly`** (16 MB) | 587 Python files, near-zero stubs | **No — appeared in no document** |
 | `~/video-notes/` | 7 breakdowns | No |
 
 `prior-attempts-postmortem.md` §6 states plainly: *"The bulk of the 864 Python files is unread."*
+
+**Correction, 2026-08-08.** `ajith4134/crypto-bot` is not a seventh trading bot. Its root tree is
+`README.md · claude-config · research · trading-system · video-notes · push-to-github.sh`, matching
+`~/crypto-bot-publish` exactly — it is the staging mirror behind Rule 9's push workflow, carrying
+the *current* project plus a `layer0-raw-capture` branch. Roughly 554 of the 723 rows mined from it
+are therefore duplicates of `research-corpus.md` and of the built Layer 0, and collapse at merge.
+
+**`nse-botonly` is the real find.** 587 Python files, near-zero stubs, a substantially complete and
+tested system: brokers, execution, risk, backtesting and validation, plus an LLM, governance and
+self-healing stack. Its one genuine gap, flagged in its own `BACKLOG B42`, is a missing top-level
+strategy router — the "main AI brain." It is the most complete system in the account, it is NSE, and
+per §5 it is a **feature donor**: the execution, risk and validation machinery ports; the market does
+not.
 
 **Deliverable:** one numbered, deduplicated list. Each row carries source, one-line description,
 category, and a status of **CLAIMED** (a named module satisfies it), **PLANNED** (assigned to a
