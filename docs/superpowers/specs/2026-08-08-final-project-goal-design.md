@@ -480,8 +480,8 @@ unplanned.**
 
 | | Requirement | State 2026-08-08 |
 |---|---|---|
-| **R1** | **The broad tail must be genuinely broad.** Widening is cheap today and impossible to backfill. Do not settle for a token 20 symbols | **UNMET.** `tail_specs()` exists on both venues with passing tests, but `capture/cli.py:169` calls only `core_specs()` and there is no `--tail-symbols` argument. Running 3 symbols per venue. See §10.3 |
-| **R2** | **Point-in-time universe membership** — listings, delistings, renames, contract migrations, status changes, as timestamped first-class events. Backtesting "watch every symbol" against *today's* list silently conditions on survival, and no purge/embargo scheme catches it | **MET.** `src/capture/universe_tracker.py`. Append-only, and refuses rather than writing a plausible guess |
+| **R1** | **The broad tail must be genuinely broad.** Widening is cheap today and impossible to backfill. Do not settle for a token 20 symbols | **MET 2026-08-08.** `--tail-symbols ALL` resolves the universe from the venue at startup and shards it by measured URL bytes. Running in production: **569 Binance perpetuals, 177 Hyperliquid**, against 3 per venue before |
+| **R2** | **Point-in-time universe membership** — listings, delistings, renames, contract migrations, status changes, as timestamped first-class events. Backtesting "watch every symbol" against *today's* list silently conditions on survival, and no purge/embargo scheme catches it | **MET 2026-08-08 — and it was not before.** `src/capture/universe_tracker.py` existed from Layer 0 with passing tests and **no caller outside them**, so nothing was ever recorded. `--tail-symbols ALL` now writes a snapshot before the first frame of every run. This row previously read MET on the strength of the module existing, which is the same reads-as-built error the ledger exists to catch |
 
 ---
 
@@ -676,15 +676,22 @@ Universe is also three symbols: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`.
 
 This is a blocker for the earning core, not a nice-to-have, and it likely precedes parts of Phase 1.
 
-### 10.3 The broad tail is built but not wired — **blocks the breadth gate**
+### 10.3 ~~The broad tail is built but not wired~~ — **DONE 2026-08-08**
 
 Measured 2026-08-08. `tail_specs()` exists on both `BinanceVenue` and `HyperliquidVenue`, returning
 the cheap channel set (`trade`, `forceOrder`) intended for wide coverage. It has roughly ten passing
 tests. **Nothing calls it.** `src/capture/cli.py:169` calls `core_specs()` unconditionally, and the
 CLI exposes no `--tail-symbols` argument.
 
-Running now: `binance BTCUSDT,ETHUSDT,SOLUSDT` and `hyperliquid BTC,ETH,SOL`. **Six symbols out of
-~1,290 reachable.**
+**Resolved.** `--tail-symbols ALL`, sharded by measured URL bytes (fstream refuses past ~16.3KB with
+HTTP 414, and rejects SUBSCRIBE over the socket, so the URL is the only path and it must shard). The
+core keeps its own connection so a tail disconnect cannot take depth with it. Live in production on
+both venues. Measured cost: **111 MB/hour, 2.7 GB/day.**
+
+Two defects surfaced by the first live tail run, both silent and both fixed: Binance lists
+perpetuals with CJK symbols and every one was being filed as `trade_unknown` — one shared bucket,
+0 dropped, 0 malformed; and a symbol of exactly `..` matched the "safe" path-token regex because `.`
+is in its character class. **The breadth gate of §5a.4 is now unblocked.**
 
 Two consequences, both severe:
 
