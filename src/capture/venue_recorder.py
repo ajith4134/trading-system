@@ -195,7 +195,12 @@ class VenueRecorder:
         """
         key = (stream.casefold(), symbol.casefold())
         if key not in self._trackers:
-            if self._venue.name == "binance" and stream == "depth":
+            # Asked of the venue rather than matched on its name. The name test
+            # this replaced was correct only while exactly one Binance venue
+            # existed; the moment spot arrived it silently downgraded spot depth
+            # to plain staleness tracking, and a gap the archive does not report
+            # is one nobody can find later.
+            if getattr(self._venue, "depth_is_binance_chained", False) and stream == "depth":
                 self._trackers[key] = BinanceDepthTracker()
             else:
                 self._trackers[key] = StalenessTracker()

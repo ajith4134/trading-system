@@ -2,6 +2,7 @@ import json
 
 from capture.venues import UrlBudgetTooSmall, shard_by_url_budget
 from capture.venues.binance import BinanceVenue
+from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 # Captured verbatim from wss://fstream.binance.com/stream?streams=btcusdt@trade
@@ -335,3 +336,60 @@ def test_hyperliquid_subscribes_over_the_socket_so_its_tail_is_one_shard():
     v = HyperliquidVenue()
     specs = v.tail_specs([f"COIN{n}" for n in range(300)])
     assert len(shard_by_url_budget(v, specs)) == 1
+
+
+# --- Binance spot -----------------------------------------------------------
+# Goal doc 10.2: spot-perp basis is a P1 "start here" family and the prime
+# directive rests on carry, but only the perp leg was ever captured. Measured
+# 2026-08-08: 1,377 spot symbols TRADING, 489 of them USDT-quoted.
+
+def test_spot_is_a_separate_venue_from_futures():
+    """The venue name becomes a directory, and (stream, symbol) becomes a
+    filename inside it. Sharing a name would file spot BTCUSDT and perp BTCUSDT
+    as one instrument - two different markets merged, silently."""
+    assert BinanceSpotVenue().name != BinanceVenue().name
+
+
+def test_spot_connects_to_the_spot_endpoint_not_the_futures_one():
+    v = BinanceSpotVenue()
+    url = v.ws_url(v.core_specs(["BTCUSDT"]))
+    assert url.startswith("wss://stream.binance.com")
+    assert "fstream" not in url
+
+
+def test_spot_captures_depth_and_trades():
+    v = BinanceSpotVenue()
+    channels = {s.channel for s in v.core_specs(["BTCUSDT"])}
+    assert "btcusdt@depth@100ms" in channels
+    assert "btcusdt@trade" in channels
+
+
+def test_spot_does_not_subscribe_to_feeds_that_do_not_exist_on_spot():
+    """There are no liquidations and no funding on spot. Subscribing anyway
+    would report both silent forever, which is how a real outage gets lost in
+    the noise of two feeds that were never coming."""
+    v = BinanceSpotVenue()
+    channels = {s.channel for s in v.core_specs(["BTCUSDT"])} | \
+               {s.channel for s in v.tail_specs(["BTCUSDT"])}
+    assert not any("forceOrder" in c for c in channels)
+    assert v.poll_specs(["BTCUSDT"]) == []
+
+
+def test_spot_parses_only_tradeable_symbols():
+    v = BinanceSpotVenue()
+    payload = {"symbols": [
+        {"symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT"},
+        {"symbol": "DEADUSDT", "status": "BREAK", "quoteAsset": "USDT"},
+        {"symbol": "ETHBTC", "status": "TRADING", "quoteAsset": "BTC"},
+    ]}
+    assert v.parse_instruments(payload) == ["BTCUSDT", "ETHBTC"]
+
+
+def test_the_whole_spot_universe_shards_into_a_handful_of_connections():
+    """1,377 symbols on the cheap channel. Measured: 1,024 streams at 14,846
+    bytes connect on the spot endpoint."""
+    v = BinanceSpotVenue()
+    shards = shard_by_url_budget(v, v.tail_specs([f"SYM{n:04d}USDT" for n in range(1377)]))
+    assert 2 <= len(shards) <= 8
+    for shard in shards:
+        assert len(v.ws_url(shard)) <= v.max_url_bytes

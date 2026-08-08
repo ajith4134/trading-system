@@ -64,6 +64,12 @@ class BinanceVenue:
     # capture discovers the limit. That headroom costs one extra connection.
     max_url_bytes = 12_000
 
+    # Read by the recorder to pick a gap tracker. Futures chains depth updates
+    # on `pu == prev.u`; spot chains on `U == prev.u + 1`. BinanceDepthTracker
+    # handles both, and this is how it gets selected without the recorder
+    # matching on a venue name.
+    depth_is_binance_chained = True
+
     def _specs(self, symbols: list[str], channels: list[str]) -> list[StreamSpec]:
         return [
             StreamSpec(self.name, channel.split("@")[0], symbol, f"{symbol.lower()}@{channel}")

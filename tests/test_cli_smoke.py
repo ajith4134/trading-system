@@ -27,6 +27,7 @@ from capture.capture_ledger import read_all
 from capture.raw_writer import hour_key, paths_for, read_pair
 from capture.universe_tracker import UniverseTracker
 from capture.venues.binance import BinanceVenue
+from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 
@@ -640,3 +641,15 @@ def test_a_failed_universe_fetch_refuses_the_run_instead_of_shrinking_it(
         main(["--venue", "binance", "--symbols", "BTCUSDT",
               "--tail-symbols", "ALL", "--root", str(tmp_path), "--seconds", "1"])
     assert exit_info.value.code != 0
+
+
+def test_main_selects_binance_spot_by_name(tmp_path: Path, monkeypatch, capsys):
+    """A venue the CLI cannot name is a venue that never runs - the same shape
+    as tail_specs, which was built, tested and called by nothing."""
+    calls = record_run_capture_calls(monkeypatch)
+
+    assert main(["--venue", "binance-spot", "--symbols", "BTCUSDT",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    assert isinstance(calls[0]["venue"], BinanceSpotVenue)
+    assert calls[0]["specs"] == BinanceSpotVenue().core_specs(["BTCUSDT"])

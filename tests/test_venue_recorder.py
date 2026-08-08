@@ -7,6 +7,7 @@ import pytest
 from capture.venue_recorder import VenueRecorder, _safe_path_token, decode_path_token
 from capture.sequencing import StalenessTracker
 from capture.venues.binance import BinanceVenue
+from capture.venues.binance_spot import BinanceSpotVenue
 from capture.capture_ledger import (
     read_all, LedgerEvent, SEVERITY_CORRUPTING, SEVERITY_INFO,
     SEVERITY_OBSERVATION_LOSS,
@@ -1030,3 +1031,47 @@ def test_a_hostile_symbol_still_falls_back_to_unknown():
     steer writes out of the archive is the reason the rule exists."""
     for hostile in ("../../evil", "..", "a/b", "a\\b", "\x00null"):
         assert _safe_path_token(hostile) == "unknown"
+
+
+# --- Spot depth gap detection -----------------------------------------------
+
+@pytest.mark.asyncio
+async def test_spot_depth_gaps_are_detected(tmp_path: Path):
+    """The recorder used to choose a depth tracker with `venue.name ==
+    "binance"`, which was correct only while exactly one Binance venue existed.
+    Spot depth would have fallen through to plain staleness tracking and every
+    dropped update would have gone unnoticed - the archive is a raw record, and
+    a gap it did not report is a gap nobody can find later.
+
+    Spot chains on `U == prev.u + 1` and carries no `pu`, so this also proves
+    the tracker's spot branch is reached."""
+    venue = BinanceSpotVenue()
+    rec = VenueRecorder(venue, venue.core_specs(["BTCUSDT"]), tmp_path,
+                        clock_ns=lambda: 1785648600_000_000_000)
+    contiguous = json.dumps({"data": {"e": "depthUpdate", "E": 1, "s": "BTCUSDT",
+                                      "U": 1, "u": 10}})
+    jumped = json.dumps({"data": {"e": "depthUpdate", "E": 2, "s": "BTCUSDT",
+                                  "U": 50, "u": 60}})
+    await rec.consume(_frames([contiguous, jumped]))
+
+    gaps = [e for e in read_all(tmp_path, "binance-spot", "2026-08-02")
+            if e.kind == "gap"]
+    assert len(gaps) == 1, gaps
+    assert gaps[0].severity == SEVERITY_CORRUPTING
+
+
+@pytest.mark.asyncio
+async def test_spot_and_futures_never_share_a_file(tmp_path: Path):
+    """Same symbol, two different markets. Merging them would make the
+    spot-perp basis - the difference between them - unreadable."""
+    spot, futures = BinanceSpotVenue(), BinanceVenue()
+    frame = json.dumps({"data": {"e": "trade", "E": 1, "s": "BTCUSDT"}})
+    for venue in (spot, futures):
+        rec = VenueRecorder(venue, venue.core_specs(["BTCUSDT"]), tmp_path,
+                            clock_ns=lambda: 1785648600_000_000_000)
+        await rec.consume(_frames([frame]))
+
+    written = sorted(p.relative_to(tmp_path).as_posix()
+                     for p in (tmp_path / "raw").rglob("trade_BTCUSDT_*.ndjson.zst"))
+    assert len(written) == 2, written
+    assert any("binance-spot" in p for p in written)
