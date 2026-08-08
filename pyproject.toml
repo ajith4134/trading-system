@@ -21,6 +21,7 @@ dev = [
     # fresh environment - importorskip would turn a missing install into a quiet
     # pass, which is the failure mode that module exists to reject.
     "arch>=8.0",
+    "hypothesis>=6.100",
 ]
 
 [build-system]
