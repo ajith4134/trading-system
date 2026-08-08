@@ -557,6 +557,45 @@ because it will.
 enforces, which no component, LLM or otherwise, can edit. The status wall shows current limits
 against the ceiling, so limit creep is visible rather than silent.
 
+### The kill switch is weaker than the design calls for — measured 2026-08-08
+
+`ARCHITECTURE.md` Layer 3 specifies the kill switch as a separate OS process that kills the bot
+**and drops outbound network at the firewall**, and is explicit about why the firewall carries the
+weight: *"No major exchange appears to expose programmatic self-revocation of your own key. Do not
+design a kill switch assuming it — the firewall is the reliable mechanism."*
+
+**On this host, the reliable mechanism does not exist.** Measured, not assumed:
+
+| Probe | Result |
+|---|---|
+| `sudo -n true` | denied outright — not password-prompted, refused |
+| `iptables` on PATH | absent |
+| `nft` on PATH | absent |
+
+`src/ops/watchdog.py` therefore ships three mechanisms and **records which ones fired**, rather than
+reporting a kill it did not perform:
+
+1. **A persistent kill file** (`KILLED.json`) — every trading path reads it and refuses. Written
+   first, before anything that can fail, and it survives a restart on purpose: a kill the supervisor
+   undoes on its next loop looks like it fired and did not. The first breach's reason is never
+   overwritten by a later one, because whatever fires last is usually the symptom.
+2. **Credential denial** — the age identity is moved aside, so `secret_store` cannot decrypt and no
+   signed request can be constructed. It is *set aside, not destroyed*: a kill switch that loses the
+   only copy of a key turns a drawdown into a permanent outage.
+3. **SIGKILL** of the watched PIDs — not SIGTERM, because a wedged process is the case the watchdog
+   exists for and may never service a handler.
+
+**Credential denial is genuinely weaker than a packet filter, and the gap is recorded rather than
+glossed:** an already-open socket survives it, and unauthenticated endpoints stay reachable. Every
+trip writes `network_dropped: false` with the measured reason, so nobody later reads a halt and
+assumes egress was cut. The capability is re-probed on each trip rather than held as a constant —
+the answer changes the moment a packet filter and sudo exist on the host.
+
+**Consequence for §6's promotion gate:** the firewall drop is an open item (§11), and until it is
+closed the paper → real-money crossing carries a kill switch that can stop new orders but cannot
+guarantee stopping an in-flight one. This is a fact about the host, not a design choice, and it
+belongs in the decision the user makes at that gate.
+
 ### Rules that hold regardless of autonomy level
 
 - No strategy — however trusted, however well it has performed, however highly the meta-model rates
@@ -851,6 +890,12 @@ Carried from `ARCHITECTURE.md` §4 and `DECISIONS.md` §12, unchanged by this do
    proprietary strategy code through it is a policy decision.
 6. **The numeric value of the risk ceiling** (§6) — the user has not yet set it, and per §6 it is
    the single most consequential number in the system.
+7. **The firewall kill mechanism has no host** — added 2026-08-08 from measurement, not carried.
+   `ARCHITECTURE.md` names dropping egress at the firewall as the *reliable* kill mechanism, and this
+   host has neither sudo nor a packet filter (§6). Credential denial ships as the substitute and is
+   weaker. Closing this needs a decision the user owns: grant passwordless sudo for a single
+   pre-authorised `iptables` rule, run the watchdog on a second host that can cut the instance's
+   egress at the VPC firewall, or accept the weaker mechanism and record that at the promotion gate.
 
 ---
 
