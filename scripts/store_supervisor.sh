@@ -47,11 +47,16 @@ build() {   # dataset venue date symbols
 #
 # Symbols differ by venue because the venues name the same instrument
 # differently - BTCUSDT on binance, BTC on hyperliquid.
+# --batch-size bounds peak memory to the batch rather than the request: the
+# builder accumulates every trade of every requested symbol before building, so
+# an unbatched broad-universe day does not fit in this box's RAM. Harmless at
+# three symbols, and correct if the list ever grows.
 build_bars() {   # venue date symbols
   PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m store.cli \
-    --venue "$1" --date "$2" --symbols "$3" \
+    --venue "$1" --date "$2" --symbols "$3" --batch-size 5 \
     --capture-root "$CAPTURE_ROOT" --store-root "$STORE_ROOT" 2>&1
 }
+EXIT_ALREADY_BUILT=4
 
 while true; do
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -77,13 +82,17 @@ while true; do
     # pass after the first exits non-zero on a day it already built - and
     # recording that as "failed" would bury a genuine failure in an hourly
     # stream of expected ones.
-    if output=$(build_bars "$1" "$yesterday" "$2"); then
-      status=built
-    elif printf '%s' "$output" | grep -q PartitionExistsError; then
-      status=already-built
-    else
-      status=failed
-    fi
+    # Keyed on the exit code, not on matching PartitionExistsError in the output.
+    # That string came from an uncaught traceback, and it stopped appearing the
+    # moment the builder started catching the collision per batch - a detector
+    # tied to a message nobody meant as an interface. Every already-built day
+    # would then have been recorded as a failure.
+    output=$(build_bars "$1" "$yesterday" "$2")
+    case $? in
+      0) status=built ;;
+      "$EXIT_ALREADY_BUILT") status=already-built ;;
+      *) status=failed ;;
+    esac
     # A day the capture never covered also exits 0, with nothing built. Recording
     # the status alone would read as success; the count is what distinguishes a
     # built day from an empty one.

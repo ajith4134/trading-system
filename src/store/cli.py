@@ -51,13 +51,19 @@ from typing import Sequence
 from capture.raw_writer import (
     IDX_SUFFIX, RAW_SUFFIX, _fsync_directory, is_hour_being_written, read_pair,
 )
-from store.parquet_partition import append_partition, compute_snapshot_id
+from store.parquet_partition import (
+    PartitionExistsError, append_partition, compute_snapshot_id,
+)
 from store.temporal_schema import EVENT_TIME
 from store.trade_bars import Trade, build_bars, extract_trades
 
 _TRADE_STREAMS = {"binance": "trade", "hyperliquid": "trades"}
 DEFAULT_INTERVAL_NS = 60_000_000_000
 DEFAULT_LOOKAHEAD_HOURS = 2
+
+# "There was nothing to do", distinct from both success and failure, so a caller
+# can tell them apart without parsing text.
+EXIT_ALREADY_BUILT = 4
 
 _NS_PER_SECOND = 1_000_000_000
 _NS_PER_HOUR = 3_600 * _NS_PER_SECOND
@@ -379,37 +385,20 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # an aggregate that looks identical to one where every symbol pulled its
     # weight.
     by_symbol: dict[str, dict[str, int]] = {}
+
+    # The lookahead sets are resolved for every symbol BEFORE any file is opened,
+    # because the snapshot id depends on them and the id is what decides whether
+    # there is any work to do at all. Resolving them costs directory listings and
+    # stat calls; discovering the same answer after the read costs the read.
+    lookahead_by_symbol: dict[str, list[Path]] = {}
     for symbol in symbols:
-        symbol_frames = 0
-        symbol_trades = 0
         ahead, skipped_live = _lookahead_hour_files(
             capture_root, venue, date, stream, symbol, lookahead_hours)
+        lookahead_by_symbol[symbol] = ahead
         lookahead_files += len(ahead)
         lookahead_files_skipped_live.extend(skipped_live)
-        own_files = symbol_files[symbol]
-        for raw_path in own_files + ahead:
-            idx_path = _index_path_for(raw_path)
-            for payload, entry in read_pair(raw_path, idx_path):
-                frames += 1
-                symbol_frames += 1
-                for trade in extract_trades(payload, entry, venue, symbol):
-                    # Event time decides the day, not the folder the frame landed
-                    # in. A trade outside this day belongs to another day's build,
-                    # which reads it from its own files - unless no build reaches
-                    # it at all, which is what the three-way split establishes.
-                    if start_ns <= trade.event_time_ns < end_ns:
-                        trades.append(trade)
-                        symbol_trades += 1
-                    elif trade.event_time_ns >= end_ns:
-                        trades_deferred_to_next_day += 1
-                    elif _is_within_previous_days_lookahead(
-                            raw_path, trade.event_time_ns, start_ns, lookahead_hours):
-                        trades_covered_by_previous_day += 1
-                    else:
-                        stranded.append((trade, raw_path))
-            if raw_path in own_files:
-                day_sources.extend([raw_path, idx_path])
-        by_symbol[symbol] = {"frames": symbol_frames, "trades": symbol_trades}
+        for raw_path in symbol_files[symbol]:
+            day_sources.extend([raw_path, _index_path_for(raw_path)])
 
     # Digested over the day's OWN files alone. The lookahead decides WHICH trades
     # are selected, but the identity of the build is the day it builds: with the
@@ -431,8 +420,44 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     # the SAME hours still collides - the accidental-re-run guard is untouched -
     # while the rebuild that skips nothing appends a complete bar whose later
     # availability time makes the reader serve it over the partial one.
+    #
+    # Computed BEFORE the parse loop, not after. The id is a digest of the input
+    # files, so it is knowable without decompressing any of them - and a re-run of
+    # a day already built used to pay the whole read before `append_partition`
+    # said there was nothing to do. Measured 2026-08-08: a 50-symbol rebuild cost
+    # 27.7s against 27.6s for the original, which on an hourly supervisor over 569
+    # symbols is ~34 minutes of parsing per hour to rediscover "already built".
+    # The refusal is unchanged; only its cost moves.
     snapshot_id = compute_snapshot_id(
         day_sources, [path.name for path in lookahead_files_skipped_live])
+    _refuse_if_already_built(store_root, interval_ns, symbols, snapshot_id)
+
+    for symbol in symbols:
+        symbol_frames = 0
+        symbol_trades = 0
+        own_files = symbol_files[symbol]
+        for raw_path in own_files + lookahead_by_symbol[symbol]:
+            idx_path = _index_path_for(raw_path)
+            for payload, entry in read_pair(raw_path, idx_path):
+                frames += 1
+                symbol_frames += 1
+                for trade in extract_trades(payload, entry, venue, symbol):
+                    # Event time decides the day, not the folder the frame landed
+                    # in. A trade outside this day belongs to another day's build,
+                    # which reads it from its own files - unless no build reaches
+                    # it at all, which is what the three-way split establishes.
+                    if start_ns <= trade.event_time_ns < end_ns:
+                        trades.append(trade)
+                        symbol_trades += 1
+                    elif trade.event_time_ns >= end_ns:
+                        trades_deferred_to_next_day += 1
+                    elif _is_within_previous_days_lookahead(
+                            raw_path, trade.event_time_ns, start_ns, lookahead_hours):
+                        trades_covered_by_previous_day += 1
+                    else:
+                        stranded.append((trade, raw_path))
+        by_symbol[symbol] = {"frames": symbol_frames, "trades": symbol_trades}
+
     counts = {
         "trades_deferred_to_next_day": trades_deferred_to_next_day,
         "trades_covered_by_previous_day": trades_covered_by_previous_day,
@@ -489,15 +514,67 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lookahead-hours", type=int, default=DEFAULT_LOOKAHEAD_HOURS,
                         help="how far into the next day's folder to look for trades "
                              "whose event time still belongs to this day")
+    parser.add_argument("--batch-size", type=int, default=0,
+                        help="build this many symbols per pass (0 = all at once). "
+                             "Peak memory follows the batch, not the request")
     args = parser.parse_args(argv)
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     if not symbols:
         parser.error("--symbols must name at least one symbol")
+    if args.batch_size < 0:
+        parser.error("--batch-size cannot be negative")
 
-    summary = build_bars_for_day(
-        Path(args.capture_root), Path(args.store_root),
-        args.venue, args.date, symbols, args.interval_ns, args.lookahead_hours)
+    # One build per batch, because `build_bars_for_day` accumulates every trade of
+    # every requested symbol into a single list before building bars from it.
+    # Measured 2026-08-08: peak RSS per symbol rose 30 -> 35 -> 44 MB across
+    # 50/100/150 symbols, so the 569-symbol universe in one call extrapolates to
+    # ~25 GB for five hours of tape - infeasible - against 2.7 GB in batches of
+    # five, for 14% more wall time.
+    #
+    # Each batch reads its own set of files and therefore earns its own snapshot
+    # id. That is correct rather than merely tolerable: partitions are per symbol,
+    # and the id has always described the inputs a build actually read.
+    size = args.batch_size or len(symbols)
+    batches = [symbols[i:i + size] for i in range(0, len(symbols), size)]
+
+    # A collision stops that batch, never the run. Unbatched, a day was
+    # all-or-nothing; split into batches, a run killed halfway leaves the first
+    # half built, and a re-run that stopped at the first collision could never
+    # finish the rest - with the raw archive aged out from under it seven days
+    # later. So each batch's refusal is recorded and the next one is attempted.
+    summaries: list[dict] = []
+    already_built: list[list[str]] = []
+    for batch in batches:
+        try:
+            summaries.append(build_bars_for_day(
+                Path(args.capture_root), Path(args.store_root),
+                args.venue, args.date, batch, args.interval_ns, args.lookahead_hours))
+        except PartitionExistsError as exc:
+            already_built.append(batch)
+            print(f"  already built, skipping {len(batch)} symbol(s): {exc}",
+                  file=sys.stderr)
+
+    # Nothing to do has to stay distinguishable from something done. The
+    # supervisor reads a non-zero exit as "already built"; if a fully redundant
+    # run exited 0, every hourly pass would read as a fresh build and the run log
+    # would stop being evidence of anything.
+    if not summaries:
+        print(f"every batch was already built ({len(symbols)} symbol(s)); nothing to do",
+              file=sys.stderr)
+        # A dedicated code rather than 1, and rather than a string a caller has to
+        # grep for. The supervisor has to tell "nothing to do" apart from "this
+        # broke", and it used to do it by matching PartitionExistsError in the
+        # traceback - which stopped appearing the moment main() started catching
+        # the exception per batch. An exit code cannot drift out of sync with a
+        # message that was never meant to be an interface.
+        return EXIT_ALREADY_BUILT
+
+    if already_built:
+        print(f"  {sum(len(b) for b in already_built)} symbol(s) were already built; "
+              f"built the remaining {sum(len(b) for b in batches) - sum(len(b) for b in already_built)}",
+              file=sys.stderr)
+    summary = _merge_summaries(summaries)
     print(f"{summary['frames']} frames -> {summary['trades']} trades -> "
           f"{summary['bars']} bars (snapshot {summary['snapshot_id']})", file=sys.stderr)
     # All three discard counters on one line, including a zero stranded count. A
@@ -523,6 +600,65 @@ def main(argv: list[str] | None = None) -> int:
         print(f"STRANDED: {summary['trades_stranded']} trade(s) no build can recover; "
               f"quarantined at {summary['quarantine_file']}", file=sys.stderr)
     return 0
+
+
+def _refuse_if_already_built(store_root: Path, interval_ns: int,
+                             symbols: Sequence[str], snapshot_id: str) -> None:
+    """Raise the collision now if every part this build would write already exists.
+
+    Every part, not any: a build that would write four symbols and finds three
+    already present still has work to do, and the fourth's `append_partition` call
+    is what decides the rest. Only the fully-redundant case is short-circuited.
+
+    Deliberately the same exception `append_partition` raises, because it is the
+    same fact. A quieter return would turn "this was already built" into a success
+    the supervisor could not distinguish from "this built one bar", and the
+    append-only guarantee is worth more than a tidy exit code.
+    """
+    dataset = f"bars_{interval_ns}ns"
+    targets = [Path(store_root) / dataset / f"symbol={symbol}" / f"part-{snapshot_id}.parquet"
+               for symbol in symbols]
+    if targets and all(target.exists() for target in targets):
+        raise PartitionExistsError(
+            f"every part for snapshot {snapshot_id!r} already exists under "
+            f"{Path(store_root) / dataset} for {len(targets)} symbol(s); this exact "
+            f"build has been done. Refused before reading the day's files, which is "
+            f"the whole saving - corrections are new snapshots, never rewrites")
+
+
+def _merge_summaries(summaries: Sequence[dict]) -> dict:
+    """Fold per-batch results into the one an unbatched run would have produced.
+
+    Counters add. `snapshot_id` becomes a list, because there genuinely is one per
+    batch and collapsing them to the first would name an id that accounts for a
+    fraction of the output - the kind of tidy-looking summary that makes a partial
+    build indistinguishable from a whole one.
+
+    `quarantine_file` keeps only the batches that wrote one: a stranded trade is
+    the alarm this module exists to raise, and it must not be averaged away.
+    """
+    if len(summaries) == 1:
+        return summaries[0]
+
+    merged: dict = {
+        "frames": sum(s["frames"] for s in summaries),
+        "trades": sum(s["trades"] for s in summaries),
+        "bars": sum(s["bars"] for s in summaries),
+        "trades_deferred_to_next_day": sum(
+            s["trades_deferred_to_next_day"] for s in summaries),
+        "trades_covered_by_previous_day": sum(
+            s["trades_covered_by_previous_day"] for s in summaries),
+        "trades_stranded": sum(s["trades_stranded"] for s in summaries),
+        "lookahead_files": sum(s["lookahead_files"] for s in summaries),
+        "lookahead_files_skipped_live": [
+            name for s in summaries for name in s["lookahead_files_skipped_live"]],
+        "snapshot_id": [s["snapshot_id"] for s in summaries],
+        "quarantine_file": [s["quarantine_file"] for s in summaries
+                            if s.get("quarantine_file")] or None,
+        "by_symbol": {symbol: counts for s in summaries
+                      for symbol, counts in s["by_symbol"].items()},
+    }
+    return merged
 
 
 if __name__ == "__main__":

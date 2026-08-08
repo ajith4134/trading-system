@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,154 @@ def test_building_twice_from_identical_input_is_refused(tmp_path, monkeypatch):
     assert build()["bars"] == 1
     with pytest.raises(PartitionExistsError):
         build()
+
+
+def test_a_rebuild_is_refused_before_a_single_frame_is_parsed(tmp_path, monkeypatch):
+    """The refusal is the same one; what changes is when it costs.
+
+    The collision used to be discovered inside `append_partition`, at the very
+    end - so a re-run paid the full read before learning there was nothing to do.
+    Measured on 2026-08-08: a 50-symbol rebuild cost 27.7s against 27.6s for the
+    original. At 569 symbols on an hourly supervisor that is ~34 minutes of
+    parsing every hour to rediscover "already built".
+
+    The snapshot id is a digest of the input FILES, so it is knowable before any
+    of them is decompressed. `read_pair` here refuses to be called at all, which
+    is what makes this a test of the pre-check rather than of the outcome.
+    """
+    from capture.frame_codec import IndexEntry
+    from store.parquet_partition import PartitionExistsError
+    from store import cli as store_cli
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    (source / "trade_BTCUSDT_2026-08-02T00.ndjson.zst").write_bytes(b"placeholder")
+    (source / "trade_BTCUSDT_2026-08-02T00.idx.zst").write_bytes(b"placeholder")
+
+    frame = (
+        '{"stream":"btcusdt@trade","data":{"e":"trade","T":1785685177439,'
+        '"s":"BTCUSDT","p":"63113.20","q":"0.001"}}'
+    )
+    entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
+                       seq=None, kind="data", esc=False)
+    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [(frame, entry)])
+
+    build = lambda: store_cli.build_bars_for_day(
+        capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
+        date="2026-08-02", symbols=["BTCUSDT"], interval_ns=60_000_000_000)
+
+    assert build()["bars"] == 1
+
+    def refuse_to_read(raw, idx):
+        raise AssertionError(f"parsed {raw} on a day already built")
+
+    monkeypatch.setattr(store_cli, "read_pair", refuse_to_read)
+    with pytest.raises(PartitionExistsError):
+        build()
+
+
+def test_a_batched_run_builds_every_symbol_without_holding_them_all(tmp_path, monkeypatch):
+    """Peak memory is set by the batch, not by how many symbols were asked for.
+
+    `build_bars_for_day` accumulates every trade of every requested symbol into
+    one list before building. Measured 2026-08-08: peak RSS rose 30 -> 35 -> 44 MB
+    per symbol across 50/100/150 symbols, so the 569-symbol universe extrapolates
+    to ~25 GB for five hours of tape and far more for a full day. Batching is what
+    makes the broad universe buildable at all, and each batch is its own snapshot
+    because it reads its own set of files.
+    """
+    from capture.frame_codec import IndexEntry
+    from store import cli as store_cli
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        (source / f"trade_{symbol}_2026-08-02T00.ndjson.zst").write_bytes(symbol.encode())
+        (source / f"trade_{symbol}_2026-08-02T00.idx.zst").write_bytes(b"placeholder")
+
+    entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
+                       seq=None, kind="data", esc=False)
+
+    def one_trade_per_file(raw, idx):
+        symbol = Path(raw).name.split("_")[1]
+        return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
+                 f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
+
+    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    largest_batch = []
+    real_build = store_cli.build_bars_for_day
+    monkeypatch.setattr(store_cli, "build_bars_for_day",
+                        lambda *a, **k: (largest_batch.append(len(a[4] if len(a) > 4
+                                                                  else k["symbols"])),
+                                         real_build(*a, **k))[1])
+
+    code = store_cli.main([
+        "--venue", "binance", "--date", "2026-08-02", "--symbols", "BTCUSDT,ETHUSDT",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1"])
+
+    assert code == 0
+    assert largest_batch == [1, 1]
+    dataset = tmp_path / "store" / "bars_60000000000ns"
+    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+
+
+def _two_symbol_capture(tmp_path, monkeypatch):
+    from capture.frame_codec import IndexEntry
+    from store import cli as store_cli
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        (source / f"trade_{symbol}_2026-08-02T00.ndjson.zst").write_bytes(symbol.encode())
+        (source / f"trade_{symbol}_2026-08-02T00.idx.zst").write_bytes(b"placeholder")
+
+    entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
+                       seq=None, kind="data", esc=False)
+
+    def one_trade_per_file(raw, idx):
+        symbol = Path(raw).name.split("_")[1]
+        return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
+                 f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
+
+    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    return store_cli
+
+
+def test_a_batch_already_built_does_not_stop_the_batches_after_it(tmp_path, monkeypatch):
+    """Batching makes a partly-built day possible, so a re-run must finish it.
+
+    Unbatched, a day was all-or-nothing. Split into 114 batches, a run killed
+    halfway leaves the first half built - and if the re-run stopped at the first
+    collision the remaining symbols could never be built at all, with the archive
+    aged out from under them seven days later.
+    """
+    store_cli = _two_symbol_capture(tmp_path, monkeypatch)
+    common = ["--venue", "binance", "--date", "2026-08-02",
+              "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+              "--batch-size", "1"]
+
+    assert store_cli.main([*common, "--symbols", "BTCUSDT"]) == 0
+    assert store_cli.main([*common, "--symbols", "BTCUSDT,ETHUSDT"]) == 0
+
+    dataset = tmp_path / "store" / "bars_60000000000ns"
+    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+
+
+def test_a_run_whose_every_batch_was_already_built_still_reports_it(tmp_path, monkeypatch):
+    """Nothing to do must stay distinguishable from something done.
+
+    The supervisor reads a non-zero exit as "already built" and logs it as such.
+    If a fully-redundant run exited 0, every hourly pass would read as a fresh
+    build and the run log would stop being evidence of anything.
+    """
+    store_cli = _two_symbol_capture(tmp_path, monkeypatch)
+    common = ["--venue", "binance", "--date", "2026-08-02", "--symbols", "BTCUSDT,ETHUSDT",
+              "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+              "--batch-size", "1"]
+
+    assert store_cli.main(common) == 0
+    assert store_cli.main(common) == store_cli.EXIT_ALREADY_BUILT
 
 
 def test_rebuilding_a_day_after_more_next_day_trades_land_is_still_refused(tmp_path):
@@ -604,3 +753,27 @@ def test_the_index_sidecar_path_follows_the_raw_writer_suffix_constants(monkeypa
     sidecar = store_cli._index_path_for(
         Path("/archive/trade_BTCUSDT_2026-08-02T23.ndjson.lz4"))
     assert sidecar.name == "trade_BTCUSDT_2026-08-02T23.idx.lz4"
+
+
+def test_the_module_runs_as_a_module(tmp_path):
+    """Imported and executed are different, and only one of them is shipped.
+
+    Every other test here calls `main()` after importing, which defines the whole
+    module first. Running `python -m store.cli` executes top to bottom instead, so
+    a helper defined below the `__main__` guard does not exist yet when `main()`
+    reaches it. That happened on 2026-08-08: the pre-check helper was appended to
+    the end of the file, the suite stayed green, and the first real invocation
+    died with NameError. A subprocess is the only shape of test that can see it.
+    """
+    import subprocess
+    import sys as _sys
+
+    result = subprocess.run(
+        [_sys.executable, "-m", "store.cli", "--venue", "binance",
+         "--date", "2026-08-02", "--symbols", "BTCUSDT",
+         "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store")],
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
+
+    assert result.returncode == 0, result.stderr
+    assert "NameError" not in result.stderr
