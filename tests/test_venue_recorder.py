@@ -1154,3 +1154,49 @@ async def test_a_frame_in_a_later_hour_settles_every_writer_left_on_the_old_one(
     await rec.consume(two_frames_an_hour_apart())
 
     assert rec.stats()["written"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_hour_sweep_costs_one_integer_compare_inside_an_hour(tmp_path: Path):
+    """The sweep must not touch a writer until an hour actually ends.
+
+    The first version of this sweep called `close_if_hour_ended` on every writer on
+    every frame, and that method computes `hour_key` - a `strftime`. Measured on
+    this box: 2.35 us per call, so 600 writers cost 1.41 ms per frame, which is
+    282% of one core at 2,000 frames/s. On binance, the highest-rate venue with
+    ~600 writers, that blocks the asyncio loop long enough for the websocket
+    keepalive to time out, and the recorder dies with
+    `sent 1011 (internal error) keepalive ping timeout`.
+
+    So the boundary is held as nanoseconds and the per-frame check is an integer
+    compare. Asserted by counting calls rather than by timing, because a timing
+    assertion on a shared machine is a flaky test that teaches nothing.
+    """
+    venue = BinanceSpotVenue()
+    rec = VenueRecorder(venue, venue.tail_specs(["AUSDT"]), tmp_path,
+                        clock_ns=lambda: 0)
+
+    calls: list[int] = []
+
+    class CountingWriter:
+        def close_if_hour_ended(self, now_ns):
+            calls.append(now_ns)
+            return False
+
+    rec._writers[("trade", "ausdt")] = CountingWriter()
+
+    hour_start = 1785668400_000_000_000            # 2026-08-02T11:00:00Z exactly
+    rec._settle_writers_whose_hour_ended(hour_start)
+    swept_on_first_frame = len(calls)
+
+    # Thousands of frames spread through the SAME hour must add nothing.
+    for offset_ns in range(0, 3_600_000_000_000, 3_600_000_000):    # every 3.6s
+        rec._settle_writers_whose_hour_ended(hour_start + offset_ns)
+    assert len(calls) == swept_on_first_frame, (
+        "a frame inside the current hour must not reach the writers at all")
+
+    # The first frame of the next hour sweeps once, and only once.
+    rec._settle_writers_whose_hour_ended(hour_start + 3_600_000_000_000)
+    assert len(calls) == swept_on_first_frame + 1
+    rec._settle_writers_whose_hour_ended(hour_start + 3_600_000_000_000 + 1_000_000)
+    assert len(calls) == swept_on_first_frame + 1, "one sweep per boundary, not per frame"

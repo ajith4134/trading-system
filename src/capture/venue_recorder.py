@@ -63,6 +63,10 @@ _SILENCE_CADENCE_QUANTILE = 0.90
 # Frames, matching `StalenessTracker`'s window for the same reason: an old
 # outlier has to age out rather than bind the threshold for the whole session.
 _SILENCE_WINDOW_FRAMES = 200
+# UTC hours are exact multiples of this since the epoch - Unix time carries no
+# leap seconds - so an hour boundary is reachable by integer arithmetic, with no
+# string formatted to find it. See `_settle_writers_whose_hour_ended`.
+_NS_PER_HOUR = 3_600_000_000_000
 # However slow a stream claims to be, silence becomes reportable eventually -
 # an hour, one file rotation. Without it a stream can talk its way into never
 # being checked again, and detection has to be bounded regardless of history.
@@ -164,6 +168,9 @@ class VenueRecorder:
         self._recent_gaps_ns: dict[tuple[str, str], deque[int]] = {}
         self._recorded_silent_days: set[tuple[tuple[str, str], str]] = set()
         self._writers: dict[tuple[str, str], RawWriter] = {}
+        # Zero so the first frame sweeps once and sets the real boundary. At that
+        # point there are no writers yet, so the sweep costs nothing.
+        self._next_hour_starts_ns = 0
         self._trackers: dict[tuple[str, str], object] = {}
         # (stream, symbol, hour) triples whose files cannot be written, and what
         # each has cost so far. Keyed by HOUR, not by stream: see
@@ -444,10 +451,31 @@ class VenueRecorder:
         keys the hour on. No wall clock enters this path, so a replayed stream
         still produces byte-identical files.
 
-        Cost is an attribute compare per writer per frame, and a close only on the
-        hour boundary. `_record_silent_streams` above already walks every expected
-        stream on every frame, so the sweep is cheaper than the check beside it.
+        **One integer compare per frame, and the writers are reached only when an
+        hour actually ends.** The first version of this called
+        `close_if_hour_ended` on every writer on every frame, and that method
+        computes `hour_key`, which is a `strftime`. Measured on this box: 2.35 us
+        per call, so binance's ~600 writers cost 1.41 ms per frame - 282% of one
+        core at 2,000 frames/s, and 644% for spot's 1,372. That does not merely
+        waste CPU: it blocks the asyncio loop long enough for the websocket
+        keepalive to time out, and the recorder dies with `sent 1011 (internal
+        error) keepalive ping timeout`. The archive's own supervisor log shows that
+        exit for binance, which is why the hot path here has to stay this cheap.
+
+        The boundary is held in nanoseconds because UTC hours are exact multiples
+        of 3600 s since the epoch - Unix time carries no leap seconds - so the
+        modulo below is the same answer `hour_key` gives, without formatting a
+        string to get it.
+
+        Residual, accepted: a frame whose receive time falls in an already-swept
+        hour reopens that hour in `append`, and this sweep will not revisit it
+        until the next boundary. That needs the receive clock to move backwards
+        across an hour edge, and `store.cli` skips and names a claimed hour of the
+        day it is building, so the cost is a rebuild rather than a silent loss.
         """
+        if now_ns < self._next_hour_starts_ns:
+            return
+        self._next_hour_starts_ns = now_ns - (now_ns % _NS_PER_HOUR) + _NS_PER_HOUR
         for writer in self._writers.values():
             writer.close_if_hour_ended(now_ns)
 
