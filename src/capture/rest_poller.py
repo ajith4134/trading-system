@@ -90,7 +90,8 @@ async def _fetch_or_none(fetch, url: str) -> str | None:
 
 
 async def poll_frames(venue, specs, interval_seconds: float,
-                      duration_seconds: float, fetch=None) -> AsyncIterator[str]:
+                      duration_seconds: float, fetch=None,
+                      budget=None) -> AsyncIterator[str]:
     """Sample every spec once per interval and yield the bodies, verbatim.
 
     Every spec is polled on every tick, concurrently. Round-robin would halve
@@ -117,6 +118,22 @@ async def poll_frames(venue, specs, interval_seconds: float,
             return
 
         due = [spec for spec in specs if next_due[id(spec)] <= tick_started]
+
+        # Spend the shared per-IP budget before asking. A spec that cannot
+        # afford its weight is skipped this tick rather than delayed inside the
+        # budgeter: the limit is exchange-wide and one process's burst bans
+        # every process, so the poll that gets dropped is cheaper than the ban.
+        if budget is not None:
+            affordable = []
+            for spec in due:
+                if budget.try_spend(spec.weight):
+                    affordable.append(spec)
+                else:
+                    # Re-due immediately so it is retried next tick rather than
+                    # waiting a whole cadence for a budget that may free up in
+                    # a second.
+                    next_due[id(spec)] = tick_started
+            due = affordable
         for spec in due:
             cadence = spec.interval_seconds
             next_due[id(spec)] = tick_started + (

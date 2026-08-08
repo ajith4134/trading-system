@@ -186,3 +186,41 @@ async def test_a_spec_without_its_own_cadence_uses_the_shared_one():
                                       interval_seconds=0.05,
                                       duration_seconds=0.22, fetch=fetch)]
     assert len(calls) >= 3
+
+
+@pytest.mark.asyncio
+async def test_a_poll_that_cannot_afford_its_weight_is_skipped_not_delayed():
+    """The limit is per-IP and exchange-wide, so one process's burst bans every
+    process. A dropped poll is cheaper than a ban - and it is retried next tick
+    rather than waiting a whole cadence."""
+    from ops.rate_budget import RateBudget
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Enough for the cheap spec, nowhere near the expensive one.
+        budget = RateBudget(tmp, "binance", capacity=5, refill_per_second=0,
+                            clock=lambda: 0.0)
+        cheap = PollSpec("binance", "premiumIndex", "BTCUSDT", "http://cheap",
+                         weight=1)
+        dear = PollSpec("binance", "depthSnapshot", "BTCUSDT", "http://dear",
+                        weight=50)
+        seen = []
+
+        async def fetch(url):
+            seen.append(url)
+            return "{}"
+
+        _ = [f async for f in poll_frames(
+            BinanceVenue(), [cheap, dear], interval_seconds=0.02,
+            duration_seconds=0.12, fetch=fetch, budget=budget)]
+
+    assert "http://cheap" in seen
+    assert "http://dear" not in seen, "spent 50 weight from a 5-weight budget"
+
+
+def test_the_measured_weights_reach_the_specs():
+    """Measured from x-mbx-used-weight: a limit=1000 snapshot is 50, a funding
+    poll is 1. A spec carrying the wrong weight makes the budget a decoration."""
+    specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
+    assert specs["premiumIndex"].weight == 1
+    assert specs["depthSnapshot"].weight == 50

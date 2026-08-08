@@ -33,6 +33,8 @@ _DEPTH_SNAPSHOT_URL = "https://api.binance.com/api/v3/depth"
 _DEPTH_SNAPSHOT_LIMIT = 1000
 _DEPTH_SNAPSHOT_INTERVAL_SECONDS = 60.0
 _DEPTH_SNAPSHOT_STREAM = "depthSnapshot"
+# Measured 2026-08-08 from x-mbx-used-weight: 50 for limit=1000.
+_DEPTH_SNAPSHOT_WEIGHT = 50
 
 # No `forceOrder`: spot has no liquidations. The futures adapter keeps that
 # subscription deliberately, because there it is a real feed the venue withholds
@@ -82,7 +84,8 @@ class BinanceSpotVenue:
             PollSpec(self.name, _DEPTH_SNAPSHOT_STREAM, symbol,
                      f"{_DEPTH_SNAPSHOT_URL}?symbol={symbol}"
                      f"&limit={_DEPTH_SNAPSHOT_LIMIT}",
-                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS)
+                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS,
+                     weight=_DEPTH_SNAPSHOT_WEIGHT)
             for symbol in symbols
         ]
 

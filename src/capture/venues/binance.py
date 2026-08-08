@@ -23,6 +23,9 @@ _DEPTH_SNAPSHOT_URL = "https://fapi.binance.com/fapi/v1/depth"
 _DEPTH_SNAPSHOT_LIMIT = 1000
 _DEPTH_SNAPSHOT_INTERVAL_SECONDS = 60.0
 _DEPTH_SNAPSHOT_STREAM = "depthSnapshot"
+# Measured 2026-08-08 from x-mbx-used-weight, not recalled.
+_DEPTH_SNAPSHOT_WEIGHT = 50
+_PREMIUM_INDEX_WEIGHT = 1
 
 # `trade` rather than `aggTrade`, decided 2026-08-02 from live measurement:
 # aggTrade delivers nothing at all to this host over the websocket (0 frames in
@@ -110,7 +113,8 @@ class BinanceVenue:
         """
         specs = [
             PollSpec(self.name, _POLL_STREAM, symbol,
-                     f"{_PREMIUM_INDEX_URL}?symbol={symbol}")
+                     f"{_PREMIUM_INDEX_URL}?symbol={symbol}",
+                     weight=_PREMIUM_INDEX_WEIGHT)
             for symbol in symbols
         ]
         # Only the core symbols carry depth diffs, so only they need a snapshot
@@ -119,7 +123,8 @@ class BinanceVenue:
             PollSpec(self.name, _DEPTH_SNAPSHOT_STREAM, symbol,
                      f"{_DEPTH_SNAPSHOT_URL}?symbol={symbol}"
                      f"&limit={_DEPTH_SNAPSHOT_LIMIT}",
-                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS)
+                     interval_seconds=_DEPTH_SNAPSHOT_INTERVAL_SECONDS,
+                     weight=_DEPTH_SNAPSHOT_WEIGHT)
             for symbol in symbols
         ]
         return specs

@@ -22,6 +22,7 @@ import websockets
 
 from capture.rest_poller import merge_frame_sources, poll_frames
 from capture.universe_tracker import UniverseTracker
+from ops.rate_budget import RateBudget
 from capture.venue_recorder import VenueRecorder
 from capture.venues import shard_by_url_budget
 from capture.venues.binance import BinanceVenue
@@ -139,8 +140,13 @@ async def run_capture(venue, specs, root: Path, duration_seconds: float,
     sources = [_stream_frames(venue, shard, duration_seconds)
                for shard in shards if shard]
     if poll_specs:
+        # One budget per venue, on disk, so the capture process for binance and
+        # the one for binance-spot cannot together spend more weight than the
+        # per-IP limit allows. Sharing it is the whole point - a bucket in this
+        # process's memory would protect nothing.
         sources.append(
-            poll_frames(venue, poll_specs, poll_interval_seconds, duration_seconds))
+            poll_frames(venue, poll_specs, poll_interval_seconds, duration_seconds,
+                        budget=RateBudget(Path(root) / "ops", venue.name)))
     frames = sources[0] if len(sources) == 1 else merge_frame_sources(*sources)
     # `aclosing` matters on the failure path: if consume() raises, the async
     # generator is left suspended inside its `async with websockets.connect(...)`

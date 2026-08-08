@@ -93,6 +93,12 @@ class PollSpec:
     # the funding poll costs 1; one shared cadence makes the cheap feed slow or
     # the expensive feed a ban. None means "use whatever the run was given".
     interval_seconds: float | None = None
+    # Request weight this endpoint costs, measured from the venue's own
+    # x-mbx-used-weight header rather than assumed. Binance charges weight, not
+    # requests: a limit=1000 depth snapshot is 50 while premiumIndex is 1, so a
+    # budget counting requests would let fifty snapshots through as cheaply as
+    # fifty polls and earn the ban it exists to prevent.
+    weight: int = 1
 
 
 @dataclass(frozen=True)
