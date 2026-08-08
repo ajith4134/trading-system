@@ -1200,3 +1200,44 @@ async def test_the_hour_sweep_costs_one_integer_compare_inside_an_hour(tmp_path:
     assert len(calls) == swept_on_first_frame + 1
     rec._settle_writers_whose_hour_ended(hour_start + 3_600_000_000_000 + 1_000_000)
     assert len(calls) == swept_on_first_frame + 1, "one sweep per boundary, not per frame"
+
+
+@pytest.mark.asyncio
+async def test_the_silence_check_is_not_run_on_every_frame(tmp_path: Path):
+    """A once-per-stream-per-day check must not cost O(streams) on every frame.
+
+    `_record_silent_streams` walks every subscribed stream. Measured on this box
+    with binance's real shape - 1,141 expected streams - that is 136 us per frame,
+    27% of one core at 2,000 frames/s and 68% at 5,000.
+
+    That cost is what turns this recorder into a slow consumer, and websockets
+    punishes a slow consumer by killing the connection. Verified in
+    `websockets/asyncio/connection.py`: the message queue defaults to
+    `max_queue=16` and is created with `pause=transport.pause_reading`, so once it
+    fills the transport stops reading the socket - Pong frames included. The
+    keepalive task then waits `ping_timeout=20` for a pong that cannot arrive and
+    closes with `sent 1011 (internal error) keepalive ping timeout`, which is
+    exactly the exit in binance's supervisor log.
+
+    Throttled at the call site rather than inside the method, so every existing
+    test that drives the check directly still means what it meant. The dedup scope
+    is a UTC day and the smallest threshold is the 60 s grace, so deferring a check
+    by up to a second cannot change what it reports.
+    """
+    venue = BinanceVenue()
+    rec = VenueRecorder(venue, venue.core_specs(["BTCUSDT"]), tmp_path,
+                        clock_ns=lambda: 0)
+
+    checks: list[int] = []
+    rec._record_silent_streams = lambda now_ns: checks.append(now_ns)
+
+    start_ns = 1785668400_000_000_000
+    # 500 frames spread over a tenth of a second of stream time.
+    for i in range(500):
+        rec._check_stream_health(start_ns + i * 200_000)
+    assert len(checks) == 1, f"expected one check inside the window, got {len(checks)}"
+
+    # A second of stream time later, it runs again - so a dead stream is still
+    # found promptly rather than never.
+    rec._check_stream_health(start_ns + 1_000_000_000)
+    assert len(checks) == 2

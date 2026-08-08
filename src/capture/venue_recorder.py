@@ -67,6 +67,13 @@ _SILENCE_WINDOW_FRAMES = 200
 # leap seconds - so an hour boundary is reachable by integer arithmetic, with no
 # string formatted to find it. See `_settle_writers_whose_hour_ended`.
 _NS_PER_HOUR = 3_600_000_000_000
+# How often the silence check may run, in stream time. It walks every subscribed
+# stream, and it can report a given stream at most once per UTC day, so running it
+# per frame buys nothing and costs O(streams) on the hot path: measured 136 us per
+# frame at binance's 1,141 expected streams, 27% of one core at 2,000 frames/s.
+# One second is far below the smallest threshold it can act on - the 60 s grace -
+# so nothing it reports changes.
+_SILENCE_CHECK_INTERVAL_NS = 1_000_000_000
 # However slow a stream claims to be, silence becomes reportable eventually -
 # an hour, one file rotation. Without it a stream can talk its way into never
 # being checked again, and detection has to be bounded regardless of history.
@@ -171,6 +178,8 @@ class VenueRecorder:
         # Zero so the first frame sweeps once and sets the real boundary. At that
         # point there are no writers yet, so the sweep costs nothing.
         self._next_hour_starts_ns = 0
+        # Zero so the first frame runs the check and sets the real deadline.
+        self._next_silence_check_ns = 0
         self._trackers: dict[tuple[str, str], object] = {}
         # (stream, symbol, hour) triples whose files cannot be written, and what
         # each has cost so far. Keyed by HOUR, not by stream: see
@@ -354,6 +363,30 @@ class VenueRecorder:
                    max(self._silence_grace_ns,
                        int(_SILENCE_STALL_MULTIPLE * routine_ns)))
 
+    def _check_stream_health(self, now_ns: int) -> None:
+        """Run the silence check, at most once per `_SILENCE_CHECK_INTERVAL_NS`.
+
+        The throttle lives here rather than inside `_record_silent_streams` so that
+        every test driving that method directly still exercises it unconditionally,
+        and so the hot path pays one integer compare.
+
+        Why it has to be throttled at all: the check walks every subscribed stream,
+        which is 136 us per frame at binance's 1,141 streams - 27% of one core at
+        2,000 frames/s. That is what made this recorder a slow consumer, and
+        websockets kills a slow consumer. Its message queue defaults to
+        `max_queue=16` and is built with `pause=transport.pause_reading`
+        (`websockets/asyncio/connection.py`), so a full queue stops the transport
+        reading the socket at all - Pong frames included. The keepalive task then
+        waits `ping_timeout=20` for a pong that cannot arrive and closes the
+        connection with `sent 1011 (internal error) keepalive ping timeout`. That is
+        the exit recorded for binance in the supervisor log, and binance is the
+        venue with the highest frame rate and the most streams.
+        """
+        if now_ns < self._next_silence_check_ns:
+            return
+        self._next_silence_check_ns = now_ns + _SILENCE_CHECK_INTERVAL_NS
+        self._record_silent_streams(now_ns)
+
     def _record_silent_streams(self, now_ns: int) -> None:
         """Record every subscribed stream that is not producing frames.
 
@@ -509,7 +542,7 @@ class VenueRecorder:
                 # After the frame is routed, never before: a stream whose first
                 # frame is this one has already been counted as having spoken,
                 # so it cannot be reported silent in the same breath.
-                self._record_silent_streams(t_recv_ns)
+                self._check_stream_health(t_recv_ns)
                 self._settle_writers_whose_hour_ended(t_recv_ns)
         finally:
             self.close()
