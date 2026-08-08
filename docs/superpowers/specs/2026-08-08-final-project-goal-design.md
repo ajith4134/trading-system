@@ -183,6 +183,118 @@ price, carrying no key or execution risk. **Deferred:** Bybit. **Options:** Deri
 
 ---
 
+## 5a. Universe-wide scanning — a property of the system, not a strategy
+
+**Full analysis: `~/research/DESIGN-NOTE-universe-wide-scanning.md`, rated 8/10 conditional on the
+gate in §5a.4.**
+
+> **The system watches every tradeable symbol in every segment, and acts on any one only when that
+> symbol's own condition fires.**
+
+**Selectivity moves from space to time.** Not "pick K symbols from N and trade those, skipping the
+rest even though the skipped ones had profit in them." Instead: watch all N, wait for each symbol's
+own moment.
+
+**The unit of edge is `(symbol, condition, moment)`** — not `(symbol)`, not `(strategy)`. Most
+systematic design says "I have a momentum model, I apply it to a universe." This says each symbol
+has moments when it becomes tradeable and the job is to be present for them. Event-driven-desk
+thinking, not factor-quant thinking.
+
+This is not a strategy family. It is how the whole system relates to the market, and it sits
+underneath every family in `FEATURES.md` §4.
+
+### 5a.1 The universe, measured 2026-08-08
+
+| Segment | Venue | Listed | Actively TRADING |
+|---|---|---|---|
+| Spot | Binance | 3,680 | **1,377** (489 USDT-quoted) |
+| Perpetual futures | Binance USDⓈ-M | 854 | **569** crypto + 153 TradFi |
+| Dated futures | Binance | — | 4 (current + next quarter) |
+| Perpetual futures | Hyperliquid | — | **232** |
+| Options | Deribit | — | **not measured** — Phase 6 |
+
+**~1,290 reachable symbols excluding options. Capture currently runs 6.** That is 0.5% of the
+universe the directive depends on.
+
+### 5a.2 The mechanism — attention scarcity, and nothing weaker
+
+"Every symbol has profit potential" fails the *who loses when I win?* test. The declarable
+mechanism is:
+
+> Mid- and small-cap symbols get **episodic** coverage. Most of the time nobody competent is
+> watching them properly. When something happens — unlock, listing, funding dislocation,
+> liquidation cascade, venue-specific break — there is a window before adequate participants
+> arrive. **A machine watching 1,290 symbols is structurally present for windows humans and small
+> desks physically cannot cover.** Large funds ignore the region on capacity grounds; retail
+> watches only what is trending. There is a genuine coverage gap in the middle tail.
+
+**This wording goes in the Mechanism Declaration. "Potential" never does.**
+
+### 5a.3 Why it serves the prime directive rather than competing with it
+
+Carry (§3) is the base income. Universe-wide scanning is the **breadth engine**.
+
+Grinold: **IR ≈ IC × √breadth**. At ~2 idiosyncratic setups per symbol per year, 1,290 symbols is
+roughly 3 opportunities a day. Breadth converts a weak, rare edge into steady flow — and a steady
+flow of *independent* setups is exactly what raises the portfolio green-day rate, which is exactly
+the test §3 makes every strategy pass to earn allocation.
+
+§3 rewards independence. This note says idiosyncratic setups are the independent ones. They are the
+same argument.
+
+### 5a.4 THE GATE — the breadth test, before anything is built
+
+**Breadth means independent bets, not symbols.** Crypto cross-sectional correlation is severe;
+1,290 symbols may be one BTC factor plus noise, collapsing effective breadth to ~5–15 and gutting
+the proposition entirely.
+
+- **Idiosyncratic** setups — unlock schedules, listing events, single-venue dislocations,
+  symbol-specific funding — are far more independent than price returns.
+- **Systematic** setups — volatility or momentum shaped — fire together in regimes, and effective
+  breadth collapses toward 1.
+
+> **The test:** define candidate setups, fire them historically across the universe, and measure
+> (1) clustering of trigger times, (2) correlation of the resulting return streams.
+>
+> **If triggers cluster and returns correlate, the architecture is one macro bet wearing 1,290 hats
+> and must be redesigned.** Cheap, answerable in days, and it gates everything downstream.
+
+It cannot be run on 6 symbols. It is blocked on §10.3.
+
+### 5a.5 The rules this property imposes
+
+| Rule | Why |
+|---|---|
+| **Setup definitions are universal and parameter-free across symbols.** Per-symbol variation comes only from *normalisation* — z-scores or percentiles against that symbol's own history — never from fitted per-symbol parameters | One setup on 1,290 symbols is **one hypothesis with 1,290 samples**, which is statistically favourable. It becomes 1,290 hypotheses the moment per-symbol tuning is allowed. This is the single most dangerous thing that could be implemented here |
+| **The acceptance threshold RISES with opportunity flow** | Triggers cluster, so the binding constraint is having capital free when the good ones fire — not finding setups. The rule is *"is this setup better than the option value of waiting for a better one?"* Dry powder is a held option with computable value, not idle cash. **The more symbols watched, the pickier each trade must be** |
+| **Default action is stand aside** | The examiner posture: willing to examine every symbol, and fails almost all of them, almost always. Not a teacher maximising pass rate |
+| **Exposure limits bind at factor level, not per symbol** | 40 simultaneous triggers can be one bet |
+| **Minimum viable setup size, per symbol** | The tail has the least competition *and* the least capacity. Expected profit must exceed all-in cost — fees, slippage, operational, inference |
+| **Two-stage funnel** | Cheap coarse screen across the whole universe; expensive evaluation only on candidates. Watching 1,290 symbols must not cost like evaluating 1,290 symbols |
+| **Every scan counts in the Trial Registry** | Corrected on both axes — trial count *and* effective sample size |
+| **Edge lifecycle is per symbol** | A symbol's setup can die while others live. Hazard models apply per symbol, not per strategy |
+
+### 5a.6 The new risk this creates — manufactured setups
+
+**A universe-wide scanner with deterministic triggers is a target.** In a thin symbol, moving the
+book enough to fabricate the entry condition is cheap — far cheaper than the position that can then
+be unloaded into you. The broader and thinner the tail, the cheaper it is to bait.
+
+Required defences: **corroboration across independent data types** (trade flow *and* funding *and*
+open interest — faking three at once costs much more) · **persistence requirements** (conditions
+hold for a duration, never fire instantaneously) · an explicit **"why is this liquidity available
+to me?"** pre-trade check · **randomised trigger latency** (bounded jitter, breaks exact timing
+attacks) · a **per-symbol tradability gate evaluated before the setup gate**.
+
+### 5a.7 The two Layer 0 consequences — one met, one not
+
+| | Requirement | State 2026-08-08 |
+|---|---|---|
+| **R1** | **The broad tail must be genuinely broad.** Widening is cheap today and impossible to backfill. Do not settle for a token 20 symbols | **UNMET.** `tail_specs()` exists on both venues with passing tests, but `capture/cli.py:169` calls only `core_specs()` and there is no `--tail-symbols` argument. Running 3 symbols per venue. See §10.3 |
+| **R2** | **Point-in-time universe membership** — listings, delistings, renames, contract migrations, status changes, as timestamped first-class events. Backtesting "watch every symbol" against *today's* list silently conditions on survival, and no purge/embargo scheme catches it | **MET.** `src/capture/universe_tracker.py`. Append-only, and refuses rather than writing a plausible guess |
+
+---
+
 ## 6. Autonomy, and the two human gates
 
 ### Gates that stay human
@@ -256,6 +368,9 @@ The project is finished when **all** of the following hold:
 6. **Every `FEATURES.md` Phase 0 minimum item satisfied.**
 7. **Every Requirements Ledger row resolved** — CLAIMED by a module, or DECLINED in writing with a
    reason. No row may be left unaddressed.
+8. **Universe-wide scanning live** (§5a) — the full tradeable universe watched across every segment,
+   not a selected subset; the breadth test of §5a.4 passed with idiosyncratic setups shown to be
+   genuinely independent; point-in-time universe membership recorded throughout.
 
 Brain 3 (sub-second) is built even though `DECISIONS.md` §3 expects the allocator to starve it. It
 is built so the answer is **measured rather than asserted**. If it cannot clear costs, that is a
@@ -319,22 +434,44 @@ Universe is also three symbols: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`.
 
 This is a blocker for the earning core, not a nice-to-have, and it likely precedes parts of Phase 1.
 
-### 10.3 Capital feasibility gate
+### 10.3 The broad tail is built but not wired — **blocks the breadth gate**
+
+Measured 2026-08-08. `tail_specs()` exists on both `BinanceVenue` and `HyperliquidVenue`, returning
+the cheap channel set (`trade`, `forceOrder`) intended for wide coverage. It has roughly ten passing
+tests. **Nothing calls it.** `src/capture/cli.py:169` calls `core_specs()` unconditionally, and the
+CLI exposes no `--tail-symbols` argument.
+
+Running now: `binance BTCUSDT,ETHUSDT,SOLUSDT` and `hyperliquid BTC,ETH,SOL`. **Six symbols out of
+~1,290 reachable.**
+
+Two consequences, both severe:
+
+1. **The breadth test of §5a.4 cannot run.** It gates the entire universe-wide architecture and
+   needs the universe.
+2. **Tail history cannot be backfilled.** Every day the tail stays unwired is a day of coverage
+   permanently lost — `DESIGN-NOTE-universe-wide-scanning.md` R1 is explicit that this is
+   unrecoverable.
+
+Work: a `--tail-symbols` path through the CLI and supervisor, a rate-limit and connection budget
+that admits several hundred symbols across the venue's stream limits, and a storage estimate before
+turning it on.
+
+### 10.4 Capital feasibility gate
 
 Per-strategy minimum viable capital, checked against current NAV, families auto-enabled and
 disabled as the dial moves, with the reason surfaced. Does not exist in any current plan.
 
-### 10.4 Green-day objective wired into the allocator
+### 10.5 Green-day objective wired into the allocator
 
 The allocator's fitness function is the prime directive (§3). Currently specified as discounted
 Thompson sampling with no stated objective. Needs the green-day-rate-at-fixed-tail-cap criterion.
 
-### 10.5 Learning-curve instrumentation
+### 10.6 Learning-curve instrumentation
 
 Win rate and profitable-trade count against cumulative out-of-sample trades, gated on total P&L and
 green-day rate moving together (§1). A wall tile and a digest line. Does not exist.
 
-### 10.6 The immutable ceiling
+### 10.7 The immutable ceiling
 
 A checksummed risk-limit ceiling outside all component write access, enforced by the risk gate,
 with current-limits-vs-ceiling displayed (§6).
