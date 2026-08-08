@@ -196,3 +196,32 @@ class BinanceVenue:
             if isinstance(symbol, str) and symbol:
                 result.append(symbol)
         return sorted(result)
+
+    def parse_quote_assets(self, payload: dict) -> dict[str, str]:
+        """What each perpetual is priced in, from the venue's own field.
+
+        Read live 2026-08-08 over the 569 PERPETUAL-and-TRADING pairs: 526 USDT,
+        38 USDC, 2 USD1, 2 quoted in `U` and 1 in BTC. So futures is nearly all
+        dollars and not entirely, and the three exceptions are exactly the kind
+        that reads as a rounding error until one of them is in a P&L.
+
+        Filtered the same way `parse_instruments` filters, deliberately: a quote
+        map covering symbols the universe excludes would let a caller iterate the
+        map and pick up a quarterly this venue never captures.
+        """
+        if not isinstance(payload, dict):
+            return {}
+        symbols = payload.get("symbols")
+        if not isinstance(symbols, list):
+            return {}
+
+        quotes: dict[str, str] = {}
+        for item in symbols:
+            if not isinstance(item, dict):
+                continue
+            if item.get("contractType") != "PERPETUAL" or item.get("status") != "TRADING":
+                continue
+            symbol, quote = item.get("symbol"), item.get("quoteAsset")
+            if isinstance(symbol, str) and symbol and isinstance(quote, str) and quote:
+                quotes[symbol] = quote
+        return quotes

@@ -419,3 +419,105 @@ def test_the_last_nanosecond_of_a_day_is_filed_under_that_day(tmp_path: Path):
 
     assert _instruments_path(tmp_path, date="2026-08-02").exists()
     assert not _instruments_path(tmp_path, date="2026-08-03").exists()
+
+
+def test_the_quote_map_is_restricted_to_the_universe_it_was_recorded_with(tmp_path):
+    """A quote for a symbol this snapshot does not list is a fetch that raced a listing.
+
+    Keeping the extra would let a caller iterate the map and request a symbol no
+    capture subscribed; and the map would then describe a universe the snapshot
+    beside it does not.
+    """
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+    tracker.record_snapshot(["BTCUSDT"], 1_000,
+                            quote_assets={"BTCUSDT": "USDT", "LATEUSDT": "USDT"})
+
+    assert tracker.load_last_quote_assets(1_000) == {"BTCUSDT": "USDT"}
+
+
+def test_a_symbol_with_no_recorded_quote_stays_absent_from_the_map(tmp_path):
+    """Absent means unclassified downstream, which is a reportable state.
+
+    Filling it in with a plausible quote would put the symbol on one side of the
+    dollar filter with nothing anywhere saying it was a guess.
+    """
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+    tracker.record_snapshot(["BTCUSDT", "NOQUOTE"], 1_000,
+                            quote_assets={"BTCUSDT": "USDT"})
+
+    assert tracker.load_last_quote_assets(1_000) == {"BTCUSDT": "USDT"}
+    assert tracker.load_last(1_000) == ["BTCUSDT", "NOQUOTE"]
+
+
+def test_the_quote_map_is_not_served_from_a_snapshot_recorded_later(tmp_path):
+    """Same point-in-time rule as membership: a later snapshot is not knowledge now."""
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+    tracker.record_snapshot(["BTCUSDT"], 5_000, quote_assets={"BTCUSDT": "USDT"})
+
+    assert tracker.load_last_quote_assets(4_999) == {}
+    assert tracker.load_last_quote_assets(5_000) == {"BTCUSDT": "USDT"}
+
+
+def test_a_snapshot_recorded_without_quotes_clears_the_recorded_map(tmp_path):
+    """Carrying the old map forward would describe a universe it was not fetched with.
+
+    The loss is deliberate and it is loud: `store.quote_currency` refuses an empty
+    map rather than filtering with it.
+    """
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+    tracker.record_snapshot(["BTCUSDT"], 1_000, quote_assets={"BTCUSDT": "USDT"})
+    tracker.record_snapshot(["BTCUSDT", "ETHUSDT"], 2_000)
+
+    assert tracker.load_last_quote_assets(2_000) == {}
+
+
+def test_a_malformed_quote_map_in_the_state_file_is_refused(tmp_path):
+    """Present-and-damaged must not collapse into the same empty dict as absent.
+
+    A quote currency read off a damaged state file decides which symbols reach a
+    dollar P&L, and every snapshot before 2026-08-08 legitimately has no map at
+    all - so the two cases cannot share an answer.
+    """
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+    tracker.record_snapshot(["BTCUSDT"], 1_000, quote_assets={"BTCUSDT": "USDT"})
+
+    state = tmp_path / "universe" / "binance-spot" / "last_snapshot.json"
+    state.write_text(json.dumps({"ts_ns": 1_000, "symbols": ["BTCUSDT"],
+                                 "quote_assets": {"BTCUSDT": 7}}))
+
+    with pytest.raises(UnreadableUniverseState, match="quote_assets"):
+        tracker.load_last_quote_assets(1_000)
+
+
+def test_a_quote_map_of_the_wrong_shape_is_refused_before_anything_is_written(tmp_path):
+    tracker = UniverseTracker(tmp_path, "binance-spot")
+
+    with pytest.raises(ImplausibleUniverseSnapshot, match="quote_assets"):
+        tracker.record_snapshot(["BTCUSDT"], 1_000, quote_assets=["BTCUSDT", "USDT"])
+    with pytest.raises(ImplausibleUniverseSnapshot, match="quote_assets"):
+        tracker.record_snapshot(["BTCUSDT"], 1_000, quote_assets={"BTCUSDT": ""})
+
+    assert not (tmp_path / "universe").exists()
+
+
+def test_the_snapshot_line_carries_the_quote_map_and_omits_it_when_empty(tmp_path):
+    """The permanent record, not just the state file.
+
+    The state file holds only the latest universe; the ndjson is the history a
+    later reader reconstructs a day from. An empty `quote_assets` written on every
+    line would read as "the venue reported no quote for any symbol", which is a
+    different fact from "nobody asked yet".
+    """
+    UniverseTracker(tmp_path, "binance-spot").record_snapshot(
+        ["BTCUSDT"], 1_000, quote_assets={"BTCUSDT": "USDT"})
+    UniverseTracker(tmp_path, "hyperliquid").record_snapshot(["BTC"], 1_000)
+
+    spot_dir = tmp_path / "universe" / "binance-spot"
+    with_quotes = json.loads(
+        next(spot_dir.glob("*/instruments.ndjson")).read_text().splitlines()[0])
+    assert with_quotes["quote_assets"] == {"BTCUSDT": "USDT"}
+
+    hl_dir = tmp_path / "universe" / "hyperliquid"
+    without = json.loads(
+        next(hl_dir.glob("*/instruments.ndjson")).read_text().splitlines()[0])
+    assert "quote_assets" not in without

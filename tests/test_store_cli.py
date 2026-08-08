@@ -809,3 +809,116 @@ def test_spot_is_a_venue_the_builder_can_read(tmp_path, monkeypatch):
     assert summary["bars"] == 1
     stored = tmp_path / "store" / "bars_60000000000ns" / "symbol=BTCUSDT"
     assert stored.is_dir()
+
+
+def test_all_enumerates_every_captured_symbol_and_no_other_stream(tmp_path):
+    """The list of what to build must come from the archive, or it goes stale.
+
+    Three symbols carry a trade tape; the folder also holds depth, a depth
+    snapshot, an aggTrade and the `.idx.zst` sibling of every hour file. Only
+    the trade tape can produce a bar, so only its symbols may be enumerated -
+    `depthSnapshot_XRPUSDT` would otherwise be requested as a symbol whose trade
+    stream does not exist and fail its whole batch.
+    """
+    from store.cli import captured_symbols
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+        for hour in ("00", "01"):
+            (source / f"trade_{symbol}_2026-08-02T{hour}.ndjson.zst").write_bytes(b"x")
+            (source / f"trade_{symbol}_2026-08-02T{hour}.idx.zst").write_bytes(b"x")
+    for other in ("depth_DOGEUSDT", "depthSnapshot_XRPUSDT", "aggTrade_ADAUSDT",
+                  "forceOrder_LTCUSDT"):
+        (source / f"{other}_2026-08-02T00.ndjson.zst").write_bytes(b"x")
+
+    assert captured_symbols(tmp_path, "binance", "2026-08-02") == [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def test_all_reads_the_streams_name_for_the_venue_it_was_asked_about(tmp_path):
+    """`trade` on Binance, `trades` on hyperliquid - the venue decides, not a guess.
+
+    Hyperliquid files under a `trade_` prefix would be enumerated by a glob
+    written for Binance and vice versa, and the venue that got the wrong prefix
+    would enumerate to nothing while its tape sat on disk.
+    """
+    from store.cli import captured_symbols
+
+    source = tmp_path / "raw" / "hyperliquid" / "2026-08-02"
+    source.mkdir(parents=True)
+    for symbol in ("BTC", "0G"):
+        (source / f"trades_{symbol}_2026-08-02T00.ndjson.zst").write_bytes(b"x")
+
+    assert captured_symbols(tmp_path, "hyperliquid", "2026-08-02") == ["0G", "BTC"]
+
+
+def test_a_symbol_carrying_an_underscore_is_cut_out_whole(tmp_path):
+    """The symbol is bounded by the date tail, not by splitting on '_'.
+
+    Hyperliquid already names instruments `0G` and `2Z`; a listing carrying an
+    underscore is one exchange decision away, and a split-on-'_' parse would
+    silently enumerate the prefix before it and then fail to find its files.
+    """
+    from store.cli import captured_symbols
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    (source / "trade_1000PEPE_USDT_2026-08-02T00.ndjson.zst").write_bytes(b"x")
+
+    assert captured_symbols(tmp_path, "binance", "2026-08-02") == ["1000PEPE_USDT"]
+
+
+def test_a_captured_day_holding_no_trade_tape_is_refused_not_reported_empty(tmp_path):
+    """A subscription that never connected must not read like a quiet market.
+
+    The folder exists, so capture ran. Depth arrived and trades did not, which is
+    a broken feed - and enumerating it to [] would exit 0 with "nothing to build",
+    the same output as a day nobody captured at all.
+    """
+    from store.cli import NoTradeTapeInCapture, captured_symbols
+
+    source = tmp_path / "raw" / "binance" / "2026-08-02"
+    source.mkdir(parents=True)
+    (source / "depth_BTCUSDT_2026-08-02T00.ndjson.zst").write_bytes(b"x")
+
+    with pytest.raises(NoTradeTapeInCapture, match="never connected"):
+        captured_symbols(tmp_path, "binance", "2026-08-02")
+
+
+def test_a_day_no_capture_covered_enumerates_empty_and_exits_zero(tmp_path):
+    """An absent venue-day is a legitimate zero, and the supervisor sees it hourly.
+
+    Bars build yesterday on every pass, so any day older than the capture - and
+    every day the eviction has reclaimed - reaches here. Refusing would write an
+    hourly failure into the run log for a condition that is simply the truth.
+    """
+    from store import cli as store_cli
+
+    assert store_cli.captured_symbols(tmp_path, "binance", "2026-08-02") == []
+    assert store_cli.main([
+        "--venue", "binance", "--date", "2026-08-02", "--symbols", "ALL",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+    ]) == 0
+    assert not (tmp_path / "store").exists()
+
+
+def test_all_builds_every_captured_symbol_without_being_told_their_names(tmp_path, monkeypatch):
+    """The end the supervisor actually calls: ALL, batched, no symbol list anywhere.
+
+    This is the whole point of the flag. Until 2026-08-08 the supervisor asked
+    for three symbols while capture subscribed 2,098, so 99.6% of the archive
+    became bars for nobody - and the raw it came from is evicted after seven
+    days, so those days cannot be recovered by fixing the list later.
+    """
+    store_cli = _two_symbol_capture(tmp_path, monkeypatch)
+
+    code = store_cli.main([
+        "--venue", "binance", "--date", "2026-08-02", "--symbols", "all",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1",
+    ])
+
+    assert code == 0
+    dataset = tmp_path / "store" / "bars_60000000000ns"
+    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]

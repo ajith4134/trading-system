@@ -155,12 +155,35 @@ both, at different prices and different fees. `build_bars` keys on (symbol, venu
 only because the venue is carried rather than normalised away. Verified through the reader on
 real data: 588 perp bars and 268 spot bars for BTCUSDT, closing at 64,965.90 and 65,026.79.
 
-**Not all of spot is denominated in dollars, and this is not yet handled.** Of 1,354 symbols:
-488 USDT, 312 TRY, 272 USDC, 41 BTC, 35 FDUSD, 28 EUR, 27 JPY, 20 USD1, 18 BRL, 12 ETH, 9 BNB.
-So roughly 815 are dollar-quoted and roughly 540 are not. A TRY-quoted pair's returns carry
-Turkish lira moves, and a BTC-quoted pair's carry bitcoin's; feeding either into a
-dollar-denominated P&L without conversion measures something nobody asked about. Discovery
-must either filter to dollar quotes or convert, and that decision is open — see below.
+**Not all of spot is denominated in dollars. Settled 2026-08-08: filter to dollar quotes.**
+Read from the venues' own `quoteAsset` and recorded point-in-time into the universe snapshot,
+then classified by `store.quote_currency`:
+
+| venue | listed | dollar-quoted | non-dollar | unclassified |
+|---|---|---|---|---|
+| binance perp | 569 | **566** | 3 (`U`×2, BTC×1) | 0 |
+| binance spot | 1,377 | **838** | 539 (TRY 312, `U` 46, BTC 41, EUR 29, IDR 29, JPY 27, BRL 18, ETH 12, BNB 9, …) | 0 |
+| hyperliquid | 177 | **177** | 0 | 0 |
+
+A TRY-quoted pair's returns carry Turkish lira moves and a BTC-quoted pair's carry bitcoin's,
+so a dollar P&L over either measures something nobody asked about. Conversion was rejected:
+it needs an FX rate the archive does not capture, and a wrong rate corrupts a P&L silently,
+where an excluded pair is merely absent.
+
+**The filter is applied where symbols are selected, never where bars are built.** Bars are
+cheap and the raw they come from is evicted after seven days, so a symbol filtered out at build
+time can never be built. A pair excluded from selection can be admitted tomorrow by changing
+one frozenset.
+
+**The quote currency is never parsed out of the symbol string**, and that is a measurement, not
+a preference. Live 2026-08-08: `BTCU` is BTC quoted in `U` — a real quote asset on 46 spot pairs
+and 2 perpetuals — `XRPRLUSD` is quoted in `RLUSD`, which a longest-suffix rule holding `USD`
+reads as a pair that does not exist, and `EUREURI` is EUR quoted in `EURI`. Adding `U` to a
+suffix table makes every symbol ending in U ambiguous.
+
+Two states, not one, for a quote asset nobody has classified: `unknown` is its own reported
+count, so a new Binance stablecoin is visible rather than silently shrinking the universe on
+the day it lists. Zero today, and printed anyway.
 
 **And the history is hours, not days.** Broad capture began at 09:00 UTC on 2026-08-08; every
 day before it holds three symbols per venue and no spot at all. "Since Aug 3" described a
@@ -233,14 +256,31 @@ step toward placing an order — that remains an explicit, separately-authorised
    distribution measured before a fraction is picked.
 3. **Forward-supervisor cadence** — event-driven off the capture feed vs a fixed tick. Affects
    ops cost more than correctness.
-4. **Which spot pairs discovery accepts** — spot is buildable as of 2026-08-08, but ~540 of
-   its 1,354 symbols are quoted in TRY, EUR, JPY, BRL, BTC, ETH or BNB rather than dollars.
-   Filter to dollar quotes, or convert through a rate the archive does not yet capture. Until
-   this is decided, a non-dollar pair's P&L is denominated in something nobody chose.
-5. **Whether the supervisor builds the broad universe** — it currently builds three symbols per
-   venue. Measured 2026-08-08: 569 symbols cost 367s and 2.7 GB peak in batches of five for
-   five hours of tape, extrapolating to ~34 min for a full day, ~70 MB/day on disk. Feasible;
-   not yet switched on.
+4. ~~**Which spot pairs discovery accepts**~~ — **settled 2026-08-08: filter to dollar quotes**,
+   read from the venue's `quoteAsset` and recorded point-in-time. Figures and the reason
+   conversion was rejected are in the tier-1 section above.
+5. ~~**Whether the supervisor builds the broad universe**~~ — **settled 2026-08-08: switched on.**
+   `scripts/store_supervisor.sh` now passes `--symbols ALL`, and `store.cli` reads the symbol
+   list off the archive rather than off a hand-written constant. Measured on the real archive,
+   12 closed hours of 2026-08-08, batches of five:
+
+   | venue | symbols | bars | wall | peak RSS |
+   |---|---|---|---|---|
+   | hyperliquid | 177 | 63,247 | 6.9s | 201 MB |
+   | binance spot | 1,363 | 199,825 | 100.2s | 652 MB |
+   | binance perp | 569 | 216,191 | 547.6s | 3,012 MB |
+   | **total** | **2,109** | **479,263** | **10m 55s** | — |
+
+   36 MB of Parquet for those 12 hours. Peak RSS scales with tape length, not just symbol
+   count — 3.0 GB over 12 hours against 2.7 GB over 5 — so a full day should be expected
+   nearer 6 GB. The box has 30 GB with 23 GB available beside three running captures, and no
+   swap, so it fits; a longer day or a fourth venue is what would make `--batch-size` need
+   lowering. The first pass of a day pays this once and every later pass refuses before
+   reading.
+
+   What was wrong before it was switched on: capture subscribed 2,098 symbols and the
+   supervisor asked for 9, so 99.6% of the tape was archived and never became a bar — and the
+   raw is evicted after seven days, so those days cannot be recovered by fixing a list later.
 
 ## Review checkpoint
 

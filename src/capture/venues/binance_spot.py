@@ -151,3 +151,37 @@ class BinanceSpotVenue:
             if isinstance(symbol, str) and symbol:
                 result.append(symbol)
         return sorted(result)
+
+    def parse_quote_assets(self, payload: dict) -> dict[str, str]:
+        """What each tradeable symbol is priced in, from the venue's own field.
+
+        The venue's field, never the symbol string, and that is a measurement
+        rather than a preference. Read live 2026-08-08: `BTCU` is BTC quoted in
+        `U` and 45 other pairs share that quote; `XRPRLUSD` is quoted in `RLUSD`,
+        which a longest-suffix rule containing `USD` reads as `XRPRL` quoted in
+        dollars; `EUREURI` is EUR quoted in `EURI`. Add `U` to a suffix table and
+        every symbol ending in U becomes ambiguous.
+
+        Only 838 of 1,377 tradeable spot pairs are quoted in dollars. The rest
+        carry TRY, EUR, JPY, BRL, IDR, BTC, ETH or BNB moves in their returns,
+        and a dollar P&L computed over them measures something nobody chose - so
+        whatever filters them has to read this, and cannot guess it.
+        """
+        if not isinstance(payload, dict):
+            return {}
+        symbols = payload.get("symbols")
+        if not isinstance(symbols, list):
+            return {}
+
+        quotes: dict[str, str] = {}
+        for item in symbols:
+            if not isinstance(item, dict) or item.get("status") != "TRADING":
+                continue
+            symbol, quote = item.get("symbol"), item.get("quoteAsset")
+            # A symbol whose quote is missing or mistyped is LEFT OUT rather than
+            # given a plausible one. Absent from the map, it is classified
+            # `unknown` downstream and counted; guessed, it silently joins
+            # whichever side the guess picked.
+            if isinstance(symbol, str) and symbol and isinstance(quote, str) and quote:
+                quotes[symbol] = quote
+        return quotes

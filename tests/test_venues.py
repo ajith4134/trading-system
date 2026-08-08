@@ -431,3 +431,89 @@ def test_spot_still_polls_no_funding():
     """Spot has no funding. Adding a snapshot poll must not smuggle one in."""
     streams = {s.stream for s in BinanceSpotVenue().poll_specs(["BTCUSDT"])}
     assert streams == {"depthSnapshot"}
+
+
+def test_binance_spot_parse_quote_assets_reads_the_venues_own_field():
+    """Real listings from the live endpoint, 2026-08-08, that break suffix parsing.
+
+    `BTCU` is BTC quoted in `U`, `XRPRLUSD` is quoted in `RLUSD`, `EUREURI` in
+    `EURI`. Only the venue's `quoteAsset` gets all three right.
+    """
+    v = BinanceSpotVenue()
+    payload = {"symbols": [
+        {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING"},
+        {"symbol": "BTCU", "quoteAsset": "U", "status": "TRADING"},
+        {"symbol": "XRPRLUSD", "quoteAsset": "RLUSD", "status": "TRADING"},
+        {"symbol": "EUREURI", "quoteAsset": "EURI", "status": "TRADING"},
+    ]}
+    assert v.parse_quote_assets(payload) == {
+        "BTCUSDT": "USDT", "BTCU": "U", "XRPRLUSD": "RLUSD", "EUREURI": "EURI"}
+
+
+def test_binance_spot_parse_quote_assets_covers_exactly_the_parsed_universe():
+    """A map naming symbols the universe excludes lets a caller request them.
+
+    Same TRADING filter as `parse_instruments`, so the two cannot disagree about
+    which symbols exist.
+    """
+    v = BinanceSpotVenue()
+    payload = {"symbols": [
+        {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING"},
+        {"symbol": "DEADUSDT", "quoteAsset": "USDT", "status": "BREAK"},
+    ]}
+    assert v.parse_instruments(payload) == ["BTCUSDT"]
+    assert v.parse_quote_assets(payload) == {"BTCUSDT": "USDT"}
+
+
+def test_a_symbol_whose_quote_is_missing_is_left_out_not_guessed():
+    """Absent from the map it is classified `unknown` and counted; guessed, it is
+    silently on whichever side the guess picked."""
+    v = BinanceSpotVenue()
+    payload = {"symbols": [
+        {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING"},
+        {"symbol": "NOQUOTE", "status": "TRADING"},
+        {"symbol": "BADQUOTE", "quoteAsset": 7, "status": "TRADING"},
+    ]}
+    assert v.parse_quote_assets(payload) == {"BTCUSDT": "USDT"}
+
+
+def test_binance_spot_parse_quote_assets_handles_wrong_shaped_payloads():
+    v = BinanceSpotVenue()
+    assert v.parse_quote_assets({}) == {}
+    assert v.parse_quote_assets({"symbols": "not-a-list"}) == {}
+    assert v.parse_quote_assets("not-a-dict") == {}
+
+
+def test_binance_futures_parse_quote_assets_is_not_all_dollars():
+    """526 USDT, 38 USDC, 2 USD1, 2 in `U`, 1 in BTC over the 569 live perpetuals.
+
+    Nearly-all-dollars is what makes the exceptions dangerous: they read as a
+    rounding error right up until one of them is in a P&L.
+    """
+    v = BinanceVenue()
+    payload = {"symbols": [
+        {"symbol": "BTCUSDT", "quoteAsset": "USDT",
+         "contractType": "PERPETUAL", "status": "TRADING"},
+        {"symbol": "ETHU", "quoteAsset": "U",
+         "contractType": "PERPETUAL", "status": "TRADING"},
+        {"symbol": "BTCUSDT_260327", "quoteAsset": "USDT",
+         "contractType": "CURRENT_QUARTER", "status": "TRADING"},
+    ]}
+    assert v.parse_quote_assets(payload) == {"BTCUSDT": "USDT", "ETHU": "U"}
+
+
+def test_hyperliquid_quotes_every_perp_in_usd():
+    """The venue publishes no per-symbol quote field, so this is a constant.
+
+    Measured 2026-08-08: a `meta` universe entry carries isDelisted, marginMode,
+    marginTableId, maxLeverage, name, onlyIsolated and szDecimals - no quote - and
+    the payload's `collateralToken` is the integer 0, a token index rather than a
+    name. A `quoteAsset` lookup here would find nothing and leave all 232 symbols
+    unclassified.
+    """
+    v = HyperliquidVenue()
+    payload = {"universe": [{"name": "BTC", "isDelisted": False},
+                            {"name": "ETH", "isDelisted": False},
+                            {"name": "OLD", "isDelisted": True}],
+               "collateralToken": 0}
+    assert v.parse_quote_assets(payload) == {"BTC": "USD", "ETH": "USD"}

@@ -25,8 +25,9 @@ RUNS="$STATE_DIR/runs.ndjson"
 # The symbols carrying depth and funding. Only the core has either: the broad
 # tail subscribes trades alone, so there is nothing polled to build from it.
 CORE="BTCUSDT,ETHUSDT,SOLUSDT"
-# The same three instruments as hyperliquid names them.
-CORE_HYPERLIQUID="BTC,ETH,SOL"
+# No hyperliquid core list any more: it existed only for the bars loop, which now
+# reads its symbols off the archive. An unused constant naming three symbols is
+# how the next reader concludes the build is still core-only.
 
 mkdir -p "$STATE_DIR"
 
@@ -45,12 +46,21 @@ build() {   # dataset venue date symbols
 # So bars build yesterday only. Today's bars appear tomorrow, and the lag is
 # real: replay and calibration always trail the tape by up to a day.
 #
-# Symbols differ by venue because the venues name the same instrument
-# differently - BTCUSDT on binance, BTC on hyperliquid.
+# --symbols ALL, not a list. The venues name the same instrument differently -
+# BTCUSDT on binance, BTC on hyperliquid - so any hand-written list is three
+# lists, and all three were the core: capture subscribed 2,098 symbols on
+# 2026-08-08 and this loop asked for 9, so 99.6% of the tape was archived and
+# never became a bar. A list also cannot be kept correct. A symbol listing
+# mid-day is captured within the minute and would wait for a human, and the raw
+# it was captured from is evicted after seven days - so a day built from a stale
+# list is a day that cannot be built again. store.cli reads the symbols off the
+# archive instead, which is the only thing that knows what was captured.
+#
 # --batch-size bounds peak memory to the batch rather than the request: the
 # builder accumulates every trade of every requested symbol before building, so
-# an unbatched broad-universe day does not fit in this box's RAM. Harmless at
-# three symbols, and correct if the list ever grows.
+# an unbatched broad-universe day does not fit in this box's RAM. Measured
+# 2026-08-08: 2.7 GB peak in batches of five over 569 symbols, against ~25 GB
+# extrapolated unbatched.
 build_bars() {   # venue date symbols
   PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m store.cli \
     --venue "$1" --date "$2" --symbols "$3" --batch-size 5 \
@@ -76,8 +86,7 @@ while true; do
   # polled datasets kept writing a line every pass, and nothing in the run log
   # said bars had been attempted at all - because they never had been. Every
   # pass now leaves a line naming the venue-day and whether it built.
-  for spec in "binance $CORE" "binance-spot $CORE" "hyperliquid $CORE_HYPERLIQUID"; do
-    set -- $spec
+  for venue in binance binance-spot hyperliquid; do
     # Three states, not two. The partition writer refuses a rewrite, so every
     # pass after the first exits non-zero on a day it already built - and
     # recording that as "failed" would bury a genuine failure in an hourly
@@ -87,19 +96,30 @@ while true; do
     # moment the builder started catching the collision per batch - a detector
     # tied to a message nobody meant as an interface. Every already-built day
     # would then have been recorded as a failure.
-    output=$(build_bars "$1" "$yesterday" "$2")
-    case $? in
-      0) status=built ;;
+    output=$(build_bars "$venue" "$yesterday" ALL)
+    code=$?
+    # Four states. A day no capture covered exits 0 having built nothing, and
+    # recording that as "built" is a green tile for work that did not happen -
+    # which is what this loop already logged for 2026-08-07, three venues at once,
+    # with a null bar count beside it. It gets its own name.
+    case $code in
+      0) status=built
+         printf '%s' "$output" | grep -q 'nothing to build' && status=no-capture ;;
       "$EXIT_ALREADY_BUILT") status=already-built ;;
       *) status=failed ;;
     esac
-    # A day the capture never covered also exits 0, with nothing built. Recording
-    # the status alone would read as success; the count is what distinguishes a
-    # built day from an empty one.
+    # And the counts regardless, because the status is a claim and these are the
+    # evidence for it: "built" beside a null symbol count is not a build.
     bars=$(printf '%s' "$output" | grep -oE '> [0-9]+ bars' | grep -oE '[0-9]+' | head -1)
+    # And the symbol count, because with ALL the breadth is no longer a constant
+    # this script sets - it is whatever the archive held, and it is the number
+    # that was wrong for five days while every other field read healthy. A run
+    # log that reports bars without breadth cannot tell 9 symbols from 2,098.
+    symbols=$(printf '%s' "$output" | grep -oE '^[0-9]+ symbol\(s\) captured' \
+      | grep -oE '^[0-9]+' | head -1)
     printf '%s\n' "$output" >> "$LOG"
-    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","bars":%s}}\n' \
-      "$started" "$yesterday" "$1" "$yesterday" "$status" "${bars:-null}" >> "$RUNS"
+    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","symbols":%s,"bars":%s}}\n' \
+      "$started" "$yesterday" "$venue" "$yesterday" "$status" "${symbols:-null}" "${bars:-null}" >> "$RUNS"
   done
 
   sleep "$INTERVAL"

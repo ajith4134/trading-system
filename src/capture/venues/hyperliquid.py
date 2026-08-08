@@ -1,7 +1,7 @@
 """Hyperliquid perps. l2Book carries no sequence numbers - staleness only."""
 from __future__ import annotations
 
-from capture.venues import ExtractedMeta, PollSpec, StreamSpec
+from capture.venues import QUOTE_USD, ExtractedMeta, PollSpec, StreamSpec
 
 _WS_URL = "wss://api.hyperliquid.xyz/ws"
 _INSTRUMENTS_URL = "https://api.hyperliquid.xyz/info"
@@ -85,3 +85,21 @@ class HyperliquidVenue:
             if isinstance(name, str) and name:
                 result.append(name)
         return sorted(result)
+
+    def parse_quote_assets(self, payload: dict) -> dict[str, str]:
+        """`USD` for every listed perp, and said as a constant rather than a read.
+
+        This venue publishes no per-symbol quote field. Measured live 2026-08-08,
+        the keys on a `meta` universe entry are exactly isDelisted, marginMode,
+        marginTableId, maxLeverage, name, onlyIsolated and szDecimals; the payload
+        carries a top-level `collateralToken`, and its value is the integer 0 - a
+        token index, not a name, resolvable only through a second endpoint.
+
+        So the denomination here is a property of the venue, not of the listing:
+        every perp is marked and settled in USD against USDC collateral. Returning
+        the constant is honest and the docstring says which of the two it is. What
+        would not be honest is a `quoteAsset` lookup that silently found nothing
+        and left every hyperliquid symbol classified `unknown` - the same 232
+        symbols dropped from a dollar-quoted universe they all belong to.
+        """
+        return {symbol: QUOTE_USD for symbol in self.parse_instruments(payload)}

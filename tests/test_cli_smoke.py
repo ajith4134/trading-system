@@ -593,11 +593,27 @@ def test_a_core_only_run_still_uses_exactly_one_connection(tmp_path: Path,
 # delists. UniverseTracker was written for exactly this and, like tail_specs
 # before it, was called by nothing outside its own tests.
 
+
+def _listing(monkeypatch, symbols, quote="USDT"):
+    """Stub the ONE network call the universe path makes, at its real seam.
+
+    These tests used to patch `fetch_universe`. When the CLI moved to
+    `fetch_instruments` - one request answering both the membership and the quote
+    currencies - the patch stopped intercepting anything and all three tests went
+    to the live Binance endpoint and passed or failed on whatever it listed that
+    minute. They did not fail loudly; one of them asserted against 566 real
+    symbols. So the stub is built from the venue's own payload shape and lives
+    here once, where the next seam change breaks it in one place.
+    """
+    monkeypatch.setattr(cli, "fetch_instruments", lambda venue: {"symbols": [
+        {"symbol": symbol, "quoteAsset": quote,
+         "contractType": "PERPETUAL", "status": "TRADING"}
+        for symbol in symbols]})
+
 def test_tail_all_subscribes_the_venues_whole_universe_minus_the_core(
         tmp_path: Path, monkeypatch, capsys):
     calls = record_run_capture_calls(monkeypatch)
-    monkeypatch.setattr(cli, "fetch_universe",
-                        lambda venue: ["BTCUSDT", "XRPUSDT", "ADAUSDT"])
+    _listing(monkeypatch, ["BTCUSDT", "XRPUSDT", "ADAUSDT"])
 
     assert main(["--venue", "binance", "--symbols", "BTCUSDT",
                  "--tail-symbols", "ALL",
@@ -614,15 +630,20 @@ def test_tail_all_records_point_in_time_universe_membership(
     purge/embargo scheme catches it. Trivial to record now, impossible to
     reconstruct later."""
     record_run_capture_calls(monkeypatch)
-    monkeypatch.setattr(cli, "fetch_universe",
-                        lambda venue: ["BTCUSDT", "XRPUSDT"])
+    _listing(monkeypatch, ["BTCUSDT", "XRPUSDT"])
 
     assert main(["--venue", "binance", "--symbols", "BTCUSDT",
                  "--tail-symbols", "ALL",
                  "--root", str(tmp_path), "--seconds", "1"]) == 0
 
     tracker = UniverseTracker(tmp_path, "binance")
-    assert sorted(tracker.load_last(2_000_000_000_000_000_000)) == ["BTCUSDT", "XRPUSDT"]
+    at_the_end_of_time = 2_000_000_000_000_000_000
+    assert sorted(tracker.load_last(at_the_end_of_time)) == ["BTCUSDT", "XRPUSDT"]
+    # And what each was priced in, from the same request. Recorded together
+    # because which pairs exist changes daily, so a quote map fetched later
+    # describes a different universe than the day being read.
+    assert tracker.load_last_quote_assets(at_the_end_of_time) == {
+        "BTCUSDT": "USDT", "XRPUSDT": "USDT"}
 
 
 def test_a_failed_universe_fetch_refuses_the_run_instead_of_shrinking_it(
@@ -635,7 +656,7 @@ def test_a_failed_universe_fetch_refuses_the_run_instead_of_shrinking_it(
     def unreachable(venue):
         raise OSError("venue unreachable")
 
-    monkeypatch.setattr(cli, "fetch_universe", unreachable)
+    monkeypatch.setattr(cli, "fetch_instruments", unreachable)
 
     with pytest.raises(SystemExit) as exit_info:
         main(["--venue", "binance", "--symbols", "BTCUSDT",

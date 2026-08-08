@@ -44,6 +44,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -65,6 +66,15 @@ from store.trade_bars import Trade, build_bars, extract_trades
 _TRADE_STREAMS = {"binance": "trade", "binance-spot": "trade", "hyperliquid": "trades"}
 DEFAULT_INTERVAL_NS = 60_000_000_000
 DEFAULT_LOOKAHEAD_HOURS = 2
+
+# `--symbols ALL`. A hand-maintained list is what kept the broad universe
+# unbuilt: capture subscribed 2,098 symbols and the supervisor asked for three,
+# so 99.6% of the tape was archived and never turned into a bar. The list also
+# cannot be maintained - a symbol listing mid-day is captured immediately and
+# would wait for a human to add it, and the raw it was captured from is evicted
+# after seven days. Deliberately the same word capture already uses for the same
+# idea (`--tail-symbols ALL`), so the two ends of the pipeline read alike.
+SYMBOLS_ALL = "ALL"
 
 # "There was nothing to do", distinct from both success and failure, so a caller
 # can tell them apart without parsing text.
@@ -90,6 +100,23 @@ class NoHourFilesForSymbol(FileNotFoundError):
     Judged on the day's OWN files, never on what the lookahead found. A symbol
     present only in the next day's folder is still absent from this day, and
     letting the lookahead satisfy the check would hide the typo it exists for.
+    """
+
+
+class NoTradeTapeInCapture(FileNotFoundError):
+    """A captured venue-day holds frames but not one file of the trade stream.
+
+    The same reasoning as `NoHourFilesForSymbol`, one level up. An absent
+    venue/date folder is a legitimate zero and `--symbols ALL` reports it as
+    such. A folder that EXISTS means capture ran that day, and a run that
+    recorded depth or funding while recording no trades at all is a broken
+    subscription, not an idle market - `trade` is the one stream every venue in
+    `_TRADE_STREAMS` subscribes for every symbol it touches.
+
+    Enumerating to an empty list there would exit 0 with "nothing to build",
+    which is indistinguishable from the day nobody captured. That is the shape
+    this whole module refuses: the silence of a feed that never connected
+    reading as the silence of a market that never traded.
     """
 
 
@@ -212,6 +239,51 @@ def _hour_files(capture_root: Path, venue: str, date: str,
     if not folder.is_dir():
         return []
     return sorted(folder.glob(f"{stream}_{symbol}_*{RAW_SUFFIX}"))
+
+
+def captured_symbols(capture_root: Path, venue: str, date: str) -> list[str]:
+    """Every symbol whose trade tape this venue-day actually holds, sorted.
+
+    Read off the archive, not off the universe snapshot, and the difference is
+    not cosmetic. The snapshot records what the venue LISTED; only the archive
+    knows what was CAPTURED. A symbol listed at 09:00 whose subscription never
+    connected appears in the snapshot and on no disk, and asking `build_bars_for_day`
+    for it raises `NoHourFilesForSymbol` - which under batching would fail that
+    whole batch of five over a symbol no build could ever have produced. The
+    archive can only be the source of a list of what to read from the archive.
+
+    Returns [] for a venue-day nobody captured; raises `NoTradeTapeInCapture`
+    when the day was captured and carries no trade stream at all. Those two are
+    the same empty list and opposite facts.
+
+    The symbol is cut out with the date-and-hour tail anchored, not by splitting
+    on '_': hyperliquid names instruments `0G` and `2Z` today and Binance keeps
+    adding, so a symbol carrying an underscore is a listing away rather than
+    impossible. The `.idx.zst` sibling of every hour file is excluded by the
+    suffix and would be deduplicated anyway.
+    """
+    stream = _TRADE_STREAMS[venue]
+    folder = Path(capture_root) / "raw" / venue / date
+    if not folder.is_dir():
+        return []
+
+    hour_file = re.compile(
+        rf"^{re.escape(stream)}_(?P<symbol>.+)_{re.escape(date)}T\d{{2}}"
+        rf"{re.escape(RAW_SUFFIX)}$")
+    symbols = {
+        match.group("symbol")
+        for match in (hour_file.match(path.name)
+                      for path in folder.glob(f"{stream}_*{RAW_SUFFIX}"))
+        if match is not None
+    }
+    if not symbols:
+        raise NoTradeTapeInCapture(
+            f"{folder} exists, so capture ran on {date}, but holds no "
+            f"'{stream}_*{RAW_SUFFIX}' file for {venue}. Every symbol this venue "
+            f"touches subscribes that stream, so this is a subscription that "
+            f"never connected, not a day without trades - and reporting it as "
+            f"nothing to build would make it look like the days no capture covered.")
+    return sorted(symbols)
 
 
 def _lookahead_hour_files(capture_root: Path, venue: str, date: str, stream: str,
@@ -512,7 +584,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="store", description="Build the bitemporal store from captured frames.")
     parser.add_argument("--venue", required=True, choices=sorted(_TRADE_STREAMS))
     parser.add_argument("--date", required=True, help="UTC date, YYYY-MM-DD")
-    parser.add_argument("--symbols", required=True, help="comma-separated")
+    parser.add_argument("--symbols", required=True,
+                        help=f"comma-separated, or {SYMBOLS_ALL} for every symbol "
+                             f"whose trade tape this venue-day holds")
     parser.add_argument("--capture-root", default=str(Path.home() / "capture"))
     parser.add_argument("--store-root", default=str(Path.home() / "capture" / "store"))
     parser.add_argument("--interval-ns", type=int, default=DEFAULT_INTERVAL_NS)
@@ -524,11 +598,26 @@ def main(argv: list[str] | None = None) -> int:
                              "Peak memory follows the batch, not the request")
     args = parser.parse_args(argv)
 
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    if not symbols:
-        parser.error("--symbols must name at least one symbol")
     if args.batch_size < 0:
         parser.error("--batch-size cannot be negative")
+
+    if args.symbols.strip().upper() == SYMBOLS_ALL:
+        # Refusals propagate rather than being caught: an unreadable capture root
+        # and a day nobody captured must not both exit 0 with nothing built.
+        symbols = captured_symbols(Path(args.capture_root), args.venue, args.date)
+        if not symbols:
+            # The only path here is an absent venue/date folder - a captured day
+            # with no trade tape raised above. Normal when building a day older
+            # than the capture, and normal on the first pass after eviction.
+            print(f"no capture on disk for {args.venue} {args.date}; nothing to build",
+                  file=sys.stderr)
+            return 0
+        print(f"{len(symbols)} symbol(s) captured for {args.venue} {args.date}",
+              file=sys.stderr)
+    else:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        if not symbols:
+            parser.error("--symbols must name at least one symbol")
 
     # One build per batch, because `build_bars_for_day` accumulates every trade of
     # every requested symbol into a single list before building bars from it.

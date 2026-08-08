@@ -83,14 +83,22 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
 TAIL_ALL = "ALL"
 
 
-def fetch_universe(venue) -> list[str]:
-    """Every symbol the venue currently lists as tradeable.
+def fetch_instruments(venue) -> dict:
+    """The venue's raw instrument listing, unparsed.
 
-    Synchronous and blocking on purpose: this runs once, before the capture
-    loop starts, and a tail built from a stale list is the thing it exists to
-    prevent. Uses the venue's own `instruments_request` / `parse_instruments`
-    pair, so a venue that describes its universe differently needs no change
-    here.
+    Returns the payload rather than the parsed symbols so that one request can
+    answer more than one question about the same listing. The symbols and the
+    currency each is quoted in arrive together, and fetching twice could get two
+    different answers with a listing landing between them - leaving a recorded
+    quote map that covers symbols the recorded universe does not.
+
+    This replaced a `fetch_universe` helper that returned only the parsed
+    symbols. It was left in place at first and then deleted: with the caller
+    moved over, nothing called it, and a plausible unused helper beside the one
+    that is used is how `tail_specs` came to be built, tested and never run.
+
+    Synchronous and blocking on purpose: this runs once, before the capture loop
+    starts, and a tail built from a stale list is the thing it exists to prevent.
     """
     import urllib.request
 
@@ -100,7 +108,9 @@ def fetch_universe(venue) -> list[str]:
         url, data=body, method=method,
         headers={"Content-Type": "application/json"} if body else {})
     with urllib.request.urlopen(request, timeout=_UNIVERSE_TIMEOUT_SECONDS) as response:
-        return venue.parse_instruments(json.loads(response.read().decode()))
+        return json.loads(response.read().decode())
+
+
 
 
 async def run_capture(venue, specs, root: Path, duration_seconds: float,
@@ -241,7 +251,13 @@ def main(argv: list[str] | None = None) -> int:
         # falling back to the core: six symbols out of several hundred,
         # captured silently, would leave the archive looking like a healthy run.
         try:
-            discovered = fetch_universe(venue)
+            # One fetch, both answers. The listing carries the symbols and the
+            # currency each is priced in, and asking twice could get two answers
+            # with a listing in between - a quote map covering symbols the
+            # recorded universe does not.
+            listing = fetch_instruments(venue)
+            discovered = venue.parse_instruments(listing)
+            quote_assets = venue.parse_quote_assets(listing)
         except Exception as exc:
             parser.error(f"--tail-symbols ALL could not read {args.venue}'s "
                          f"universe, so the tail would silently shrink to the "
@@ -253,8 +269,13 @@ def main(argv: list[str] | None = None) -> int:
         # Backtesting "watch every symbol" against today's list conditions on
         # survival, and no purge or embargo scheme catches it. Trivial now,
         # impossible to reconstruct later.
+        #
+        # The quote currencies go down with it and for the same reason. Which
+        # pairs exist changes daily, so a map fetched later describes a different
+        # universe - and without one, a dollar P&L cannot tell a lira-quoted pair
+        # from a dollar-quoted one by any means that is not a guess.
         UniverseTracker(Path(args.root), venue.name).record_snapshot(
-            sorted(discovered), time.time_ns())
+            sorted(discovered), time.time_ns(), quote_assets=quote_assets)
         tail_source = discovered
     else:
         tail_source = [s.strip() for s in args.tail_symbols.split(",") if s.strip()]

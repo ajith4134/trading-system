@@ -1,5 +1,11 @@
 from dataclasses import dataclass
 
+# The denomination a venue reports when it reports one per venue rather than per
+# listing - hyperliquid's perps, all marked in USD. Named here rather than in the
+# store's classifier so Layer 0 does not import Layer 1 to describe its own
+# archive; the classifier holds the same string in its own dollar set.
+QUOTE_USD = "USD"
+
 
 class UrlBudgetTooSmall(Exception):
     """One subscription cannot fit the venue's URL budget even on its own.
