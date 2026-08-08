@@ -366,3 +366,46 @@ def test_a_dead_stream_that_left_bytes_behind_still_reads_failing():
     )
     result = PROBES["mark price vs index vs oracle price per venue"](facts)
     assert result.state == FAILING, result.detail
+
+
+# --- the cost engine tile ----------------------------------------------------
+
+def _facts_with_store(tmp_path, datasets):
+    from statuswall.evidence import SystemFacts
+    for name in datasets:
+        (tmp_path / "store" / name).mkdir(parents=True, exist_ok=True)
+    return SystemFacts(measured_at="2026-08-08T00:00:00Z", capture_root=tmp_path,
+                       repo_root=tmp_path, capture_running=True, capture_pids=[1],
+                       latest_capture_date="2026-08-08", hours_since_capture=0.0,
+                       venues=["binance"], reports={},
+                       free_bytes=10**11, daily_bytes=10**9, runway_days=100.0,
+                       runway_status="ok", restart_counts={})
+
+
+def test_the_cost_tile_never_reads_ok_while_a_fee_is_only_declared(tmp_path):
+    """Rule 8 on the one gate every signal passes. Binance will not serve its
+    schedule without an API key, so its rates are a human's reading of a fee
+    page - and ARCHITECTURE.md puts fees at 5-10x slippage in deciding
+    breakeven. Green here would be the display asserting what nobody measured."""
+    from statuswall.evidence import OK, probe_cost_engine
+
+    result = probe_cost_engine(_facts_with_store(tmp_path, ["funding", "book"]))
+    assert result.state != OK
+    assert "declared" in result.detail
+
+
+def test_a_missing_dataset_is_named_not_hidden(tmp_path):
+    """spread and impact charge zero without a book dataset, which understates
+    cost - the dangerous direction. A tile that stayed quiet about it would be
+    reporting a cheaper world than the real one."""
+    from statuswall.evidence import probe_cost_engine
+
+    result = probe_cost_engine(_facts_with_store(tmp_path, ["funding"]))
+    assert "book" in result.detail
+    assert "zero" in result.detail
+
+
+def test_no_datasets_at_all_reads_not_built(tmp_path):
+    from statuswall.evidence import NOT_BUILT, probe_cost_engine
+
+    assert probe_cost_engine(_facts_with_store(tmp_path, [])).state == NOT_BUILT

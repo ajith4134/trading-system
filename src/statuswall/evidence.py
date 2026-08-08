@@ -401,6 +401,61 @@ def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
                        "ClockGatedReader.read_as_of, exercised live")
 
 
+def probe_cost_engine(facts: SystemFacts) -> ProbeResult:
+    """What the cost engine can actually price right now, and on what evidence.
+
+    Rule 8 applied to the one gate every signal passes: a cost engine quoting
+    from fees nobody fetched must not render green. Being wrong here is not a
+    display bug - `ARCHITECTURE.md` Layer 1 puts fees at 5-10x slippage in
+    deciding breakeven, so an unverified fee silently trusted is the difference
+    between an edge and a loss.
+
+    Three things are measured, none asserted: whether any venue's schedule was
+    actually fetched, and whether the funding and book datasets exist for the
+    spread, impact and funding components to read. A component with no dataset
+    is charged as zero, which understates cost - the dangerous direction - so
+    it caps this tile below OK however healthy everything else looks.
+    """
+    from cost.fee_schedule import DECLARED_SCHEDULES
+
+    store = Path(facts.capture_root) / "store"
+    have_funding = (store / "funding").is_dir()
+    have_book = (store / "book").is_dir()
+
+    verified = sorted({v for (v, _), sched in DECLARED_SCHEDULES.items()
+                       if sched.is_verified})
+    declared = sorted({v for (v, _), sched in DECLARED_SCHEDULES.items()
+                       if not sched.is_verified})
+
+    missing = [name for name, present in
+               (("funding", have_funding), ("book", have_book)) if not present]
+
+    proof = "cost/fee_schedule.py + capture/store"
+    if not verified and missing:
+        return ProbeResult(
+            NOT_BUILT,
+            f"no venue schedule fetched (declared only: {', '.join(declared)}); "
+            f"missing dataset(s): {', '.join(missing)} - spread and impact "
+            f"charge zero, which understates cost",
+            proof)
+    if missing:
+        return ProbeResult(
+            PARTIAL,
+            f"quotes priceable, but {', '.join(missing)} dataset(s) absent so "
+            f"those components charge zero; fees declared for "
+            f"{', '.join(declared)} and never fetched",
+            proof)
+    if declared:
+        return ProbeResult(
+            PARTIAL,
+            f"all datasets present, but {', '.join(declared)} fee(s) are "
+            f"declared rather than fetched - a quote resting on them reports "
+            f"itself unverified",
+            proof)
+    return ProbeResult(OK, f"every schedule fetched ({', '.join(verified)}); "
+                           f"funding and book datasets present", proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -427,6 +482,7 @@ PROBES = {
     "strategy health board": probe_status_wall,
     "bitemporal store": probe_bitemporal_store,
     "clock gated access api": probe_clock_gated_access,
+    "cost engine round trip breakeven gate": probe_cost_engine,
 }
 
 
