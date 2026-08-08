@@ -663,18 +663,24 @@ phase), or **DECLINED** (with the reason, written down).
 **The property that makes it work: declining is allowed, forgetting is not.** The build reconciles
 against the ledger twice — once when each module ships, once in a final sweep.
 
-### 10.2 Spot capture does not exist — **blocks the earning core**
+### 10.2 ~~Spot capture does not exist~~ — **DONE 2026-08-08**
 
 Measured 2026-08-08. Binance capture points at `wss://fstream.binance.com` — **USDⓈ-M futures
 only**. Channels: `depth@100ms`, `trade`, `forceOrder` (withheld by the venue), plus polled
 `premiumIndex`. Hyperliquid subscribes perps.
 
-**No spot data is being captured on either venue.** But **spot-perp basis is a P1 "start here"
-family**, and the prime directive rests on carry. Half of carry's data does not exist.
+**Resolved.** `binance-spot` is a separate venue — sharing the futures venue's name would have filed
+spot BTCUSDT and perpetual BTCUSDT as one instrument, and the basis is precisely the difference
+between them. Live in production across all 1,377 spot symbols, at 26 MB/hour.
 
-Universe is also three symbols: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`.
+Building it exposed a coupling worth recording: the recorder chose its depth gap tracker with
+`venue.name == "binance"`, correct only while exactly one Binance venue existed. Spot would have
+fallen through to plain staleness tracking, and every dropped depth update would have gone
+unreported. `BinanceDepthTracker` already handled both chains — futures on `pu == prev.u`, spot on
+`U == prev.u + 1` — and nothing could reach its spot branch.
 
-This is a blocker for the earning core, not a nice-to-have, and it likely precedes parts of Phase 1.
+**Capture now stands at 2,123 symbols across three venues**, against six this morning: 569 Binance
+perpetuals, 1,377 Binance spot, 177 Hyperliquid. Combined ~3.4 GB/day against 89 GB free.
 
 ### 10.3 ~~The broad tail is built but not wired~~ — **DONE 2026-08-08**
 
