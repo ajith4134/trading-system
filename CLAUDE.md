@@ -30,10 +30,18 @@ references. On 2026-08-08, four capabilities were designed from scratch that the
 
 **Declining a row is allowed. Forgetting one is not.**
 
+**And read the donor code, not the ledger's note about it.** Also 2026-08-08: two rows flagged
+"reusable as-is" were wrong once fetched raw. A CPCV purge was one-sided (leaked a label horizon of
+training rows into every test block) and a Deflated-Sharpe gate was fed the CPCV *path* count as its
+trial count, deflating a candidate picked from thousands as though 15 things were tried. Both read as
+rigorous. **All three prior-art defects found that day failed in the flattering direction** — which is
+why the systems that shipped them never noticed. See the addendum in
+`~/research/ledger/merged/risk-execution-validation.md`.
+
 ## Working rules for this repo
 
 - **Python 3.12** via `uv`. Never system Python (3.14.4 — too new for polars).
-- Tests: `.venv/bin/python -m pytest -q`. Baseline **414 passed, 1 skipped**.
+- Tests: `.venv/bin/python -m pytest -q`. Baseline **651 passed, 1 skipped**.
 - **Every market-data read goes through `store.clock_gated_reader`.** No direct Parquet reads, no
   live REST in a pricing path. That is the whole reason Layer 1 exists.
 - **No quote may be produced from a default.** A missing or stale input produces a refusal naming
