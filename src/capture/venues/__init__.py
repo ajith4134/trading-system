@@ -1,6 +1,68 @@
 from dataclasses import dataclass
 
 
+class UrlBudgetTooSmall(Exception):
+    """One subscription cannot fit the venue's URL budget even on its own.
+
+    Raised rather than emitting an over-budget shard, because the venue answers
+    an over-long request line with HTTP 414 and that failure is indistinguishable
+    from a quiet market: no frames arrive, nothing is written, and no error
+    surfaces unless someone was watching the connect. Refusing names the symbol.
+    """
+
+
+def shard_by_url_budget(venue, specs, max_url_bytes: int | None = None) -> list[list]:
+    """Split `specs` into the fewest connections whose URLs each fit the budget.
+
+    Measured on 2026-08-08 against the live venue and recorded in
+    `~/research/binance-fstream-connection-limits.md`: fstream's binding limit is
+    the length of the request line, **not** the 1024-stream cap Binance documents
+    for spot. 928 streams (16,338 bytes) connect; 960 (16,886) return HTTP 414.
+    The full perpetual tail is 1,138 streams, so it cannot be one socket.
+
+    Packing is by measured bytes rather than by a symbol count on purpose. Symbol
+    names vary in length and the universe changes daily, so a shard sized in
+    symbols silently crosses the ceiling on the day a batch of long-named tokens
+    lists - and discovers it as an outage rather than as a refusal.
+
+    A venue that declares no `max_url_bytes` is returned as a single shard. That
+    is not a default so much as a statement about Hyperliquid: it carries no
+    channels in its URL and subscribes over the socket instead, so splitting
+    would spend connections against a constraint it does not have.
+
+    Order is preserved and every spec appears exactly once. A dropped spec is a
+    symbol that is never captured, and Layer 0 cannot backfill.
+    """
+    specs = list(specs)
+    if not specs:
+        return []
+
+    budget = max_url_bytes if max_url_bytes is not None else getattr(venue, "max_url_bytes", None)
+    if budget is None:
+        return [specs]
+
+    def refuse(spec):
+        raise UrlBudgetTooSmall(
+            f"{venue.name} subscription {spec.channel!r} needs "
+            f"{len(venue.ws_url([spec]))} bytes of URL on its own, over the "
+            f"{budget}-byte budget")
+
+    shards: list[list] = []
+    current: list = []
+    for spec in specs:
+        if len(venue.ws_url([*current, spec])) <= budget:
+            current.append(spec)
+            continue
+        if not current:
+            refuse(spec)
+        shards.append(current)
+        current = [spec]
+        if len(venue.ws_url(current)) > budget:
+            refuse(spec)
+    shards.append(current)
+    return shards
+
+
 @dataclass(frozen=True)
 class StreamSpec:
     venue: str

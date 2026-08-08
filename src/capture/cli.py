@@ -21,6 +21,7 @@ import websockets
 
 from capture.rest_poller import merge_frame_sources, poll_frames
 from capture.venue_recorder import VenueRecorder
+from capture.venues import shard_by_url_budget
 from capture.venues.binance import BinanceVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
@@ -72,7 +73,8 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
 
 async def run_capture(venue, specs, root: Path, duration_seconds: float,
                       silence_grace_seconds: float = 60.0,
-                      poll_specs=(), poll_interval_seconds: float = 1.0) -> dict:
+                      poll_specs=(), poll_interval_seconds: float = 1.0,
+                      stream_shards=None) -> dict:
     """Record one venue for `duration_seconds` and report what was captured.
 
     `silence_grace_seconds` is how long a subscribed stream may deliver nothing
@@ -86,14 +88,29 @@ async def run_capture(venue, specs, root: Path, duration_seconds: float,
     silence, gaps and writers by (stream, symbol) alone: a polled feed that dies
     is then reported by the same machinery that reports a dead websocket, rather
     than by a second copy of it.
+
+    `stream_shards` is how the subscription is split across sockets. It exists
+    because fstream refuses a request line past roughly 16.3KB with HTTP 414 -
+    measured, see `capture.venues.shard_by_url_budget` - so the broad tail
+    cannot be one connection. The recorder still receives the flat `specs`,
+    because it tracks silence, gaps and writers by (stream, symbol) and does not
+    care which socket a frame arrived on. Defaulting to a single shard keeps a
+    core-only run byte-identical to what it was before the tail existed.
+
+    A shard that dies propagates rather than being swallowed, and the supervisor
+    restarts the process. That is deliberate: a live process capturing three
+    quarters of the universe is worse than one that visibly failed, because
+    nothing downstream can tell the difference from a quiet market.
     """
+    shards = list(stream_shards) if stream_shards is not None else [specs]
     recorder = VenueRecorder(venue, [*specs, *poll_specs], root,
                              silence_grace_seconds=silence_grace_seconds)
-    frames = _stream_frames(venue, specs, duration_seconds)
+    sources = [_stream_frames(venue, shard, duration_seconds)
+               for shard in shards if shard]
     if poll_specs:
-        frames = merge_frame_sources(
-            frames,
+        sources.append(
             poll_frames(venue, poll_specs, poll_interval_seconds, duration_seconds))
+    frames = sources[0] if len(sources) == 1 else merge_frame_sources(*sources)
     # `aclosing` matters on the failure path: if consume() raises, the async
     # generator is left suspended inside its `async with websockets.connect(...)`
     # and the socket stays open until the interpreter finalises it. Closing it
@@ -135,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--venue", choices=sorted(_VENUES), required=True)
     parser.add_argument("--symbols", required=True,
                         help="comma-separated, e.g. BTCUSDT,ETHUSDT,SOLUSDT")
+    parser.add_argument("--tail-symbols", default="",
+                        help="comma-separated symbols captured on the cheap "
+                             "channels only (no depth). This is the broad tail: "
+                             "widening it is cheap today and impossible to "
+                             "backfill later")
     parser.add_argument("--root", default=str(Path.home() / "capture"))
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="0 means run until interrupted")
@@ -168,6 +190,27 @@ def main(argv: list[str] | None = None) -> int:
     venue = _VENUES[args.venue]()
     specs = venue.core_specs(symbols)
     poll_specs = venue.poll_specs(symbols)
+
+    # The core and the tail overlap on `trade` and `forceOrder`, so a symbol
+    # named in both would be subscribed twice and every one of its frames
+    # written twice. That corrupts the archive rather than enriching it, and it
+    # is silent - two identical frames a millisecond apart look like a busy
+    # market. `dict.fromkeys` drops repeats within the tail list too, and keeps
+    # the order the operator gave.
+    core_symbols = set(symbols)
+    tail_symbols = [symbol for symbol in dict.fromkeys(
+        s.strip() for s in args.tail_symbols.split(",") if s.strip())
+        if symbol not in core_symbols]
+
+    # The core gets a socket to itself. Depth is the expensive feed and the one
+    # least recoverable if it drops, and sharing a connection with several
+    # hundred tail streams would let a tail disconnect take it down too.
+    stream_shards = [specs]
+    if tail_symbols:
+        tail_specs = venue.tail_specs(tail_symbols)
+        stream_shards.extend(shard_by_url_budget(venue, tail_specs))
+        specs = [*specs, *tail_specs]
+
     duration = args.seconds if args.seconds > 0 else float("inf")
 
     _stop_gracefully_on_sigterm()
@@ -176,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         stats = asyncio.run(run_capture(venue, specs, Path(args.root), duration,
                                         args.silence_grace_seconds,
                                         poll_specs=poll_specs,
-                                        poll_interval_seconds=args.poll_interval_seconds))
+                                        poll_interval_seconds=args.poll_interval_seconds,
+                                        stream_shards=stream_shards))
     except KeyboardInterrupt:
         # asyncio.run cancels the capture before re-raising, which unwinds
         # VenueRecorder.consume through its own `finally` and flushes every

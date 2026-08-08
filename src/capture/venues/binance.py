@@ -52,6 +52,18 @@ _EVENT_TO_STREAM = {
 class BinanceVenue:
     name = "binance"
 
+    # Measured 2026-08-08 against the live endpoint, not taken from the docs:
+    # 928 streams (16,338-byte URL) connect and deliver; 960 (16,886) return
+    # HTTP 414. The documented 1024-stream cap is unreachable because the
+    # request line dies first, and SUBSCRIBE over the socket - which would avoid
+    # the URL entirely - is rejected with 1008 policy violation on fstream.
+    # Full record: ~/research/binance-fstream-connection-limits.md
+    #
+    # 12,000 rather than something nearer the ceiling: the universe changes
+    # daily, and the day a batch of long-named tokens lists must not be the day
+    # capture discovers the limit. That headroom costs one extra connection.
+    max_url_bytes = 12_000
+
     def _specs(self, symbols: list[str], channels: list[str]) -> list[StreamSpec]:
         return [
             StreamSpec(self.name, channel.split("@")[0], symbol, f"{symbol.lower()}@{channel}")

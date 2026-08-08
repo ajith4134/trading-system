@@ -6,6 +6,7 @@ modified to "fix" it. A malformed frame is still written verbatim and flagged.
 from __future__ import annotations
 
 import json
+import base64
 import re
 import time
 from collections import deque
@@ -28,6 +29,17 @@ from capture.sequencing import BinanceDepthTracker, StalenessTracker, quantile_n
 # Anything that isn't a plain token falls back to "unknown", the same bucket
 # already used for frames whose routing fields could not be determined.
 _SAFE_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# What actually makes a token dangerous, as opposed to merely not-ASCII: path
+# separators, and control characters (NUL ends a filename early in the syscall
+# layer even when Python is happy with it). A value that is only dots - "." or
+# ".." - is a path component in its own right and is caught separately.
+_PATH_HOSTILE = re.compile(r"[/\\\x00-\x1f\x7f]")
+
+# base32 is A-Z2-7, already inside _SAFE_PATH_TOKEN, so an encoded symbol needs
+# no second escaping pass. The prefix marks it as encoded and is chosen to be
+# something no exchange would list: symbols do not begin with an underscore.
+_ENCODED_PREFIX = "_b32_"
 
 # How long a stream may go quiet before the silence is reported, as a function
 # of what that stream routinely does.
@@ -58,7 +70,50 @@ _SILENCE_CEILING_SECONDS = 3600.0
 
 
 def _safe_path_token(value: str) -> str:
-    return value if _SAFE_PATH_TOKEN.match(value) else "unknown"
+    """Turn a routing field into a filename component without losing it.
+
+    Three outcomes, and the middle one exists because the first live run of the
+    broad tail on 2026-08-08 found the rule was throwing real data away.
+
+    A plain ASCII token passes through untouched, so every file written before
+    this function grew a second branch keeps exactly the name it had.
+
+    A symbol the venue really lists but which is not a plain ASCII token -
+    Binance carries perpetuals with CJK symbols, `币安人生USDT` among them - is
+    **encoded, not discarded**. Filing it as "unknown" merged it with every
+    other non-ASCII symbol into one bucket, made it unreadable by symbol, and
+    reported nothing: 0 dropped, 0 malformed, one quietly wrong file. The
+    encoding is base32 of the UTF-8 bytes, which is `A-Z2-7` and therefore
+    already inside the safe set, behind a prefix no exchange symbol would use.
+    Padding is stripped because `=` is not path-safe on every filesystem.
+
+    Anything that could steer a write out of the archive still falls back to
+    "unknown", which is the whole reason this function exists. That is decided
+    on the dangerous characters themselves rather than on "not ASCII", so
+    widening the rule for real symbols does not widen the attack surface.
+    """
+    # Hostile is decided first, and that ordering is load-bearing rather than
+    # stylistic. `.` is inside _SAFE_PATH_TOKEN, so a value of exactly ".." used
+    # to match it and pass through untouched - a path component in its own
+    # right. The traversal test that existed only used "../../evil", which the
+    # separator caught, so the bare case was never exercised.
+    if not value or _PATH_HOSTILE.search(value) or value.strip(".") == "":
+        return "unknown"
+    if _SAFE_PATH_TOKEN.match(value):
+        return value
+    return _ENCODED_PREFIX + base64.b32encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_path_token(token: str) -> str:
+    """Recover the symbol a path token was built from.
+
+    The archive has to be able to name what it captured; an encoding that
+    cannot be reversed is the "unknown" bucket with extra steps.
+    """
+    if not token.startswith(_ENCODED_PREFIX):
+        return token
+    body = token[len(_ENCODED_PREFIX):]
+    return base64.b32decode(body + "=" * (-len(body) % 8)).decode("utf-8")
 
 
 @dataclass

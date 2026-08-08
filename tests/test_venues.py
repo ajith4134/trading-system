@@ -1,5 +1,6 @@
 import json
 
+from capture.venues import UrlBudgetTooSmall, shard_by_url_budget
 from capture.venues.binance import BinanceVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
@@ -270,3 +271,67 @@ def test_binance_still_subscribes_to_liquidations_despite_the_silence():
     v = BinanceVenue()
     channels = {s.channel for s in v.core_specs(["BTCUSDT"])}
     assert "btcusdt@forceOrder" in channels
+
+
+# --- Sharding the broad tail across connections -----------------------------
+# Measured against the live venue 2026-08-08, recorded in
+# ~/research/binance-fstream-connection-limits.md: fstream's binding constraint
+# is the length of the request line, not the documented 1024-stream cap. 928
+# streams (16,338 chars) connect; 960 (16,886) return HTTP 414. The full tail is
+# 569 perpetuals x 2 channels = 1,138 streams, so it cannot be one socket.
+
+def test_shards_never_exceed_the_venues_url_budget():
+    v = BinanceVenue()
+    specs = v.tail_specs([f"SYMBOL{n}USDT" for n in range(400)])
+    shards = shard_by_url_budget(v, specs)
+    assert len(shards) > 1, "400 symbols should not fit one shard"
+    for shard in shards:
+        assert len(v.ws_url(shard)) <= v.max_url_bytes
+
+
+def test_sharding_preserves_every_spec_exactly_once_and_in_order():
+    """A dropped spec is a symbol that is silently never captured, and the
+    archive cannot be backfilled. Losing one must be impossible, not unlikely."""
+    v = BinanceVenue()
+    specs = v.tail_specs([f"SYMBOL{n}USDT" for n in range(400)])
+    rejoined = [spec for shard in shard_by_url_budget(v, specs) for spec in shard]
+    assert rejoined == specs
+
+
+def test_sharding_a_single_spec_that_cannot_fit_is_refused_not_truncated():
+    """An over-budget shard connects to nothing and returns HTTP 414, which
+    looks exactly like a quiet market. Refusing names the problem instead."""
+    v = BinanceVenue()
+    specs = v.tail_specs(["BTCUSDT"])
+    try:
+        shard_by_url_budget(v, specs, max_url_bytes=10)
+    except UrlBudgetTooSmall as exc:
+        assert "BTCUSDT".lower() in str(exc).lower()
+    else:
+        raise AssertionError("expected UrlBudgetTooSmall")
+
+
+def test_binance_url_budget_sits_below_the_measured_414_threshold():
+    """928 streams at 16,338 bytes connected; 960 at 16,886 did not. The budget
+    must leave room for the universe changing under us - a batch of long-named
+    tokens listing must not be what discovers the ceiling."""
+    v = BinanceVenue()
+    assert v.max_url_bytes <= 16_338
+    assert v.max_url_bytes < 16_338 * 0.9, "no headroom for a changing universe"
+
+
+def test_the_whole_binance_tail_shards_into_a_handful_of_connections():
+    """569 perpetuals x 2 channels. Not one, and not so many that the shard
+    count starts competing with the 300-connections-per-5-minutes budget."""
+    v = BinanceVenue()
+    specs = v.tail_specs([f"SYM{n:03d}USDT" for n in range(569)])
+    shards = shard_by_url_budget(v, specs)
+    assert 2 <= len(shards) <= 8
+
+
+def test_hyperliquid_subscribes_over_the_socket_so_its_tail_is_one_shard():
+    """Its URL carries no channels, so the fstream constraint does not apply and
+    splitting would spend connections for nothing."""
+    v = HyperliquidVenue()
+    specs = v.tail_specs([f"COIN{n}" for n in range(300)])
+    assert len(shard_by_url_budget(v, specs)) == 1

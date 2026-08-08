@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from capture.venue_recorder import VenueRecorder
+from capture.venue_recorder import VenueRecorder, _safe_path_token, decode_path_token
 from capture.sequencing import StalenessTracker
 from capture.venues.binance import BinanceVenue
 from capture.capture_ledger import (
@@ -978,3 +978,55 @@ async def test_a_double_start_costs_the_contended_hour_not_the_venue(tmp_path: P
     # The holder's hour is exactly what the holder wrote - no interleaving.
     raw, idx = paths_for(tmp_path, "binance", "depth", "BTCUSDT", "2026-08-02T05")
     assert [p[0] for p in read_pair(raw, idx)] == ['{"held":0}']
+
+
+# --- Symbols the ASCII path-token rule silently swallowed --------------------
+# Found 2026-08-08 by the first live run of the broad tail: Binance lists
+# perpetuals with CJK symbols, and every one of their frames was being filed as
+# `trade_unknown` with 0 dropped and 0 malformed. The routing field was read
+# correctly - the loss happened when it became a filename.
+
+@pytest.mark.asyncio
+async def test_a_non_ascii_symbol_is_not_filed_as_unknown(tmp_path: Path):
+    """A real Binance perpetual, measured live on 2026-08-08. Collapsing it into
+    the `unknown` bucket merges it with every other non-ASCII symbol and makes
+    it unreadable by symbol, while reporting nothing wrong."""
+    venue = BinanceVenue()
+    rec = VenueRecorder(venue, venue.core_specs(["BTCUSDT"]), tmp_path,
+                        clock_ns=lambda: 1785648600_000_000_000)
+    frame = json.dumps({"data": {"e": "trade", "E": 1, "s": "币安人生USDT"}})
+    await rec.consume(_frames([frame]))
+
+    names = [p.name for p in (tmp_path / "raw" / "binance" / "2026-08-02").iterdir()]
+    assert names
+    assert not any("unknown" in n for n in names), names
+
+
+@pytest.mark.asyncio
+async def test_a_non_ascii_symbol_keeps_its_own_file(tmp_path: Path):
+    """Two different non-ASCII symbols must not share a bucket."""
+    venue = BinanceVenue()
+    rec = VenueRecorder(venue, venue.core_specs(["BTCUSDT"]), tmp_path,
+                        clock_ns=lambda: 1785648600_000_000_000)
+    await rec.consume(_frames([
+        json.dumps({"data": {"e": "trade", "E": 1, "s": "币安人生USDT"}}),
+        json.dumps({"data": {"e": "trade", "E": 2, "s": "比特币USDT"}}),
+    ]))
+
+    names = {p.name for p in (tmp_path / "raw" / "binance" / "2026-08-02").iterdir()
+             if p.name.endswith(".ndjson.zst")}
+    assert len(names) == 2, names
+
+
+def test_an_encoded_symbol_decodes_back_to_what_the_venue_sent():
+    """The archive has to be able to name the symbol it captured. An encoding
+    that cannot be reversed is the `unknown` bucket with extra steps."""
+    for symbol in ("币安人生USDT", "BTCUSDT", "1000PEPEUSDT", "BTC.USDT"):
+        assert decode_path_token(_safe_path_token(symbol)) == symbol
+
+
+def test_a_hostile_symbol_still_falls_back_to_unknown():
+    """Widening the rule must not widen the attack surface. A frame able to
+    steer writes out of the archive is the reason the rule exists."""
+    for hostile in ("../../evil", "..", "a/b", "a\\b", "\x00null"):
+        assert _safe_path_token(hostile) == "unknown"

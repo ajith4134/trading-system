@@ -359,12 +359,13 @@ def record_run_capture_calls(monkeypatch, stats: dict | None = None) -> list[dic
 
     async def record_call(venue, specs, root, duration_seconds,
                           silence_grace_seconds=60.0, poll_specs=(),
-                          poll_interval_seconds=1.0):
+                          poll_interval_seconds=1.0, stream_shards=None):
         calls.append({"venue": venue, "specs": specs, "root": root,
                       "duration_seconds": duration_seconds,
                       "silence_grace_seconds": silence_grace_seconds,
                       "poll_specs": poll_specs,
-                      "poll_interval_seconds": poll_interval_seconds})
+                      "poll_interval_seconds": poll_interval_seconds,
+                      "stream_shards": stream_shards})
         return stats if stats is not None else {"written": 0}
 
     monkeypatch.setattr(cli, "run_capture", record_call)
@@ -456,7 +457,7 @@ def test_main_exits_on_interrupt_without_a_traceback(tmp_path: Path, monkeypatch
     cancels the capture (flushing it) and re-raises KeyboardInterrupt here."""
     async def interrupt_the_capture(venue, specs, root, duration_seconds,
                                     silence_grace_seconds=60.0, poll_specs=(),
-                                    poll_interval_seconds=1.0):
+                                    poll_interval_seconds=1.0, stream_shards=None):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_capture", interrupt_the_capture)
@@ -506,3 +507,80 @@ async def test_run_capture_reports_a_silent_stream_within_the_run(tmp_path: Path
                    if e.kind == "silent_stream" and e.detail["frames_received"] == 0}
     assert never_spoke == {"trade", "forceOrder"}
     assert "depth" not in never_spoke
+
+
+# --- The broad tail ---------------------------------------------------------
+# tail_specs() has existed on both venues, with passing tests, since Layer 0 and
+# was called by nothing. Goal doc 10.3: every day it stays unwired is coverage
+# that cannot be backfilled.
+
+def test_main_subscribes_the_tail_alongside_the_core(tmp_path: Path, monkeypatch, capsys):
+    calls = record_run_capture_calls(monkeypatch)
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", "XRPUSDT,ADAUSDT",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    specs = calls[0]["specs"]
+    v = BinanceVenue()
+    for spec in v.core_specs(["BTCUSDT"]) + v.tail_specs(["XRPUSDT", "ADAUSDT"]):
+        assert spec in specs
+
+
+def test_the_core_keeps_its_own_connection(tmp_path: Path, monkeypatch, capsys):
+    """Depth is the expensive feed and the one least recoverable if it drops.
+    Sharing a socket with several hundred tail streams would let a tail
+    disconnect take it down too."""
+    calls = record_run_capture_calls(monkeypatch)
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", "XRPUSDT,ADAUSDT",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    shards = calls[0]["stream_shards"]
+    assert shards[0] == BinanceVenue().core_specs(["BTCUSDT"])
+
+
+def test_main_shards_a_tail_too_large_for_one_url(tmp_path: Path, monkeypatch, capsys):
+    """Measured: fstream returns HTTP 414 past ~16.3KB of request line, which
+    looks exactly like a quiet market."""
+    calls = record_run_capture_calls(monkeypatch)
+    tail = ",".join(f"SYMBOL{n}USDT" for n in range(400))
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", tail,
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    v = BinanceVenue()
+    shards = calls[0]["stream_shards"]
+    assert len(shards) > 2, "core shard plus more than one tail shard"
+    for shard in shards:
+        assert len(v.ws_url(shard)) <= v.max_url_bytes
+
+
+def test_main_does_not_subscribe_a_symbol_in_both_core_and_tail(tmp_path: Path,
+                                                                monkeypatch, capsys):
+    """The two sets overlap on `trade` and `forceOrder`. Subscribing twice
+    writes every frame twice, which corrupts the archive rather than enriching
+    it."""
+    calls = record_run_capture_calls(monkeypatch)
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT",
+                 "--tail-symbols", "BTCUSDT,XRPUSDT",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    specs = calls[0]["specs"]
+    assert len(specs) == len(set(specs))
+    assert not any(s.symbol == "BTCUSDT" for s in
+                   [x for shard in calls[0]["stream_shards"][1:] for x in shard])
+
+
+def test_a_core_only_run_still_uses_exactly_one_connection(tmp_path: Path,
+                                                           monkeypatch, capsys):
+    """No --tail-symbols must behave exactly as before it existed."""
+    calls = record_run_capture_calls(monkeypatch)
+
+    assert main(["--venue", "binance", "--symbols", "BTCUSDT,ETHUSDT",
+                 "--root", str(tmp_path), "--seconds", "1"]) == 0
+
+    assert calls[0]["stream_shards"] == [BinanceVenue().core_specs(["BTCUSDT", "ETHUSDT"])]
