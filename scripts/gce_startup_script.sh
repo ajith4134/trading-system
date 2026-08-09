@@ -89,6 +89,13 @@ start_as_user "capture_supervisor.sh binance-spot" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-spot BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "capture_supervisor.sh hyperliquid" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
+# Binance funding, in its own process. Split from the recorder 2026-08-09: 857
+# funding writers rotating inside one synchronous tick killed its websocket at
+# every hour boundary, while binance-spot with a comparable trade load and no
+# fan-out crossed four boundaries alive. Same venue name, so files land in
+# raw/binance/ and the per-IP rate budget stays one bucket.
+start_as_user "capture_supervisor.sh binance-funding" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-funding BTCUSDT"
 # Funding only, and captured rather than traded - no key exists for this venue.
 # Poll-only, so no symbols are named: the response is the whole linear market.
 start_as_user "capture_supervisor.sh bybit" \

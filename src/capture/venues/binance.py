@@ -157,12 +157,16 @@ class BinanceVenue:
         per-symbol poll wrote, so the existing funding history continues without
         a seam.
         """
-        specs = [
-            PollSpec(self.name, _POLL_STREAM, _ALL_MARKET_SYMBOL,
-                     _PREMIUM_INDEX_URL, weight=_PREMIUM_INDEX_ALL_WEIGHT,
-                     interval_seconds=_PREMIUM_INDEX_INTERVAL_SECONDS,
-                     fan_out=True),
-        ]
+        # Funding is NOT here. It is polled by `BinanceFundingVenue` in a
+        # separate process, because 857 funding writers rotating inside one
+        # synchronous tick killed this recorder's websocket at every hour
+        # boundary - see that module for the measurement and the comparison
+        # against binance-spot that identified it.
+        #
+        # Defined once in `funding_poll_specs` and returned only there, so the
+        # recorder cannot start polling it again by accident and the two
+        # processes cannot drift apart on cadence or weight.
+        specs: list[PollSpec] = []
         # Only the core symbols carry depth diffs, so only they need a snapshot
         # to replay those diffs onto. The tail subscribes trades alone.
         specs += [
@@ -174,6 +178,20 @@ class BinanceVenue:
             for symbol in symbols
         ]
         return specs
+
+    def funding_poll_specs(self) -> list[PollSpec]:
+        """The all-market funding poll, defined once and owned by one process.
+
+        Kept on this class rather than on `BinanceFundingVenue` so the URL,
+        cadence and weight live beside the rest of the venue's knowledge of
+        itself. Only `BinanceFundingVenue` returns it from `poll_specs`.
+        """
+        return [
+            PollSpec(self.name, _POLL_STREAM, _ALL_MARKET_SYMBOL,
+                     _PREMIUM_INDEX_URL, weight=_PREMIUM_INDEX_ALL_WEIGHT,
+                     interval_seconds=_PREMIUM_INDEX_INTERVAL_SECONDS,
+                     fan_out=True),
+        ]
 
     def fan_out_poll(self, spec: PollSpec, parsed) -> list[tuple[str, object]]:
         """Split one all-market response into (symbol, object) pairs.

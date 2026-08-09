@@ -1331,7 +1331,8 @@ async def test_an_all_market_poll_is_filed_under_each_instrument(tmp_path: Path)
     from capture.rest_poller import PolledFrame
     from capture.raw_writer import read_pair, paths_for
 
-    venue = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    venue = BinanceFundingVenue()
     spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
     rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
     body = json.dumps([{"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1},
@@ -1353,7 +1354,8 @@ async def test_nothing_is_ever_filed_under_the_fan_out_request_symbol(tmp_path: 
     market masquerading as one instrument."""
     from capture.rest_poller import PolledFrame
 
-    venue = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    venue = BinanceFundingVenue()
     spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
     rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
 
@@ -1372,7 +1374,8 @@ async def test_a_response_that_splits_into_nothing_is_recorded_as_loss(tmp_path:
     quiet with every tile still green."""
     from capture.rest_poller import PolledFrame
 
-    venue = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    venue = BinanceFundingVenue()
     spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
     rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
 

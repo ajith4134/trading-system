@@ -241,6 +241,8 @@ def test_the_measured_weights_reach_the_specs():
     is weight 1, so 857 perps would be 857 a tick against a 2,400/minute budget.
     One request at 10 covers the universe for less than three symbols cost.
     """
+    from capture.venues.binance_funding import BinanceFundingVenue
     specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
+    specs |= {s.stream: s for s in BinanceFundingVenue().poll_specs(["BTCUSDT"])}
     assert specs["premiumIndex"].weight == 10
     assert specs["depthSnapshot"].weight == 50

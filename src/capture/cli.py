@@ -26,6 +26,7 @@ from ops.rate_budget import RateBudget
 from capture.venue_recorder import VenueRecorder
 from capture.venues import shard_by_url_budget
 from capture.venues.binance import BinanceVenue
+from capture.venues.binance_funding import BinanceFundingVenue
 from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.bybit import BybitVenue
 from capture.venues.hyperliquid import HyperliquidVenue
@@ -39,6 +40,11 @@ _VENUES = {
     # A third independent funding curve, on the same argument that widened the
     # other two: it cannot be backfilled.
     "bybit": BybitVenue,
+    # Binance funding, polled in its own process. Its `name` is still "binance",
+    # so files land beside the trades and the rate budget is shared. Split out
+    # after 857 funding writers rotating in one tick killed the recorder's
+    # websocket at every hour boundary.
+    "binance-funding": BinanceFundingVenue,
 }
 
 _OPEN_TIMEOUT_SECONDS = 20

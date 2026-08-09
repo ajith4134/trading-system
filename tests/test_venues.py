@@ -1,3 +1,4 @@
+import pytest
 import json
 
 from capture.venues import UrlBudgetTooSmall, shard_by_url_budget
@@ -234,10 +235,16 @@ def test_binance_polls_funding_for_the_whole_market_in_one_request():
     backfill it. Per symbol, 857 perps cost 857 weight a tick against a
     2,400/minute budget. The all-market form is one request at weight 10.
     """
+    from capture.venues.binance_funding import BinanceFundingVenue
+
     v = BinanceVenue()
     specs = v.poll_specs(["BTCUSDT", "ETHUSDT"])
 
-    funding = [s for s in specs if s.stream == "premiumIndex"]
+    # Funding moved out of the recorder on 2026-08-09: 857 writers rotating in
+    # one synchronous tick killed its websocket every hour. Defined once here,
+    # returned only by the venue that owns the separate process.
+    assert [s for s in specs if s.stream == "premiumIndex"] == []
+    funding = BinanceFundingVenue().poll_specs(["BTCUSDT", "ETHUSDT"])
     assert len(funding) == 1, "one request covers the market, not one per symbol"
     assert funding[0].fan_out is True
     assert funding[0].url == "https://fapi.binance.com/fapi/v1/premiumIndex"
@@ -254,7 +261,8 @@ def test_the_all_market_funding_response_splits_per_instrument():
     """Each element is written under its own symbol, byte-compatible with what
     the per-symbol poll used to write - which is what lets the funding history
     already captured continue without a seam."""
-    v = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    v = BinanceFundingVenue()
     spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
 
     pairs = v.fan_out_poll(spec, [
@@ -270,7 +278,8 @@ def test_an_element_naming_no_symbol_is_dropped_rather_than_guessed():
     """Every file here is keyed on symbol and a wrong one poisons a carry cost
     that reads it back. Filing under the request symbol would put the whole
     market in one instrument's file."""
-    v = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    v = BinanceFundingVenue()
     spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
 
     pairs = v.fan_out_poll(spec, [{"lastFundingRate": "0.0001"},
@@ -282,7 +291,8 @@ def test_an_element_naming_no_symbol_is_dropped_rather_than_guessed():
 def test_a_response_that_is_not_a_list_splits_into_nothing():
     """A shape change at the venue, which the recorder records as observation
     loss rather than treating as an absent market."""
-    v = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    v = BinanceFundingVenue()
     spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
     assert v.fan_out_poll(spec, {"symbol": "BTCUSDT"}) == []
 
@@ -291,7 +301,8 @@ def test_binance_premium_index_response_routes_to_its_own_stream():
     """It is not filed as `markPrice`. The payload shape differs from a
     `markPriceUpdate` frame, and one filename holding two shapes makes the
     archive undecodable without knowing which day it was written."""
-    v = BinanceVenue()
+    from capture.venues.binance_funding import BinanceFundingVenue
+    v = BinanceFundingVenue()
     spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.stream == "premiumIndex")
     meta = v.extract(REAL_BINANCE_PREMIUM_INDEX_BODY)
 
@@ -477,7 +488,9 @@ def test_every_poll_carries_its_own_cadence_and_neither_runs_at_one_second():
     `ConnectionClosedError`, the websocket keepalive going unanswered while the
     event loop wrote. 783 ms for the opens on the first tick alone.
     """
+    from capture.venues.binance_funding import BinanceFundingVenue
     specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
+    specs |= {s.stream: s for s in BinanceFundingVenue().poll_specs(["BTCUSDT"])}
     assert specs["depthSnapshot"].interval_seconds >= 30
     assert specs["premiumIndex"].interval_seconds >= 30, (
         "a fan-out poll must never inherit the run's one-second cadence - "
@@ -649,3 +662,33 @@ def test_a_response_of_the_wrong_shape_splits_into_nothing():
     assert v.fan_out_poll(spec, {"universe": []}) == []
     assert v.fan_out_poll(spec, [{"universe": [{"name": "BTC"}]}]) == []
     assert v.fan_out_poll(spec, [{"nope": []}, []]) == []
+
+
+def test_binance_funding_is_polled_in_a_process_with_no_socket():
+    """Split 2026-08-09. The recorder died at every hour boundary with
+    `ConnectionClosedError` once funding went all-market: 857 writers rotate
+    inside ONE poll, while trade writers rotate spread across thousands of
+    frames. binance-spot, with ~1,369 trade writers and no fan-out, crossed four
+    hour boundaries alive in the same period - the burst was the difference, not
+    the total."""
+    from capture.venues.binance_funding import (
+        BinanceFundingPushesNothing, BinanceFundingVenue)
+
+    v = BinanceFundingVenue()
+    assert v.core_specs(["BTCUSDT"]) == []
+    assert v.tail_specs(["BTCUSDT"]) == []
+    with pytest.raises(BinanceFundingPushesNothing):
+        v.ws_url([])
+    with pytest.raises(BinanceFundingPushesNothing):
+        v.subscribe_messages([])
+
+
+def test_the_funding_process_writes_into_the_binance_archive():
+    """`name` stays "binance" so files land beside the trades, `store.build_polled`
+    finds premiumIndex where it always did, and the per-IP rate budget is one
+    bucket shared with the recorder rather than two that each think they are
+    within the limit."""
+    from capture.venues.binance_funding import BinanceFundingVenue
+
+    assert BinanceFundingVenue().name == BinanceVenue().name == "binance"
+    assert BinanceFundingVenue().poll_specs([])[0].venue == "binance"
