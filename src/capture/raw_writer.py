@@ -335,6 +335,24 @@ class RawWriter:
         self._marker_path: Path | None = None
         self._last_flush_ns: int | None = None
         self._n = 0
+        # What this writer knows about the last hour it closed cleanly, so
+        # reopening that same hour does not have to re-derive `n` by
+        # decompressing the whole file. See `_resume_position_for`. Set only on a
+        # close that finished both files without error - after a partial close
+        # the on-disk state is exactly what is uncertain.
+        self._closed_hour: str | None = None
+        self._closed_n = 0
+        self._closed_sizes: tuple[int, int] | None = None
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this writer currently holds descriptors on an hour.
+
+        The pool in `VenueRecorder` asks this before evicting: a writer that is
+        already closed costs no descriptors, so closing it again would be work
+        that frees nothing.
+        """
+        return self._raw_fh is not None or self._idx_fh is not None
 
     @staticmethod
     def _count_frames_already_written(raw_path: Path, idx_path: Path) -> int:
@@ -364,6 +382,39 @@ class RawWriter:
                     f"the last index entry carries n={last_n} at position {len(idx_lines) - 1}, "
                     f"so an entry is missing from the middle")
         return len(raw_lines)
+
+    def _resume_position_for(self, hour: str, raw_path: Path, idx_path: Path) -> int:
+        """Where `n` picks up, without re-reading a file this writer just wrote.
+
+        `_count_frames_already_written` decompresses both files end to end. That
+        is the right price for a writer meeting an hour for the first time - after
+        a crash, the count on disk is the only truth. It is the wrong price for a
+        reopen, and the descriptor pool makes reopens ordinary: an evicted writer
+        that speaks again reopens the same hour it just closed, and paying a full
+        decompress each time would turn eviction into a read amplifier that grows
+        as the hour fills.
+
+        So a clean close records the hour, the count and both file sizes, and a
+        reopen of that same hour trusts them - but only after `stat` confirms
+        neither file has changed size since. Two `stat` calls against a full
+        decompress.
+
+        The sizes are the whole guard, and it is deliberately conservative rather
+        than clever. Nothing should touch a live hour - `repair_archive`'s
+        resumable pass runs only before the recorder starts, and its archive pass
+        cannot reach the current hour by construction - so a size that moved means
+        an assumption is wrong somewhere, and the response to that is to go and
+        read the file rather than to trust a remembered number.
+        """
+        if hour != self._closed_hour or self._closed_sizes is None:
+            return self._count_frames_already_written(raw_path, idx_path)
+        try:
+            sizes = (raw_path.stat().st_size, idx_path.stat().st_size)
+        except OSError:
+            return self._count_frames_already_written(raw_path, idx_path)
+        if sizes != self._closed_sizes:
+            return self._count_frames_already_written(raw_path, idx_path)
+        return self._closed_n
 
     @staticmethod
     def _claim_hour_or_refuse(raw_path: Path) -> Path | None:
@@ -457,7 +508,7 @@ class RawWriter:
         try:
             # Read the existing pair BEFORE opening anything for append: a damaged
             # hour must be refused while nothing has been touched.
-            resume_n = self._count_frames_already_written(raw_path, idx_path)
+            resume_n = self._resume_position_for(hour, raw_path, idx_path)
         except Exception:
             # A refusal must not leave this process's own pid on the marker: it
             # would block the `reconcile_pair` that is the documented way out.
@@ -655,6 +706,7 @@ class RawWriter:
             self._hour = None
             return
         errors: list[Exception] = []
+        closing_hour, closing_n = self._hour, self._n
 
         raw_is_complete = True
         if self._raw_z is not None:
@@ -705,6 +757,20 @@ class RawWriter:
         self._marker_path = None
         self._hour = None
         self._last_flush_ns = None
+
+        # Only a close that finished both files without error may be resumed
+        # from memory. After a partial close, what is on disk is precisely the
+        # unknown - so the next open re-reads and finds out.
+        self._closed_hour, self._closed_n, self._closed_sizes = None, 0, None
+        if not errors and closing_hour is not None:
+            raw_path, idx_path = paths_for(self._root, self._venue, self._stream,
+                                           self._symbol, closing_hour)
+            try:
+                self._closed_sizes = (raw_path.stat().st_size, idx_path.stat().st_size)
+            except OSError:
+                pass          # unknowable size means the next open re-reads, which is safe
+            else:
+                self._closed_hour, self._closed_n = closing_hour, closing_n
 
         if len(errors) == 1:
             raise errors[0]

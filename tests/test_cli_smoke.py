@@ -295,7 +295,7 @@ async def test_run_capture_returns_the_recorders_own_stats(tmp_path: Path, monke
     stats = await finish_within(run_capture(venue, specs, tmp_path, duration_seconds=0.3))
 
     assert stats == {"written": 2, "dropped": 0, "control": 0,
-                     "malformed": 1, "unwritable": 0}
+                     "malformed": 1, "unwritable": 0, "writers_evicted": 0}
 
 
 @pytest.mark.asyncio

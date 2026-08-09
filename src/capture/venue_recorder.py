@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 import base64
 import re
+import resource
 import time
-from collections import deque
+from collections import deque, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -67,6 +68,46 @@ _SILENCE_WINDOW_FRAMES = 200
 # leap seconds - so an hour boundary is reachable by integer arithmetic, with no
 # string formatted to find it. See `_settle_writers_whose_hour_ended`.
 _NS_PER_HOUR = 3_600_000_000_000
+# A writer holds one raw and one index descriptor for as long as its hour is
+# open, so descriptors scale with the universe: 2,115 symbols is over 4,000.
+_FDS_PER_OPEN_WRITER = 2
+# Held back from the descriptor budget for everything that is not a writer -
+# websockets, the ledger, the ops files, stdio, and whatever a library opens
+# without asking. Generous on purpose: the cost of over-reserving is a few more
+# evictions, and the cost of under-reserving is the crash this bounds.
+_RESERVED_FDS = 256
+# Below this the pool would thrash harder than it protects, so a limit too small
+# to work with is treated as a limit to ignore. A recorder that evicts on almost
+# every frame is not capturing.
+_MIN_OPEN_WRITERS = 64
+
+
+def max_open_writers_for(soft_limit: int) -> int:
+    """How many hours may stay open at once under this descriptor limit.
+
+    Derived rather than configured, because the number that matters is the one
+    the process was actually given. Measured 2026-08-09: the supervisor ran under
+    `sudo -H bash -lc` and the recorder inherited a soft limit of 1024 against a
+    universe needing 4,000 - it died on `OSError: [Errno 24]` with exactly 1024
+    descriptors open, was restarted, and walked into the same wall twenty times.
+
+    Raising the limit stopped that, and this makes it survivable rather than
+    merely unlikely: at 65536 the budget is far above what any venue here opens,
+    so nothing is ever evicted, and at the inherited 1024 the recorder evicts
+    instead of dying. The failure mode moves from data loss to compression.
+    """
+    return max(_MIN_OPEN_WRITERS, (soft_limit - _RESERVED_FDS) // _FDS_PER_OPEN_WRITER)
+
+
+def _descriptor_soft_limit() -> int:
+    """The process's own soft NOFILE, with "unlimited" read as a large finite number.
+
+    `RLIM_INFINITY` is -1, and arithmetic on it produces a budget below the
+    floor - which would cap a process with no limit at all to 64 open hours, the
+    exact opposite of what it says.
+    """
+    soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    return 1 << 30 if soft == resource.RLIM_INFINITY else soft
 # How often the silence check may run, in stream time. It walks every subscribed
 # stream, and it can report a given stream at most once per UTC day, so running it
 # per frame buys nothing and costs O(streams) on the hot path: measured 136 us per
@@ -159,7 +200,8 @@ class VenueRecorder:
 
     def __init__(self, venue, specs, root: Path, queue_size: int = 10_000,
                  clock_ns: Callable[[], int] = time.time_ns,
-                 silence_grace_seconds: float = 60.0) -> None:
+                 silence_grace_seconds: float = 60.0,
+                 max_open_writers: int | None = None) -> None:
         self._venue = venue
         self._specs = specs
         self._root = Path(root)
@@ -182,7 +224,19 @@ class VenueRecorder:
         self._frames_seen: dict[tuple[str, str], int] = {}
         self._recent_gaps_ns: dict[tuple[str, str], deque[int]] = {}
         self._recorded_silent_days: set[tuple[tuple[str, str], str]] = set()
+        # Every writer this recorder has ever built, open or not. Entries are
+        # never dropped: a `RawWriter` with no hour open holds no descriptors,
+        # and keeping the object is what lets an evicted stream reopen its hour
+        # from remembered state instead of decompressing the file again.
         self._writers: dict[tuple[str, str], RawWriter] = {}
+        # The descriptor pool: the subset believed to be holding an hour open,
+        # in least-recently-written-first order. `OrderedDict.move_to_end` is
+        # O(1), which is the only reason this can live on the per-frame path -
+        # see `_settle_writers_whose_hour_ended` for what happens to this hot
+        # path when something O(writers) is put on it.
+        self._open_writers: OrderedDict[tuple[str, str], RawWriter] = OrderedDict()
+        self._max_open_writers = (max_open_writers if max_open_writers is not None
+                                  else max_open_writers_for(_descriptor_soft_limit()))
         # Zero so the first frame sweeps once and sets the real boundary. At that
         # point there are no writers yet, so the sweep costs nothing.
         self._next_hour_starts_ns = 0
@@ -197,7 +251,7 @@ class VenueRecorder:
         # `_append_or_quarantine_stream`.
         self._unwritable_hours: dict[tuple[str, str, str], _QuarantinedHour] = {}
         self._stats = {"written": 0, "dropped": 0, "control": 0, "malformed": 0,
-                       "unwritable": 0}
+                       "unwritable": 0, "writers_evicted": 0}
 
     def _writer_for(self, stream: str, symbol: str) -> RawWriter:
         # Keyed on casefolded (stream, symbol) so the same logical stream reported
@@ -205,9 +259,55 @@ class VenueRecorder:
         # lands in one writer/file rather than silently splitting across two.
         # The first-seen casing is kept as the writer's on-disk name.
         key = (stream.casefold(), symbol.casefold())
-        if key not in self._writers:
-            self._writers[key] = RawWriter(self._root, self._venue.name, stream, symbol)
-        return self._writers[key]
+        writer = self._writers.get(key)
+        if writer is None:
+            writer = RawWriter(self._root, self._venue.name, stream, symbol)
+            self._writers[key] = writer
+        # Marked as open before it is, because the caller appends immediately and
+        # the alternative is a second dictionary operation on the hot path. A
+        # writer that is tracked but never actually opened - an append that
+        # quarantined instead - costs nothing: eviction drops it for free.
+        if key in self._open_writers:
+            self._open_writers.move_to_end(key)
+        else:
+            self._open_writers[key] = writer
+            self._evict_until_within_budget()
+        return writer
+
+    def _evict_until_within_budget(self) -> None:
+        """Close the least recently written hours until the pool fits.
+
+        Eviction is not a loss. The hour file is finished properly - zstd footers
+        written, both files fsynced, the `.writing` marker released - and the next
+        frame for that stream reopens it and appends a new frame to the same pair.
+        Concatenated frames read back as one stream, which is already how every
+        restart writes.
+
+        What it costs is compression ratio, because a shorter zstd frame has less
+        history to reference, and that is the trade this exists to make: worse
+        compression on the quietest streams instead of `OSError: [Errno 24]` and a
+        dead recorder.
+
+        LRU is what keeps the cost small, and not by accident. The evicted writer
+        is the one that has gone longest without a frame, so it is the one whose
+        hour file is smallest and whose reopen is cheapest - and the one least
+        likely to need reopening at all.
+        """
+        while len(self._open_writers) > self._max_open_writers:
+            _, writer = self._open_writers.popitem(last=False)
+            if not writer.is_open:
+                # Already closed by hour rotation or by the end-of-hour sweep.
+                # It holds no descriptors, so dropping the entry is the whole job.
+                continue
+            try:
+                writer.close()
+            except Exception:
+                # A close that fails has still released what it could, and the
+                # writer marks itself unresumable so its next open re-reads. The
+                # frame that triggered this eviction is not the place to raise:
+                # it belongs to a different stream and has done nothing wrong.
+                pass
+            self._stats["writers_evicted"] += 1
 
     def _tracker_for(self, stream: str, symbol: str):
         """The gap owner for one stream: a sequence chain where one exists,
@@ -655,6 +755,9 @@ class VenueRecorder:
                 writer.close()
             except Exception as exc:
                 errors.append(exc)
+        # Nothing is open any more, and the pool must agree: a stale entry here
+        # would have a reopened writer evicted before it had written a frame.
+        self._open_writers.clear()
         try:
             self._ledger.close()
         except Exception as exc:
