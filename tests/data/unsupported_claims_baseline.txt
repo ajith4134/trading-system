@@ -1,0 +1,39 @@
+# Ledger rows claiming BUILT whose named module nothing can reach.
+#
+# A ratchet, not a suppression list. `test_unsupported_claims.py` fails when this
+# file and reality disagree in EITHER direction: a new dead claim fails the
+# suite, and so does fixing one without deleting its line here. The second
+# direction is the point - a list that only ever grows is how a known-issues file
+# becomes wallpaper.
+#
+# Regenerate the current set with:
+#   PYTHONPATH=src .venv/bin/python -m integrity.unsupported_claims
+#
+# Every line below is a row in ~/research/ledger/merged/ marked BUILT or CLAIMED
+# whose evidence names a module in src/ that is not reachable from any script
+# entry point or hand-run CLI. The code exists and its tests pass; nothing calls
+# it. Recorded 2026-08-09.
+
+# store.quote_currency - the dollar-quote filter. Library correct, applied
+# nowhere: store.cli --symbols ALL builds every captured symbol unfiltered, so
+# 539 of 2,123 non-dollar-quoted pairs go into bars. Needs a call site.
+DM-066
+
+# execution.state_recovery - reconciliation against exchange truth on restart.
+# Nothing runs it at recorder start. Phase 2, named in DECISIONS.md §13.
+RX-005
+
+# validation/ - the entire search-integrity layer. Every module is reached only
+# through promotion_gate, and promotion_gate is reached by nothing. This is the
+# honest shape of a phase whose consumer does not exist: there is no search loop
+# to register trials against. These clear when Phase 4 wires the first family
+# through the promotion pipeline, not before.
+VX-001
+VX-002
+VX-004
+VX-006
+VX-007
+VX-008
+VX-009
+VX-010
+VX-011
