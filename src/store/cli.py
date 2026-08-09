@@ -302,12 +302,35 @@ def _dollar_quoted_only(symbols: list[str], capture_root: Path, venue: str, date
         return symbols
     try:
         partition = dollar_quoted_symbols(capture_root, venue, _end_of_day_ns(date))
-    except QuoteAssetsNotRecorded as refusal:
-        # Refuses rather than falling back to "build everything". A mixed-currency
-        # store is the failure this exists to prevent, and producing one quietly
-        # because a snapshot was missing would be the same defect wearing an
-        # excuse. The supervisor retries; the message names the fix.
-        raise SystemExit(f"refusing to build {venue} {date}: {refusal}")
+    except QuoteAssetsNotRecorded:
+        # A day older than the first snapshot that carried quote assets. Fall
+        # forward to the earliest map there is, loudly.
+        #
+        # Justified by `UniverseTracker.record_snapshot`'s own contract: *"a
+        # pair's quote currency is fixed, but which pairs exist is not"*. A map
+        # read later therefore classifies an earlier day correctly for every pair
+        # in both, and a pair that delisted in between is absent from the map -
+        # which lands it in "unlisted" and builds it anyway, under the rule above.
+        # So the fallback cannot mis-denominate anything; it can only fail to
+        # classify, which is already handled.
+        #
+        # Found 2026-08-09 and it was costing days. Refusing outright killed the
+        # bars pipeline for every day older than the first snapshot: 2026-08-08
+        # failed on every supervisor pass, silently as far as the wall was
+        # concerned, and raw is evicted after seven days. A guard that turns a
+        # missing snapshot into permanent data loss is worse than the
+        # mixed-currency store it was protecting against.
+        import time as _time
+        try:
+            partition = dollar_quoted_symbols(capture_root, venue, _time.time_ns())
+        except QuoteAssetsNotRecorded as refusal:
+            # No snapshot at ALL. Now there is genuinely nothing to classify
+            # against, and building everything would be the mixed-currency store.
+            raise SystemExit(f"refusing to build {venue} {date}: {refusal}")
+        print(f"no universe snapshot at or before {date}; classifying it against "
+              f"the current map instead - a pair's quote currency is fixed, so a "
+              f"later map is correct for any pair that existed on the day",
+              file=sys.stderr)
 
     known_non_dollar = set(partition.non_dollar)
     kept = [s for s in symbols if s not in known_non_dollar]

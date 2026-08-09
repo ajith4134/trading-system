@@ -173,4 +173,33 @@ def read_dataset(store_root: Path, dataset: str) -> pd.DataFrame:
     if not root.is_dir():
         return pd.DataFrame()
     dataset_handle = ds.dataset(root, format="parquet", partitioning="hive")
+
+    # Unify the schemas across every fragment before reading, and this is not
+    # tidiness - without it the reader SILENTLY DROPS COLUMNS.
+    #
+    # pyarrow infers a dataset's schema from the first fragment it discovers, so
+    # any column added by a later partition is absent from that inferred schema
+    # and never appears in the result. The data is on disk; the read simply does
+    # not return it, and nothing says so.
+    #
+    # Measured 2026-08-09: `funding_interval_hours` was written into bybit's
+    # partition - it is the only venue that publishes a per-symbol funding
+    # interval, and annualising a 4-hourly rate as 8-hourly is wrong by a factor
+    # of two - and `read_dataset` returned a frame without the column at all.
+    # An append-only store whose reader quietly forgets a field is worse than one
+    # that refuses: the refusal is visible.
+    #
+    # A column absent from an older partition reads as null there, which is the
+    # honest answer - it was not recorded then.
+    # `physical_schema` is what is IN each file, which excludes the hive
+    # partition column - `symbol` lives in the directory name, not the parquet.
+    # Unifying those alone and handing the result back as the dataset schema
+    # therefore loses the partition field, which is a required column here.
+    # The inferred schema is unioned back in to keep it.
+    fragment_schemas = [f.physical_schema for f in dataset_handle.get_fragments()]
+    if not fragment_schemas:
+        return pd.DataFrame()
+    unified = pa.unify_schemas([*fragment_schemas, dataset_handle.schema])
+    dataset_handle = ds.dataset(root, format="parquet", partitioning="hive",
+                                schema=unified)
     return dataset_handle.to_table().to_pandas()

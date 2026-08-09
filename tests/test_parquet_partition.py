@@ -140,3 +140,59 @@ def test_a_crash_mid_write_leaves_the_whole_dataset_readable(tmp_path, monkeypat
     folder = tmp_path / "bars_1m" / "symbol=ETHUSDT"
     leftovers = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
     assert leftovers == [], f"a partial part survived the crash: {leftovers}"
+
+
+def test_a_column_added_by_a_later_partition_is_not_silently_dropped(tmp_path):
+    """pyarrow infers a dataset's schema from the FIRST fragment it discovers,
+    so a column added later is absent from that schema and never returned. The
+    data is on disk; the read simply does not produce it, and nothing says so.
+
+    Measured 2026-08-09: `funding_interval_hours` was written into bybit's
+    funding partition - the only venue publishing a per-symbol interval, and
+    annualising a 4-hourly rate as 8-hourly is wrong by a factor of two - and
+    `read_dataset` returned a frame without the column at all.
+
+    An append-only store whose reader quietly forgets a field is worse than one
+    that refuses, because the refusal is visible.
+    """
+    import pandas as pd
+    from store.parquet_partition import append_partition, read_dataset
+
+    def row(symbol, value, **extra):
+        return pd.DataFrame({
+            "symbol": [symbol], "venue": ["binance"], "value": [value],
+            "event_time_ns": [1], "ingestion_time_ns": [1],
+            "availability_time_ns": [1], **{k: [v] for k, v in extra.items()}})
+
+    early = row("A", 1)
+    later = row("B", 2, added_later="yes")
+    append_partition(tmp_path, "d", early, "first")
+    append_partition(tmp_path, "d", later, "second")
+
+    frame = read_dataset(tmp_path, "d")
+
+    assert "added_later" in frame.columns, "a written column vanished on read"
+    assert set(frame["value"]) == {1, 2}
+    # Absent in the older partition reads as null - the honest answer, because it
+    # was not recorded then.
+    assert frame.loc[frame["symbol"] == "A", "added_later"].isna().all()
+    assert frame.loc[frame["symbol"] == "B", "added_later"].iloc[0] == "yes"
+
+
+def test_the_column_survives_whichever_partition_is_discovered_first(tmp_path):
+    """The bug depended on discovery order, so the fix must not."""
+    import pandas as pd
+    from store.parquet_partition import append_partition, read_dataset
+
+    def row(symbol, value, **extra):
+        return pd.DataFrame({
+            "symbol": [symbol], "venue": ["binance"], "value": [value],
+            "event_time_ns": [1], "ingestion_time_ns": [1],
+            "availability_time_ns": [1], **{k: [v] for k, v in extra.items()}})
+
+    append_partition(tmp_path, "d", row("Z", 1, added_later="yes"), "zfirst")
+    append_partition(tmp_path, "d", row("A", 2), "asecond")
+
+    frame = read_dataset(tmp_path, "d")
+    assert "added_later" in frame.columns
+    assert len(frame) == 2
