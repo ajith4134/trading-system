@@ -68,6 +68,16 @@ _BINANCE_FUNDING_HISTORY = "https://fapi.binance.com/fapi/v1/fundingRate"
 _PAGE_LIMIT = 500
 _MS_TO_NS = 1_000_000
 _REQUEST_WEIGHT = 1
+# How many pages back to walk. `endTime` pages backwards - verified 2026-08-09,
+# page 2 reached 2025-09-10 and page 3 2025-03-27 - and one page is not enough
+# for the thing this exists to feed.
+#
+# Measured why: a single page is 500 settlements, which for the 4-hourly symbols
+# that dominate this universe is 83 days. Across 850 symbols the first
+# single-page backfill produced a median of 84 days each and only 39 days where
+# more than 80% of symbols overlapped. The §5a.4 breadth gate needs a trailing
+# window per symbol AND a test window after it, and 39 days is neither.
+_PAGES = 4
 
 
 @dataclass(frozen=True)
@@ -157,20 +167,46 @@ def _fetch(url: str, timeout: float = 20.0) -> str:
 
 
 def fetch_binance_history(symbol: str, venue: str = "binance", budget=None,
-                          fetch=_fetch, now_ns=time.time_ns) -> list[ReconstructedFunding]:
-    """One symbol's settled funding, as far back as the venue will serve it.
+                          fetch=_fetch, now_ns=time.time_ns,
+                          pages: int = _PAGES) -> list[ReconstructedFunding]:
+    """One symbol's settled funding, walked backwards a page at a time.
 
-    Returns [] rather than raising on a failed request. One symbol's history is
-    not worth abandoning the other 856 for, and a symbol that returns nothing is
-    visible as a gap in the built dataset.
+    Each page ends one millisecond before the oldest row of the last, which is
+    how `endTime` pages this endpoint. Stops early on an empty page, a short
+    page, or a page that fails to move backwards - the last of those is the one
+    that matters, because a venue that ignored `endTime` would otherwise return
+    the same 500 rows forever and this would loop until the page budget ran out.
+
+    Returns what it has rather than raising. One symbol's history is not worth
+    abandoning the other 856 for, and a symbol that returns nothing is visible as
+    a gap in the built dataset.
     """
-    if budget is not None and not budget.try_spend(_REQUEST_WEIGHT):
-        return []
-    try:
-        payload = fetch(f"{_BINANCE_FUNDING_HISTORY}?symbol={symbol}&limit={_PAGE_LIMIT}")
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return []
-    return parse_binance_history(payload, venue, now_ns())
+    fetched_at = now_ns()
+    rows: list[ReconstructedFunding] = []
+    end_time_ms: int | None = None
+
+    for _ in range(max(1, pages)):
+        if budget is not None and not budget.try_spend(_REQUEST_WEIGHT):
+            break
+        url = f"{_BINANCE_FUNDING_HISTORY}?symbol={symbol}&limit={_PAGE_LIMIT}"
+        if end_time_ms is not None:
+            url += f"&endTime={end_time_ms}"
+        try:
+            page = parse_binance_history(fetch(url), venue, fetched_at)
+        except (urllib.error.URLError, OSError, TimeoutError):
+            break
+        if not page:
+            break
+        oldest_ns = min(r.settled_at_ns for r in page)
+        rows.extend(page)
+        next_end = oldest_ns // _MS_TO_NS - 1
+        if end_time_ms is not None and next_end >= end_time_ms:
+            break          # the page did not move; stop rather than spin
+        end_time_ms = next_end
+        if len(page) < _PAGE_LIMIT:
+            break          # the venue has no more history for this symbol
+
+    return rows
 
 
 def backfill(store_root: Path, symbols: Sequence[str], venue: str = "binance",

@@ -23,13 +23,16 @@
 # Nothing runs it at recorder start. Phase 2, named in DECISIONS.md §13.
 RX-005
 
-# validation/ - the entire search-integrity layer. Every module is reached only
-# through promotion_gate, and promotion_gate is reached by nothing. This is the
-# honest shape of a phase whose consumer does not exist: there is no search loop
-# to register trials against. These clear when Phase 4 wires the first family
-# through the promotion pipeline, not before.
-VX-001
-VX-002
+# VX-001 and VX-002 cleared 2026-08-09: the §5a.4 breadth gate is the Trial
+# Registry's first caller. §5a.5 requires every scan to count, and
+# `validation.breadth.run_gate` registers each configuration before measuring it.
+# Left as a comment because the ratchet fails on a baselined row that is no
+# longer unsupported, which is how it keeps its teeth.
+#
+# The rest of validation/ is still reached only through promotion_gate, and
+# promotion_gate by nothing. That is the honest shape of machinery whose consumer
+# does not exist yet: there is no promotion pipeline to score a candidate. They
+# clear when Phase 4 takes a family through it, not before.
 VX-004
 VX-006
 VX-007
