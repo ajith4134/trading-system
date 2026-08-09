@@ -29,7 +29,8 @@ import re
 from capture.raw_writer import RAW_SUFFIX, read_pair
 from store.book_snapshots import build_book_frame, extract_book_snapshot
 from store.funding_rates import (
-    build_funding_frame, extract_funding, extract_hyperliquid_funding,
+    build_funding_frame, extract_bybit_funding, extract_funding,
+    extract_hyperliquid_funding,
 )
 from store.parquet_partition import append_partition
 
@@ -50,6 +51,7 @@ DATASETS: dict[str, tuple[str, Callable, Callable]] = {
 # (ledger SP-059). The row-level differences travel as columns instead.
 VENUE_OVERRIDES: dict[tuple[str, str], tuple[str, Callable]] = {
     ("funding", "hyperliquid"): ("assetCtx", extract_hyperliquid_funding),
+    ("funding", "bybit"): ("linearTickers", extract_bybit_funding),
 }
 
 

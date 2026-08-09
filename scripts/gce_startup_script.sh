@@ -89,6 +89,10 @@ start_as_user "capture_supervisor.sh binance-spot" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-spot BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "capture_supervisor.sh hyperliquid" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
+# Funding only, and captured rather than traded - no key exists for this venue.
+# Poll-only, so no symbols are named: the response is the whole linear market.
+start_as_user "capture_supervisor.sh bybit" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh bybit BTCUSDT"
 # Last, and after the capture supervisors on purpose: it reports on what they
 # produce, and starting it first would have it observe an empty archive and
 # record "nothing captured" as this boot's first verdict.

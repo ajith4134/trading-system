@@ -83,6 +83,21 @@ class FundingObservation:
     event_time_is_receipt: bool = False
     # True when `next_funding_time_ns` is unknown rather than known to be zero.
     next_funding_time_unknown: bool = False
+    # How many hours between settlements, where the venue publishes it. None
+    # where it does not - derived rather than asserted is the whole point.
+    #
+    # Bybit forced this column and it should have existed sooner. Binance is
+    # uniformly 8-hourly and Hyperliquid hourly, so the interval could stay
+    # implicit for them; Bybit's varies PER SYMBOL - measured 2026-08-09, 408 of
+    # its perps settle 4-hourly, 356 8-hourly and one hourly. Annualising a
+    # 4-hourly rate as though it were 8-hourly is wrong by a factor of two, in
+    # the direction that flatters the trade.
+    #
+    # Left None for the venues that publish no such field rather than filled
+    # from a constant. Their interval is derivable from consecutive settlement
+    # times, which is in the data; a number asserted here would read like an
+    # observation.
+    funding_interval_hours: int | None = None
 
 
 def extract_funding(payload: str, entry, venue: str,
@@ -181,6 +196,67 @@ def extract_hyperliquid_funding(payload: str, entry, venue: str,
     )]
 
 
+def extract_bybit_funding(payload: str, entry, venue: str,
+                          symbol: str) -> list[FundingObservation]:
+    """Read one archived Bybit linear ticker into a funding observation.
+
+    A `category=linear` response holds perpetuals AND dated futures - measured
+    2026-08-09, 765 and 40 of them. A dated contract has no funding, and it says
+    so: `fundingRate` comes back as the empty string. Skipped on the venue's own
+    say-so rather than by matching a delivery suffix in the symbol, which is a
+    naming convention and would break the day it changed.
+
+    The venue's clock is a TOP-LEVEL field on the response, merged onto each
+    ticker by `BybitVenue.fan_out_poll` before it was archived. So unlike
+    Hyperliquid there IS a venue stamp here, and the event time is that rather
+    than our receipt.
+    """
+    try:
+        body = json.loads(payload)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(body, dict):
+        return []
+    if "fundingRate" not in body or "markPrice" not in body:
+        return []
+    rate = body.get("fundingRate")
+    if not isinstance(rate, str) or not rate:
+        # A dated future. Not a funding row, and not an error either.
+        return []
+
+    venue_time_ms = body.get("time")
+    if not isinstance(venue_time_ms, int):
+        return []
+
+    interval = body.get("fundingIntervalHour")
+    try:
+        interval_hours = int(interval) if interval not in (None, "") else None
+    except (TypeError, ValueError):
+        interval_hours = None
+
+    next_ms = body.get("nextFundingTime")
+    try:
+        next_funding_ms = int(next_ms) if next_ms not in (None, "") else 0
+    except (TypeError, ValueError):
+        next_funding_ms = 0
+
+    index = body.get("indexPrice")
+    return [FundingObservation(
+        symbol=body.get("symbol") or symbol,
+        venue=venue,
+        funding_rate=Decimal(rate),
+        mark_price=Decimal(str(body["markPrice"])),
+        index_price=Decimal(str(index)) if index not in (None, "") else None,
+        # Bybit funds on mark, like Binance and unlike Hyperliquid.
+        funds_on=FUNDS_ON_MARK,
+        funding_interval_hours=interval_hours,
+        next_funding_time_ns=next_funding_ms * _MS_TO_NS,
+        next_funding_time_unknown=next_funding_ms == 0,
+        event_time_ns=venue_time_ms * _MS_TO_NS,
+        ingestion_time_ns=int(entry.t_recv_ns),
+    )]
+
+
 def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFrame:
     """One bitemporal row per observation.
 
@@ -204,6 +280,7 @@ def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFr
         "index_price": None if o.index_price is None else str(o.index_price),
         "oracle_price": None if o.oracle_price is None else str(o.oracle_price),
         "funds_on": o.funds_on,
+        "funding_interval_hours": o.funding_interval_hours,
         "event_time_is_receipt": o.event_time_is_receipt,
         "next_funding_time_unknown": o.next_funding_time_unknown,
         "next_funding_time_ns": o.next_funding_time_ns,
@@ -236,6 +313,10 @@ def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFr
     for column in ("funding_rate", "mark_price", "index_price", "oracle_price",
                    "funds_on"):
         frame[column] = frame[column].astype("string")
+    # Nullable integer, for the same schema-unification reason as the strings
+    # above: a partition where no venue published an interval must still carry
+    # an int64 column, not a null one.
+    frame["funding_interval_hours"] = frame["funding_interval_hours"].astype("Int64")
     return frame
 
 

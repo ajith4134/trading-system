@@ -83,7 +83,7 @@ while true; do
   yesterday=$(date -u -d 'yesterday' +%F)
 
   for day in "$yesterday" "$today"; do
-    for spec in "funding binance" "funding hyperliquid" "book binance" "book binance-spot"; do
+    for spec in "funding binance" "funding hyperliquid" "funding bybit" "book binance" "book binance-spot"; do
       set -- $spec
       # Funding reads its universe off the archive; depth is core-only.
       if [ "$1" = "funding" ]; then symbols="$FUNDING_SYMBOLS"; else symbols="$CORE"; fi

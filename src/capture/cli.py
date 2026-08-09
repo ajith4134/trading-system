@@ -27,12 +27,18 @@ from capture.venue_recorder import VenueRecorder
 from capture.venues import shard_by_url_budget
 from capture.venues.binance import BinanceVenue
 from capture.venues.binance_spot import BinanceSpotVenue
+from capture.venues.bybit import BybitVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 _VENUES = {
     "binance": BinanceVenue,                # USDs-M perpetual futures
     "binance-spot": BinanceSpotVenue,       # spot; the other leg of the basis
     "hyperliquid": HyperliquidVenue,
+    # Funding only, and captured rather than traded. `ARCHITECTURE.md` §3b
+    # defers Bybit as an EXECUTION venue and that stands - no key exists for it.
+    # A third independent funding curve, on the same argument that widened the
+    # other two: it cannot be backfilled.
+    "bybit": BybitVenue,
 }
 
 _OPEN_TIMEOUT_SECONDS = 20
