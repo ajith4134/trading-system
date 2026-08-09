@@ -55,6 +55,14 @@ _TAIL_CHANNELS = ["trade", "forceOrder"]
 # budget, so three symbols spend 180/minute - the cadence is limited by what is
 # worth storing, not by the venue's ceiling.
 _POLL_STREAM = "premiumIndex"
+# The symbol a fan-out spec carries. It names the REQUEST, never a file: every
+# instrument in the response is written under its own symbol, and nothing is
+# ever filed under this. Chosen to match `--symbols ALL` so the two ends of the
+# pipeline read alike.
+_ALL_MARKET_SYMBOL = "ALL"
+# Measured from the venue's own x-mbx-used-weight header, not assumed: the
+# all-market premiumIndex is 10 against the per-symbol form's 1.
+_PREMIUM_INDEX_ALL_WEIGHT = 10
 
 # The stream name each event routes to. It must equal the `stream` on the
 # StreamSpec that subscribed to it (`channel.split("@")[0]`), or one logical
@@ -104,18 +112,35 @@ class BinanceVenue:
         return self._specs(symbols, _TAIL_CHANNELS)
 
     def poll_specs(self, symbols: list[str]) -> list[PollSpec]:
-        """The feeds this venue will not push, fetched one symbol at a time.
+        """The feeds this venue will not push.
 
-        Per-symbol rather than the all-market form: omitting `symbol` returns
-        every perpetual on the venue at request weight 10, and writing several
-        hundred instruments to disk in order to read three of them is not a raw
-        archive of what was asked for.
+        Funding is fetched in the ALL-MARKET form and split per symbol on
+        arrival. This reverses an earlier decision, and the reasoning that
+        replaced it is worth keeping visible. The original read:
+
+            Per-symbol rather than the all-market form: omitting `symbol`
+            returns every perpetual on the venue at request weight 10, and
+            writing several hundred instruments to disk in order to read three
+            of them is not a raw archive of what was asked for.
+
+        Correct while the universe was three symbols. It became the binding
+        constraint on the whole of Phase 4: carry is made of funding, and on
+        2026-08-09 the archive held 26 hours of it on three symbols while trades
+        were captured on 2,115. Per symbol, 857 perps would cost 857 weight a
+        tick against a 2,400/minute budget - impossible at any useful cadence.
+        The all-market form is ONE request at weight 10, so the entire universe
+        now costs less than three symbols did.
+
+        The "not a raw archive of what was asked for" objection dissolves once
+        the whole market is what is being asked for. Each instrument's object is
+        still written verbatim to its own file, byte-compatible with what the
+        per-symbol poll wrote, so the existing funding history continues without
+        a seam.
         """
         specs = [
-            PollSpec(self.name, _POLL_STREAM, symbol,
-                     f"{_PREMIUM_INDEX_URL}?symbol={symbol}",
-                     weight=_PREMIUM_INDEX_WEIGHT)
-            for symbol in symbols
+            PollSpec(self.name, _POLL_STREAM, _ALL_MARKET_SYMBOL,
+                     _PREMIUM_INDEX_URL, weight=_PREMIUM_INDEX_ALL_WEIGHT,
+                     fan_out=True),
         ]
         # Only the core symbols carry depth diffs, so only they need a snapshot
         # to replay those diffs onto. The tail subscribes trades alone.
@@ -128,6 +153,29 @@ class BinanceVenue:
             for symbol in symbols
         ]
         return specs
+
+    def fan_out_poll(self, spec: PollSpec, parsed) -> list[tuple[str, object]]:
+        """Split one all-market response into (symbol, object) pairs.
+
+        The all-market `premiumIndex` is a flat array of per-instrument objects,
+        each naming its own symbol - so each element is exactly what the
+        per-symbol endpoint returns for that instrument, and writing it verbatim
+        keeps the archive byte-compatible with the history already captured.
+
+        An element with no usable symbol is DROPPED here and counted by the
+        caller rather than filed under a guess: this venue keys every file on
+        symbol, and a wrong one poisons a carry cost that reads it back.
+        """
+        if not isinstance(parsed, list):
+            return []
+        pairs = []
+        for element in parsed:
+            if isinstance(element, dict) and isinstance(element.get("s" if "s" in element
+                                                                   else "symbol"), str):
+                symbol = element.get("s") or element.get("symbol")
+                if symbol:
+                    pairs.append((symbol, element))
+        return pairs
 
     def ws_url(self, specs: list[StreamSpec]) -> str:
         return _WS_BASE + "/".join(spec.channel for spec in specs)

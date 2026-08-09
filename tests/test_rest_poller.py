@@ -43,7 +43,9 @@ async def test_poll_frames_yields_the_response_body_verbatim():
     way in - even to tidy it - can never be compared against the venue again."""
     body = '{"symbol":"BTCUSDT",  "markPrice":"63856.20000000" ,"time":1785778577000}'
 
-    async def fetch(url):
+    async def fetch(spec):
+
+        url = spec.url
         return body
 
     frames = await _drain(poll_frames(object(), [SPEC], 0.01, 0.05, fetch=fetch), limit=1)
@@ -57,7 +59,9 @@ async def test_poll_frames_yields_the_response_body_verbatim():
 async def test_poll_frames_polls_every_spec_on_each_tick():
     seen = []
 
-    async def fetch(url):
+    async def fetch(spec):
+
+        url = spec.url
         seen.append(url)
         return "{}"
 
@@ -80,7 +84,9 @@ async def test_poll_frames_keeps_polling_after_an_endpoint_fails():
     """
     calls = []
 
-    async def fetch(url):
+    async def fetch(spec):
+
+        url = spec.url
         calls.append(url)
         if len(calls) == 1:
             raise ConnectionError("first tick fails")
@@ -95,14 +101,16 @@ async def test_poll_frames_keeps_polling_after_an_endpoint_fails():
 async def test_poll_frames_yields_nothing_for_the_tick_that_failed():
     """A failed fetch has no body. Yielding a placeholder would put a frame in
     the archive that the venue never sent."""
-    async def fetch(url):
+    async def fetch(spec):
+        url = spec.url
         raise TimeoutError("endpoint down")
 
     assert await _drain(poll_frames(object(), [SPEC], 0.01, 0.05, fetch=fetch)) == []
 
 
 async def test_poll_frames_stops_at_its_duration():
-    async def fetch(url):
+    async def fetch(spec):
+        url = spec.url
         return "{}"
 
     started = asyncio.get_running_loop().time()
@@ -157,7 +165,9 @@ async def test_a_slow_spec_polls_less_often_than_a_fast_one():
                     interval_seconds=0.20)
     calls: list[str] = []
 
-    async def fetch(url: str) -> str:
+    async def fetch(spec) -> str:
+
+        url = spec.url
         calls.append(url)
         return json.dumps({"url": url})
 
@@ -178,7 +188,9 @@ async def test_a_spec_without_its_own_cadence_uses_the_shared_one():
     spec = PollSpec("binance", "premiumIndex", "BTCUSDT", "http://x")
     calls: list[str] = []
 
-    async def fetch(url: str) -> str:
+    async def fetch(spec) -> str:
+
+        url = spec.url
         calls.append(url)
         return "{}"
 
@@ -206,7 +218,9 @@ async def test_a_poll_that_cannot_afford_its_weight_is_skipped_not_delayed():
                         weight=50)
         seen = []
 
-        async def fetch(url):
+        async def fetch(spec):
+
+            url = spec.url
             seen.append(url)
             return "{}"
 
@@ -219,8 +233,14 @@ async def test_a_poll_that_cannot_afford_its_weight_is_skipped_not_delayed():
 
 
 def test_the_measured_weights_reach_the_specs():
-    """Measured from x-mbx-used-weight: a limit=1000 snapshot is 50, a funding
-    poll is 1. A spec carrying the wrong weight makes the budget a decoration."""
+    """Measured from x-mbx-used-weight: a limit=1000 snapshot is 50, the
+    all-market funding poll is 10. A spec carrying the wrong weight makes the
+    budget a decoration.
+
+    The all-market form is why broad funding is affordable at all: per symbol it
+    is weight 1, so 857 perps would be 857 a tick against a 2,400/minute budget.
+    One request at 10 covers the universe for less than three symbols cost.
+    """
     specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
-    assert specs["premiumIndex"].weight == 1
+    assert specs["premiumIndex"].weight == 10
     assert specs["depthSnapshot"].weight == 50

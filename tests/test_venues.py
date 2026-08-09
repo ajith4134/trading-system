@@ -224,21 +224,67 @@ REAL_BINANCE_PREMIUM_INDEX_BODY = json.loads(
     '"nextFundingTime":1785801600000,"time":1785778577000}')
 
 
-def test_binance_poll_specs_cover_every_symbol():
+def test_binance_polls_funding_for_the_whole_market_in_one_request():
+    """Reversed 2026-08-09, and the reason is worth stating.
+
+    This asserted the per-symbol form, on the reasoning that writing 500
+    instruments to disk to read 3 of them is not a raw archive of what was asked
+    for. Right while the universe was three symbols; it became the binding
+    constraint on Phase 4, which needs funding across the universe and cannot
+    backfill it. Per symbol, 857 perps cost 857 weight a tick against a
+    2,400/minute budget. The all-market form is one request at weight 10.
+    """
     v = BinanceVenue()
     specs = v.poll_specs(["BTCUSDT", "ETHUSDT"])
-    assert {spec.symbol for spec in specs} == {"BTCUSDT", "ETHUSDT"}
-    # Two polled feeds per symbol now: the funding rate the venue withholds
-    # from the websocket, and the depth snapshot without which the captured
-    # depth diffs cannot be replayed into a book.
+
     funding = [s for s in specs if s.stream == "premiumIndex"]
-    assert {s.symbol for s in funding} == {"BTCUSDT", "ETHUSDT"}
-    assert all(s.url.startswith("https://fapi.binance.com/fapi/v1/premiumIndex")
-               for s in funding)
-    # Per-symbol, not the whole-market form: the all-symbols call returns every
-    # perp on the venue at request weight 10, and writing 500 instruments to
-    # disk to read 3 of them is not a raw archive of what was asked for.
-    assert all(f"symbol={spec.symbol}" in spec.url for spec in specs)
+    assert len(funding) == 1, "one request covers the market, not one per symbol"
+    assert funding[0].fan_out is True
+    assert funding[0].url == "https://fapi.binance.com/fapi/v1/premiumIndex"
+    assert "symbol=" not in funding[0].url, "still asking for one instrument"
+
+    # The depth snapshot stays per symbol: only the core carries depth diffs to
+    # replay a snapshot onto, and there is no all-market form of it.
+    snapshots = [s for s in specs if s.stream == "depthSnapshot"]
+    assert {s.symbol for s in snapshots} == {"BTCUSDT", "ETHUSDT"}
+    assert all(f"symbol={s.symbol}" in s.url for s in snapshots)
+
+
+def test_the_all_market_funding_response_splits_per_instrument():
+    """Each element is written under its own symbol, byte-compatible with what
+    the per-symbol poll used to write - which is what lets the funding history
+    already captured continue without a seam."""
+    v = BinanceVenue()
+    spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
+
+    pairs = v.fan_out_poll(spec, [
+        {"symbol": "BTCUSDT", "lastFundingRate": "0.0001"},
+        {"symbol": "ETHUSDT", "lastFundingRate": "0.0002"},
+    ])
+
+    assert [symbol for symbol, _ in pairs] == ["BTCUSDT", "ETHUSDT"]
+    assert pairs[0][1]["lastFundingRate"] == "0.0001"
+
+
+def test_an_element_naming_no_symbol_is_dropped_rather_than_guessed():
+    """Every file here is keyed on symbol and a wrong one poisons a carry cost
+    that reads it back. Filing under the request symbol would put the whole
+    market in one instrument's file."""
+    v = BinanceVenue()
+    spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
+
+    pairs = v.fan_out_poll(spec, [{"lastFundingRate": "0.0001"},
+                                  {"symbol": "BTCUSDT"}])
+
+    assert [symbol for symbol, _ in pairs] == ["BTCUSDT"]
+
+
+def test_a_response_that_is_not_a_list_splits_into_nothing():
+    """A shape change at the venue, which the recorder records as observation
+    loss rather than treating as an absent market."""
+    v = BinanceVenue()
+    spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.fan_out)
+    assert v.fan_out_poll(spec, {"symbol": "BTCUSDT"}) == []
 
 
 def test_binance_premium_index_response_routes_to_its_own_stream():
@@ -246,11 +292,13 @@ def test_binance_premium_index_response_routes_to_its_own_stream():
     `markPriceUpdate` frame, and one filename holding two shapes makes the
     archive undecodable without knowing which day it was written."""
     v = BinanceVenue()
-    spec = next(s for s in v.poll_specs(["BTCUSDT"]))
+    spec = next(s for s in v.poll_specs(["BTCUSDT"]) if s.stream == "premiumIndex")
     meta = v.extract(REAL_BINANCE_PREMIUM_INDEX_BODY)
 
     assert meta.stream == spec.stream == "premiumIndex"
-    assert meta.symbol == spec.symbol == "BTCUSDT"
+    # The spec now names the REQUEST, and the symbol comes off the element the
+    # fan-out split out - which is what `extract` reads here.
+    assert meta.symbol == "BTCUSDT"
     assert meta.kind == "data"
     assert meta.t_exch_ms == 1785778577000
     assert meta.seq is None

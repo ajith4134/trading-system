@@ -776,6 +776,45 @@ class VenueRecorder:
             "unknown", "unknown", payload, t_recv_ns, None, None,
             kind="malformed")
 
+    def _route_fanned_out(self, parsed, t_recv_ns: int, spec) -> None:
+        """Split one all-market response and file each instrument under itself.
+
+        The response covers the universe, so filing it whole would put 857
+        instruments in one symbol's file and leave 856 with none. The venue
+        adapter owns the split because the shapes differ: Binance returns a flat
+        array where each element names its own symbol, Hyperliquid returns a
+        two-element array whose halves are matched by POSITION.
+
+        Each element is re-serialised on its own and written verbatim under its
+        instrument, which makes the file byte-compatible with what the
+        per-symbol poll used to write. That is the whole reason this is a split
+        rather than a new dataset - the funding history already captured
+        continues without a seam.
+
+        An element the adapter cannot name is counted as malformed rather than
+        filed under a guess. Every file here is keyed on symbol, and a wrong one
+        poisons a carry cost that reads it back.
+        """
+        pairs = self._venue.fan_out_poll(spec, parsed)
+        stream = _safe_path_token(spec.stream)
+        if not pairs:
+            # An empty split from a body that parsed is a shape change at the
+            # venue, not an absent market. Recorded, because the alternative is
+            # a funding feed that goes quiet with every tile still green.
+            self._stats["malformed"] += 1
+            self._ledger.record(LedgerEvent(
+                ts_ns=t_recv_ns, venue=self._venue.name, stream=stream,
+                kind="malformed", severity=SEVERITY_OBSERVATION_LOSS,
+                detail={"symbol": spec.symbol,
+                        "reason": "an all-market response split into no instruments"},
+            ))
+            return
+        for symbol, element in pairs:
+            self._append_or_quarantine_stream(
+                stream, _safe_path_token(symbol), json.dumps(element, separators=(",", ":")),
+                t_recv_ns, None, None, kind="data")
+            self._note_stream_spoke((stream.casefold(), symbol.casefold()), t_recv_ns)
+
     def _route_frame(self, parsed, payload: str, t_recv_ns: int,
                      route_hint=None) -> None:
         """Send one parsed frame to its writer, tracker and - on a gap - the ledger.
@@ -784,6 +823,10 @@ class VenueRecorder:
         whatever `extract` could work out, because the subscription knows what
         it asked for and some REST bodies do not say.
         """
+        if route_hint is not None and getattr(route_hint, "fan_out", False):
+            self._route_fanned_out(parsed, t_recv_ns, route_hint)
+            return
+
         meta = self._venue.extract(parsed)
         if meta.kind == "control":
             self._stats["control"] += 1

@@ -1312,3 +1312,73 @@ async def test_the_hour_boundary_closes_are_spread_across_frames(tmp_path: Path)
     before = len(closed)
     rec._settle_writers_whose_hour_ended(next_hour + 1_000_000_000)
     assert len(closed) == before
+
+
+# --------------------------------------------------------------------------
+# fan-out: one all-market response, filed per instrument
+#
+# Carry is made of funding, and on 2026-08-09 the archive held 26 hours of it on
+# three symbols while trades were captured on 2,115. Per symbol the poll costs
+# weight 1, so 857 perps would be 857 a tick against a 2,400/minute budget. The
+# all-market form is one request at weight 10 - affordable only if the response
+# can be split.
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_all_market_poll_is_filed_under_each_instrument(tmp_path: Path):
+    """Filed whole, one instrument's file would hold the entire market and 856
+    would hold nothing."""
+    from capture.rest_poller import PolledFrame
+    from capture.raw_writer import read_pair, paths_for
+
+    venue = BinanceVenue()
+    spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
+    rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
+    body = json.dumps([{"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1},
+                       {"symbol": "ETHUSDT", "lastFundingRate": "0.0002", "time": 1}])
+
+    await rec.consume(_frames([PolledFrame(spec, body)]))
+
+    assert rec.stats()["written"] == 2
+    for symbol, rate in (("BTCUSDT", "0.0001"), ("ETHUSDT", "0.0002")):
+        raw, idx = paths_for(tmp_path, "binance", "premiumIndex", symbol, "2026-08-02T05")
+        stored = json.loads(read_pair(raw, idx)[0][0])
+        assert stored["lastFundingRate"] == rate
+        assert stored["symbol"] == symbol
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_ever_filed_under_the_fan_out_request_symbol(tmp_path: Path):
+    """The spec's symbol names the REQUEST. A file under it would be the whole
+    market masquerading as one instrument."""
+    from capture.rest_poller import PolledFrame
+
+    venue = BinanceVenue()
+    spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
+    rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
+
+    await rec.consume(_frames([PolledFrame(spec, json.dumps(
+        [{"symbol": "BTCUSDT", "lastFundingRate": "0.0001"}]))]))
+
+    written = {p.name.split("_")[1] for p in (tmp_path / "raw").rglob("premiumIndex_*.ndjson.zst")}
+    assert written == {"BTCUSDT"}
+    assert spec.symbol not in written
+
+
+@pytest.mark.asyncio
+async def test_a_response_that_splits_into_nothing_is_recorded_as_loss(tmp_path: Path):
+    """A body that parsed but yielded no instruments is a shape change at the
+    venue, not an empty market. Treating the two alike is a funding feed going
+    quiet with every tile still green."""
+    from capture.rest_poller import PolledFrame
+
+    venue = BinanceVenue()
+    spec = next(s for s in venue.poll_specs(["BTCUSDT"]) if s.fan_out)
+    rec = VenueRecorder(venue, [], tmp_path, clock_ns=lambda: 1785648600_000_000_000)
+
+    await rec.consume(_frames([PolledFrame(spec, json.dumps({"code": -1121}))]))
+
+    events = [e for e in read_all(tmp_path, "binance", "2026-08-02") if e.kind == "malformed"]
+    assert events, "an all-market response that split into nothing was not recorded"
+    assert "no instruments" in events[-1].detail["reason"]
+    assert rec.stats()["written"] == 0

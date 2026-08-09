@@ -105,6 +105,19 @@ class PollSpec:
     # budget counting requests would let fifty snapshots through as cheaply as
     # fifty polls and earn the ban it exists to prevent.
     weight: int = 1
+    # Request body, for endpoints that will not answer a GET. Hyperliquid's
+    # `/info` is one POST with a JSON type discriminator and no query string at
+    # all, so a poller that can only GET cannot reach its funding.
+    body: str | None = None
+    # True when one response covers many instruments and the venue adapter knows
+    # how to split it - see `fan_out_poll`. The symbol on a fan-out spec names
+    # the request, not an instrument, and no file is ever written under it.
+    #
+    # This is what makes broad funding affordable. Per symbol, `premiumIndex`
+    # costs weight 1 and 857 perps would be 857 per tick; the all-market form is
+    # one request at weight 10, so the whole universe costs less than three
+    # symbols did.
+    fan_out: bool = False
 
 
 @dataclass(frozen=True)

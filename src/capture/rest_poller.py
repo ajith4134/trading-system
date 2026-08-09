@@ -58,8 +58,13 @@ _REQUEST_TIMEOUT_SECONDS = 15
 _SOURCE_EXHAUSTED = object()
 
 
-async def _fetch_text(url: str) -> str:
-    """GET a URL and return its body verbatim.
+async def _fetch_text(spec) -> str:
+    """Fetch one endpoint and return its body verbatim.
+
+    Takes the spec rather than a URL because not every venue answers a GET:
+    Hyperliquid's `/info` is a POST carrying a JSON type discriminator and no
+    query string at all, so a poller that could only GET could not reach its
+    funding at any cadence.
 
     Imported lazily so that the poller can be exercised - and the rest of the
     capture service can run - without aiohttp being importable at module load.
@@ -67,13 +72,15 @@ async def _fetch_text(url: str) -> str:
     import aiohttp
 
     timeout = aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SECONDS)
+    headers = {"Content-Type": "application/json"} if spec.body is not None else None
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
+        async with session.request(spec.method, spec.url, data=spec.body,
+                                   headers=headers) as response:
             response.raise_for_status()
             return await response.text()
 
 
-async def _fetch_or_none(fetch, url: str) -> str | None:
+async def _fetch_or_none(fetch, spec) -> str | None:
     """One tick of one endpoint. A failure yields no frame, and no exception.
 
     Deliberately swallowing here: this source runs alongside the websocket in a
@@ -84,7 +91,7 @@ async def _fetch_or_none(fetch, url: str) -> str | None:
     reports to the ledger and the status wall.
     """
     try:
-        return await fetch(url)
+        return await fetch(spec)
     except Exception:
         return None
 
@@ -140,7 +147,7 @@ async def poll_frames(venue, specs, interval_seconds: float,
                 interval_seconds if cadence is None else cadence)
 
         bodies = await asyncio.gather(
-            *(_fetch_or_none(fetch, spec.url) for spec in due))
+            *(_fetch_or_none(fetch, spec) for spec in due))
         for spec, body in zip(due, bodies):
             if body is not None:
                 yield PolledFrame(spec, body)
