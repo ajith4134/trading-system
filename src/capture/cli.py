@@ -47,6 +47,24 @@ _VENUES = {
     "binance-funding": BinanceFundingVenue,
 }
 
+def archive_name_for(venue_key: str) -> str:
+    """The directory a venue writes into, given the name it is invoked by.
+
+    They are not always the same word. `binance-funding` is a separate PROCESS
+    polling the same VENUE, so its class carries `name = "binance"` and its files
+    land in `raw/binance/` beside the trades - which is what keeps the archive
+    layout unchanged and the per-IP rate budget a single bucket.
+
+    Exposed because the supervisor needs it and was getting it wrong: it passed
+    its own `--venue` argument through to `repair_archive`, which scopes on the
+    ARCHIVE directory. `repair_archive --venue binance-funding` therefore scoped
+    to a directory that does not exist, found nothing, and left the hours that
+    process actually writes to be repaired by somebody else. Resolving it here
+    keeps one source of truth rather than a mapping duplicated in shell.
+    """
+    return _VENUES[venue_key]().name
+
+
 _OPEN_TIMEOUT_SECONDS = 20
 _UNIVERSE_TIMEOUT_SECONDS = 20
 _INTERRUPTED_EXIT_CODE = 130       # 128 + SIGINT, the shell convention

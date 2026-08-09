@@ -674,3 +674,34 @@ def test_main_selects_binance_spot_by_name(tmp_path: Path, monkeypatch, capsys):
 
     assert isinstance(calls[0]["venue"], BinanceSpotVenue)
     assert calls[0]["specs"] == BinanceSpotVenue().core_specs(["BTCUSDT"])
+
+
+def test_the_archive_directory_is_resolved_from_the_registry_not_the_cli_key():
+    """They are not always the same word, and the supervisor got it wrong.
+
+    `binance-funding` is a separate PROCESS polling the same VENUE, so its class
+    carries `name = "binance"` and its files land in raw/binance/ beside the
+    trades. The supervisor passed its own `--venue` argument straight through to
+    `repair_archive`, which scopes on the ARCHIVE directory - so the funding
+    process scoped its repair to a directory that does not exist, found nothing,
+    and never repaired the hours it writes.
+    """
+    from capture.cli import _VENUES, archive_name_for
+
+    assert archive_name_for("binance-funding") == "binance"
+    assert archive_name_for("binance") == "binance"
+    assert archive_name_for("binance-spot") == "binance-spot"
+    # Every registered key must resolve, or the supervisor silently falls back
+    # to the key and the bug returns for whichever venue was added last.
+    for key in _VENUES:
+        assert archive_name_for(key), key
+
+
+def test_every_venue_writes_into_a_directory_some_key_resolves_to():
+    """A venue whose archive directory no key names is one no supervisor can
+    repair - the failure above, generalised."""
+    from capture.cli import _VENUES, archive_name_for
+
+    resolved = {archive_name_for(key) for key in _VENUES}
+    for key in _VENUES:
+        assert _VENUES[key]().name in resolved

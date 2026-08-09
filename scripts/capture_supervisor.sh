@@ -42,6 +42,20 @@ HEALTHY_RUN_SECONDS=120
 
 mkdir -p "$STATE_DIR"
 
+# The directory this venue writes into, which is not always the name it is
+# invoked by: `binance-funding` is a separate process polling the same venue, so
+# its files land in raw/binance/ beside the trades.
+#
+# Resolved from the venue registry rather than mapped here, because a second copy
+# of that mapping is a second thing to get wrong - and it WAS wrong: this script
+# passed $VENUE straight to repair_archive, which scopes on the archive
+# directory, so the funding process scoped its repair to a directory that does
+# not exist and never repaired the hours it writes.
+ARCHIVE_VENUE=$(PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -c \
+    "from capture.cli import archive_name_for; print(archive_name_for('$VENUE'))" \
+    2>/dev/null) || ARCHIVE_VENUE="$VENUE"
+[ -n "$ARCHIVE_VENUE" ] || ARCHIVE_VENUE="$VENUE"
+
 # One raw and one index file stay open per (stream, symbol) for the whole hour,
 # so the broad tail needs file descriptors in proportion to the universe: 2,115
 # symbols is over 4,000 before websockets and the ops files. The startup script
@@ -105,7 +119,7 @@ printf '{"ts":"%s","venue":"%s","event":"supervisor_started","symbols":"%s","pid
 # `archive` cannot reach the hour a recorder is about to open, which is what
 # makes it safe to run beside a live writer at all.
 PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.repair_archive \
-    --root "$CAPTURE_ROOT" --venue "$VENUE" --scope archive \
+    --root "$CAPTURE_ROOT" --venue "$ARCHIVE_VENUE" --scope archive \
     >>"$RESTART_LOG" 2>>"$LOG" &
 archive_repair_pid=$!
 
@@ -126,7 +140,7 @@ while true; do
     # over, and eighteen minutes later no venue had captured a frame. Everything
     # already rotated is repaired by the archive pass above, off this path.
     PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.repair_archive \
-        --root "$CAPTURE_ROOT" --venue "$VENUE" --scope resumable \
+        --root "$CAPTURE_ROOT" --venue "$ARCHIVE_VENUE" --scope resumable \
         >>"$RESTART_LOG" 2>>"$LOG"
 
     # The tail argument is passed only when set, so a core-only invocation
