@@ -1,0 +1,72 @@
+{
+  "_note": [
+    "§1a.6: no module ships without a learning / reasoning / depth verdict, each",
+    "pass or fail with the evidence named. `n/a` is a first-class answer - a",
+    "Parquet writer does not reason - but it must be stated, not left blank.",
+    "",
+    "A verdict is a judgement and this file is where the judgement is recorded.",
+    "What is CHECKED mechanically by `integrity.axis_verdicts` is that every axis",
+    "is answered, that the answer is one of pass/fail/n/a, and that every named",
+    "artifact is on disk. A verdict citing a test nobody wrote fails the check.",
+    "",
+    "Coverage is deliberately partial and the status wall reports the real number.",
+    "Seeded 2026-08-09 with the modules shipped that day; the rest are genuinely",
+    "unjudged and render as such rather than as green."
+  ],
+  "modules": {
+    "validation.breadth": {
+      "learning": "pass: no constant in the decision path is typed. The trigger threshold is a percentile of each symbol's OWN history (L1), and the collapse band 5-15 is quoted from §5a.4 rather than chosen here - a gate that picked its own threshold would be grading itself against a number selected to pass",
+      "reasoning": "pass: it distinguishes clustered arrivals from correlated outcomes and says which it found. The first draft read §5a.4's 'cluster AND correlate' as a disjunction and would have reported REDESIGN on data the spec does not call one; the conjunction is now pinned by a test",
+      "depth": "pass: changes behaviour when wrong. REDESIGN is a reachable verdict that stops Phase 4, and INCONCLUSIVE is returned rather than a number whenever the sample cannot support one",
+      "evidence": ["tests/test_breadth_gate.py", "src/validation/breadth.py"]
+    },
+    "validation.promotion_pipeline": {
+      "learning": "pass: every configuration scored is a Trial Registry entry, and the N that deflates the winner is the registry's cumulative count (L7) - a wider search raises its own bar",
+      "reasoning": "pass: it caught a lookahead in its own candidate. Pure noise scored Sharpe 3.90 and passed three of five gates; the return definition was selecting on information that had not settled. Both the noise case and the real-edge case are tests, because a stack that refuses everything measures nothing",
+      "depth": "pass: the master test. A refusal is the designed outcome, and the gates compose with AND so no single one can be outvoted",
+      "evidence": ["tests/test_promotion_pipeline.py", "src/validation/promotion_pipeline.py"]
+    },
+    "risk.tail_cap": {
+      "learning": "pass: the operating ladder is derived from a block-bootstrapped drawdown distribution rather than from the single realised maximum (VX-011), and the ceiling is read from a file the user owns rather than fitted at all",
+      "reasoning": "pass: it separates what it may change from what it may not. Every derived rung is clamped to the user's ceiling and the clamping is recorded - §6's line made mechanical rather than checked",
+      "depth": "pass: a missing ceiling FAILS rather than being skipped, and paper breaches are recorded as `would_have_breached` instead of being silently unenforced",
+      "evidence": ["tests/test_tail_cap.py", "src/risk/tail_cap.py"]
+    },
+    "store.funding_backfill": {
+      "learning": "n/a: it fetches and stores settled numbers. Nothing here is fitted and nothing claims to be",
+      "reasoning": "n/a: no decision is taken from the data it writes",
+      "depth": "pass: the safeguard is mechanical rather than documented. Availability time is the fetch, so every simulated clock in the past sees an empty dataset and no backtest can consume it by accident",
+      "evidence": ["tests/test_funding_backfill.py", "src/store/funding_backfill.py"]
+    },
+    "integrity.unsupported_claims": {
+      "learning": "n/a: a static analysis. Nothing is fitted",
+      "reasoning": "pass: it distinguishes three states rather than two - running, reachable only by hand, and unreachable - because its first version called nine hand-run modules dead and a check that cries wolf gets switched off",
+      "depth": "pass: it changes what happens when the project is wrong about itself. The ratchet fails in BOTH directions, so fixing a claim without updating the baseline is also an error",
+      "evidence": ["tests/test_unsupported_claims.py", "src/integrity/unsupported_claims.py"]
+    },
+    "integrity.axis_verdicts": {
+      "learning": "n/a: a coverage check over a record. Nothing is fitted",
+      "reasoning": "pass: it separates what it can measure from what it cannot. The verdict is a judgement; coverage and the existence of named evidence are measured, and the module says which is which",
+      "depth": "pass: modules are enumerated from `src/` rather than from this file, so a module added without a verdict makes the number fall instead of leaving the omission invisible",
+      "evidence": ["tests/test_axis_verdicts.py", "src/integrity/axis_verdicts.py"]
+    },
+    "ops.venue_health_watch": {
+      "learning": "n/a: it forwards measured health reports to a registry. No parameter is fitted",
+      "reasoning": "pass: a venue whose report cannot be built is named rather than skipped, because a silent skip leaves the registry serving a stale verdict with nothing saying the input stopped",
+      "depth": "pass: it is what makes the halt registry a mechanism rather than a library - `observe()` had zero callers while the wall claimed the auto-halt was armed",
+      "evidence": ["tests/test_venue_health_watch.py", "src/ops/venue_health_watch.py"]
+    },
+    "capture.venues.bybit": {
+      "learning": "n/a: a venue adapter. Nothing is fitted",
+      "reasoning": "pass: it checks `retCode` before reading a body, because this venue answers HTTP 200 with errors, and it skips dated futures on the venue's own empty `fundingRate` rather than on a naming heuristic",
+      "depth": "pass: `ws_url` raises rather than returning a URL nobody meant to connect, and the venue's clock is merged onto each record so a row can be dated without the envelope it arrived in",
+      "evidence": ["tests/test_bybit_funding.py", "src/capture/venues/bybit.py"]
+    },
+    "capture.venues.binance_funding": {
+      "learning": "n/a: a venue adapter. Nothing is fitted",
+      "reasoning": "pass: it exists because of a measured comparison - binance-spot survived the hour boundary with more writers, so the burst was the difference rather than the total - and the module records that the threshold was never proven",
+      "depth": "pass: the funding spec is defined once and returned only here, so the recorder cannot start polling it again by accident and the two processes cannot drift on cadence or weight",
+      "evidence": ["tests/test_venues.py", "src/capture/venues/binance_funding.py"]
+    }
+  }
+}

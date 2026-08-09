@@ -860,6 +860,64 @@ def probe_unsupported_claims(facts: SystemFacts) -> ProbeResult:
         f"({named}{more}); {census}", proof)
 
 
+# Below this share of modules judged, the record is a sample rather than a
+# standard. Not a target - §1a.6 says NO module ships without a verdict, so the
+# only passing number is all of them. This is where the tile stops calling a
+# partial record partial and starts calling it absent.
+_AXIS_COVERAGE_FLOOR = 0.50
+
+
+def probe_axis_verdicts(facts: SystemFacts) -> ProbeResult:
+    """§1a.6: which modules carry a learning / reasoning / depth verdict.
+
+    The verdict is a judgement and this tile does not render it as a measurement.
+    What it renders is coverage - counted from `src/`, so a module added without
+    a verdict lowers the number rather than going unnoticed - and whether every
+    named artifact is on disk.
+
+    A verdict citing a test nobody wrote is FAILING rather than partial. It is
+    the same defect as a ledger row citing a module nobody calls, and this board
+    already refuses that one.
+    """
+    proof = "integrity.axis_verdicts over src/ + docs/axis-verdicts.json"
+    from integrity.axis_verdicts import assess
+
+    coverage = assess(Path(facts.repo_root))
+    if coverage.total == 0:
+        return ProbeResult(NOT_MEASURED, "no modules found to judge", proof)
+
+    broken = []
+    if coverage.incomplete:
+        broken.append(f"{len(coverage.incomplete)} with an axis left blank")
+    if coverage.invalid:
+        broken.append(f"{len(coverage.invalid)} with a word that is not a verdict")
+    if coverage.missing_evidence:
+        broken.append(f"{len(coverage.missing_evidence)} citing evidence not on disk")
+    if coverage.orphaned:
+        broken.append(f"{len(coverage.orphaned)} judging a module that no longer exists")
+
+    census = (f"{len(coverage.verdicted)} of {coverage.total} modules judged "
+              f"({coverage.share:.0%})")
+    if broken:
+        return ProbeResult(FAILING, f"{census}; " + ", ".join(broken), proof)
+    if coverage.failing:
+        return ProbeResult(
+            DEGRADED,
+            f"{census}; {len(coverage.failing)} module(s) carry an explicit FAIL: "
+            f"{', '.join(sorted(coverage.failing))}", proof)
+    if coverage.share < _AXIS_COVERAGE_FLOOR:
+        # Not green, and not PARTIAL either. §1a.6 says no module ships without
+        # a verdict, so most of this repo is unjudged rather than half-judged -
+        # and absence of evidence renders as its own state.
+        return ProbeResult(
+            NOT_MEASURED,
+            f"{census}; the rest are unjudged, not passing", proof)
+    return ProbeResult(
+        PARTIAL if coverage.unverdicted else OK,
+        census + (f"; {len(coverage.unverdicted)} still unjudged"
+                  if coverage.unverdicted else "; every module judged"), proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -890,6 +948,7 @@ PROBES = {
     "cost engine round trip breakeven gate": probe_cost_engine,
     "bounded writer descriptor pool": probe_writer_descriptor_pool,
     "reachability audit of every built claim": probe_unsupported_claims,
+    "learning reasoning depth verdict per module": probe_axis_verdicts,
 }
 
 
