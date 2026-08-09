@@ -618,6 +618,15 @@
     "tests/test_bybit_liquidation.py",
     "src/capture/venues/bybit_liquidation.py"
    ]
+  },
+  "features.spot_perp_basis": {
+   "learning": "n/a: one subtraction over stored prices. Nothing is fitted - the module's work is refusing to subtract against the wrong reference",
+   "reasoning": "pass: the reference is chosen by the row's own funds_on declaration, never the venue name, so a fourth venue arriving with funds_on=oracle prices correctly without an edit and an unrecognised declaration refuses rather than guesses. Its refusal accounting found two real store defects on first live contact: binance rows unstamped, and the intraday build frozen at its first pass",
+   "depth": "pass: refusals ride the result as counts by reason, so a consumer cannot mistake sparse data for a calm market; a zero reference is refused rather than divided by; every read is clock-gated, so a history assembled from past clocks is leak-free by construction",
+   "evidence": [
+    "tests/test_spot_perp_basis.py",
+    "src/features/spot_perp_basis.py"
+   ]
   }
  }
 }

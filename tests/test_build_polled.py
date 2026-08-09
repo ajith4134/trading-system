@@ -67,3 +67,36 @@ def test_a_day_with_no_polls_writes_nothing(tmp_path: Path):
     result = build_for_day(tmp_path, tmp_path / "store", "binance",
                            "2026-08-02", ["BTCUSDT"], "funding")
     assert result["rows"] == 0 and not result["appended"]
+
+
+def test_hours_that_close_after_the_first_pass_still_reach_the_dataset(tmp_path: Path):
+    """The defect this defends against was live for a full day: the snapshot id
+    was one-per-DAY, so the first pass after midnight froze the day at whatever
+    hour it had reached, and every later pass collided and appended nothing.
+    Measured 2026-08-09: binance funding newest row 12:00 at 18:00."""
+    later_poll = json.dumps({
+        "symbol": "BTCUSDT", "markPrice": "64999.10", "indexPrice": "65001.00",
+        "lastFundingRate": "0.00007000", "nextFundingTime": 1786204800000,
+        "time": 1785654206214,
+    })
+    archived(tmp_path, "premiumIndex", "BTCUSDT", PREMIUM_INDEX)
+    store = tmp_path / "store"
+    first = build_for_day(tmp_path, store, "binance", "2026-08-02",
+                          ["BTCUSDT"], "funding")
+    assert first["appended"] and first["rows"] == 1
+
+    # An hour closes after the first pass: same day, one more file.
+    writer = RawWriter(tmp_path, "binance", "premiumIndex", "BTCUSDT")
+    writer.append(later_poll, t_recv_ns=1785654206_500_000_000,
+                  t_exch_ms=1785654206214, seq=None)
+    writer.close()
+
+    second = build_for_day(tmp_path, store, "binance", "2026-08-02",
+                           ["BTCUSDT"], "funding")
+    assert second["appended"], "the later hour must append, not collide"
+    assert second["rows"] == 1, (
+        "only the NEW row appends - re-appending the first would double it")
+
+    served = ClockGatedReader(store, "funding").read_as_of(2 * 10**18)
+    assert len(served) == 2
+    assert sorted(served["funding_rate"]) == ["0.00006847", "0.00007000"]

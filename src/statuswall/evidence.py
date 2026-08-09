@@ -294,6 +294,32 @@ def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
                                 "liquidation feed")
 
 
+def probe_spot_perp_basis(facts: SystemFacts) -> ProbeResult:
+    # Computes the actual number rather than checking that files exist: the
+    # basis is a derivation, and the only proof a derivation works is running
+    # it. Never OK - the catalogue row also names the term structure, which is
+    # not built (bybit's 40 dated futures are captured raw, no curve dataset
+    # reads them), so the honest ceiling is PARTIAL until it is.
+    try:
+        from features.spot_perp_basis import compute_spot_perp_basis
+        table = compute_spot_perp_basis(
+            facts.capture_root / "store",
+            int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"basis computation failed: {error}",
+                           "features/spot_perp_basis.py")
+    if table.rows.empty:
+        return ProbeResult(NOT_BUILT, "no funding rows to price a basis from",
+                           "capture/store/funding")
+    venues = sorted(table.rows["venue"].unique())
+    refused = sum(table.refused.values())
+    return ProbeResult(
+        PARTIAL,
+        f"basis computed live: {len(table.rows)} (venue, symbol) pairs across "
+        f"{', '.join(venues)}, {refused} refused; term structure not built",
+        "features/spot_perp_basis.py + capture/store/funding")
+
+
 def probe_funding_rates(facts: SystemFacts) -> ProbeResult:
     # Four carriers, all verified on stored frames: binance's `premiumIndex`
     # (lastFundingRate + nextFundingTime - rate AND schedule in one body),
@@ -1037,6 +1063,7 @@ PROBES = {
     "liquidation feed": probe_liquidation_feed,
     "open interest": probe_open_interest,
     "perpetual funding rate history schedule": probe_funding_rates,
+    "spot perp basis term structure": probe_spot_perp_basis,
     "mark price vs index vs oracle price per venue": probe_mark_price,
     "gap detection provenance flagged backfill": probe_gap_detection,
     "per feed data quality score": probe_data_quality_score,

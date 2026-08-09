@@ -32,7 +32,26 @@ from store.funding_rates import (
     build_funding_frame, extract_bybit_funding, extract_funding,
     extract_hyperliquid_funding,
 )
-from store.parquet_partition import append_partition
+from store.parquet_partition import append_partition, read_dataset
+from store.temporal_schema import AVAILABILITY_TIME, VENUE
+
+
+def _availability_watermark_ns(store_root: Path, dataset: str,
+                               venue: str) -> int | None:
+    """The newest availability time this venue already has in the dataset.
+
+    None when the venue has no rows yet - a first build appends everything.
+    Read from the dataset because the dataset is the only authority on what it
+    holds; any sidecar record of "built up to" could survive a part that was
+    deleted or predate one that was hand-added.
+    """
+    existing = read_dataset(store_root, dataset)
+    if existing.empty or VENUE not in existing.columns:
+        return None
+    venue_rows = existing[existing[VENUE] == venue]
+    if venue_rows.empty:
+        return None
+    return int(venue_rows[AVAILABILITY_TIME].max())
 
 # Which archived stream feeds which dataset, and how to read it. Keyed by
 # dataset name so the CLI, the builder and the reader all say the same word -
@@ -149,7 +168,29 @@ def build_for_day(capture_root: Path, store_root: Path, venue: str, date: str,
                 "files_read": files_read, "frames": frames, "rows": 0,
                 "appended": False}
 
-    snapshot_id = f"{dataset}-{venue}-{date}"
+    # Only what the store does not already hold for this venue. The previous
+    # snapshot id was `{dataset}-{venue}-{date}` - one per DAY - so the first
+    # pass after midnight wrote the hours closed by then and every later pass
+    # collided and appended nothing: a "built today" that froze at whichever
+    # hour the timer first fired. Measured 2026-08-09: binance funding newest
+    # row 12:00 at 18:00, six hours stale, while the supervisor's own comment
+    # said today builds "because hours are still closing". The watermark is
+    # read from the dataset itself rather than tracked in a sidecar file, so
+    # it cannot drift from what is actually on disk.
+    watermark_ns = _availability_watermark_ns(store_root, dataset, venue)
+    if watermark_ns is not None:
+        frame = frame[frame[AVAILABILITY_TIME] > watermark_ns]
+    if frame.empty:
+        return {"dataset": dataset, "venue": venue, "date": date,
+                "files_read": files_read, "frames": frames, "rows": 0,
+                "appended": False}
+
+    # The id carries the new watermark, so re-appending the identical window
+    # (two supervisors racing) collides on the writer's existing-part check
+    # instead of doubling every row - the same refusal as before, per window
+    # rather than per day.
+    snapshot_id = (f"{dataset}-{venue}-{date}"
+                   f"-upto{int(frame[AVAILABILITY_TIME].max())}")
     appended = True
     try:
         append_partition(store_root, dataset, frame, snapshot_id=snapshot_id)
