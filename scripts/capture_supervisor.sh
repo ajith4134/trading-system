@@ -43,11 +43,19 @@ HEALTHY_RUN_SECONDS=120
 mkdir -p "$STATE_DIR"
 
 child_pid=""
+archive_repair_pid=""
 
 # Forward the stop signal rather than dying and orphaning the recorder: its
 # close() writes the zstd footers and removes the .writing marker, and an hour
 # left with a stale marker blocks the repair that is the way out of it.
 forward_stop() {
+    # The background archive pass goes first. It only touches rotated hours, so
+    # nothing is mid-capture in it, but leaving it running after the supervisor
+    # exits means a reboot kills it mid-reconcile instead of letting it finish
+    # the pair it is on.
+    if [ -n "$archive_repair_pid" ]; then
+        kill -TERM "$archive_repair_pid" 2>/dev/null
+    fi
     # TERM, not INT. A non-interactive shell sets SIGINT to SIG_IGN for the
     # children it starts in the background and the disposition survives exec, so
     # `kill -INT` here is a no-op and the wait below never returns. Measured: the
@@ -67,6 +75,18 @@ trap forward_stop INT TERM
 printf '{"ts":"%s","venue":"%s","event":"supervisor_started","symbols":"%s","pid":%d}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$VENUE" "$SYMBOLS${TAIL_SYMBOLS:++tail:$TAIL_SYMBOLS}" "$$" >>"$RESTART_LOG"
 
+# Rotated hours can be torn too - a stop tears whatever was open, and the hour
+# it was open in has usually rotated by the time anyone looks. Repairing them
+# still matters for the reader and the offload, but nothing is waiting on it, so
+# it must not sit in front of capture. Backgrounded, once per supervisor start
+# rather than once per restart, and disjoint from the blocking pass by scope:
+# `archive` cannot reach the hour a recorder is about to open, which is what
+# makes it safe to run beside a live writer at all.
+PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.repair_archive \
+    --root "$CAPTURE_ROOT" --venue "$VENUE" --scope archive \
+    >>"$RESTART_LOG" 2>>"$LOG" &
+archive_repair_pid=$!
+
 delay=$MIN_DELAY
 while true; do
     started_at=$(date +%s)
@@ -76,8 +96,16 @@ while true; do
     # documented exit from that refusal and a restart is when it can safely run -
     # no writer holds the files. Measured cost of skipping it: seventeen minutes
     # of the two busiest depth streams, per ungraceful stop.
+    #
+    # This pass is the current hour of this venue only, because that is the only
+    # hour that can refuse the recorder about to start. Unscoped, each of the
+    # three supervisors read every pair in the whole archive end to end first:
+    # after the 2026-08-09 reboot that was 22,668 pairs and 1.9 GB, three times
+    # over, and eighteen minutes later no venue had captured a frame. Everything
+    # already rotated is repaired by the archive pass above, off this path.
     PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" -m capture.repair_archive \
-        --root "$CAPTURE_ROOT" >>"$RESTART_LOG" 2>>"$LOG"
+        --root "$CAPTURE_ROOT" --venue "$VENUE" --scope resumable \
+        >>"$RESTART_LOG" 2>>"$LOG"
 
     # The tail argument is passed only when set, so a core-only invocation
     # builds exactly the command line it did before this existed.
