@@ -331,6 +331,13 @@ def main(argv: list[str] | None = None) -> int:
         UniverseTracker(Path(args.root), venue.name).record_snapshot(
             sorted(discovered), time.time_ns(), quote_assets=quote_assets)
         tail_source = discovered
+        # Polls that only make sense across the whole listing - per-symbol open
+        # interest, today. Built here rather than in `poll_specs` because only
+        # this branch knows the universe, and built from the SAME listing the
+        # snapshot recorded, so the polled set and the recorded membership
+        # cannot describe two different markets.
+        if hasattr(venue, "universe_poll_specs"):
+            poll_specs = [*poll_specs, *venue.universe_poll_specs(sorted(discovered))]
     else:
         tail_source = [s.strip() for s in args.tail_symbols.split(",") if s.strip()]
 

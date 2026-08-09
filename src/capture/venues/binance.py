@@ -27,6 +27,15 @@ _DEPTH_SNAPSHOT_STREAM = "depthSnapshot"
 _DEPTH_SNAPSHOT_WEIGHT = 50
 _PREMIUM_INDEX_WEIGHT = 1
 
+# Open interest, live form. No all-market variant exists for this endpoint, so
+# it is polled per symbol - see `open_interest_poll_specs` for the budget
+# arithmetic that sets the cadence.
+_OPEN_INTEREST_URL = "https://fapi.binance.com/fapi/v1/openInterest"
+_OPEN_INTEREST_STREAM = "openInterest"
+_OPEN_INTEREST_INTERVAL_SECONDS = 300.0
+# Measured 2026-08-09 from x-mbx-used-weight-1m on a live request, not assumed.
+_OPEN_INTEREST_WEIGHT = 1
+
 # `trade` rather than `aggTrade`, decided 2026-08-02 from live measurement:
 # aggTrade delivers nothing at all to this host over the websocket (0 frames in
 # 25s while depth and bookTicker flow normally, and REST /fapi/v1/aggTrades
@@ -193,6 +202,33 @@ class BinanceVenue:
                      fan_out=True),
         ]
 
+    def open_interest_poll_specs(self, universe: list[str]) -> list[PollSpec]:
+        """One open-interest poll per instrument, across the whole universe.
+
+        Per symbol because the venue offers no all-market form: `/fapi/v1/
+        openInterest` takes exactly one symbol, and the stats endpoint
+        (`/futures/data/openInterestHist`) is a downsampled history, not the
+        live number. Weight 1 per request, measured 2026-08-09 from the
+        venue's own x-mbx-used-weight header.
+
+        The cadence is the budget arithmetic, disclosed rather than tuned: the
+        universe is ~860 instruments, so five minutes costs ~172 weight/minute
+        of the 2,400 budget shared with the funding poll (10) and the depth
+        snapshots (150). The poller phases specs sharing a cadence, so this
+        arrives as one request every ~350ms, never as an 860-socket burst.
+
+        Bybit and Hyperliquid need none of this: their funding polls already
+        carry `openInterest` per instrument in the same body, verified on the
+        stored frames 2026-08-09.
+        """
+        return [
+            PollSpec(self.name, _OPEN_INTEREST_STREAM, symbol,
+                     f"{_OPEN_INTEREST_URL}?symbol={symbol}",
+                     interval_seconds=_OPEN_INTEREST_INTERVAL_SECONDS,
+                     weight=_OPEN_INTEREST_WEIGHT)
+            for symbol in universe
+        ]
+
     def fan_out_poll(self, spec: PollSpec, parsed) -> list[tuple[str, object]]:
         """Split one all-market response into (symbol, object) pairs.
 
@@ -241,6 +277,16 @@ class BinanceVenue:
                 return ExtractedMeta(
                     t_poll_ms if isinstance(t_poll_ms, int) else None,
                     None, "data", _POLL_STREAM, body["symbol"])
+            # The open-interest body is the other polled shape: symbol, the
+            # figure, and the venue's clock. Unrecognised, it was filed as
+            # control - present on disk but flagged as a frame the venue
+            # merely said in passing, which downstream readers rightly skip.
+            # Measured on the first 90-second run: all 170 OI bodies.
+            if isinstance(body.get("openInterest"), str) and isinstance(body.get("symbol"), str):
+                t_poll_ms = body.get("time")
+                return ExtractedMeta(
+                    t_poll_ms if isinstance(t_poll_ms, int) else None,
+                    None, "data", _OPEN_INTEREST_STREAM, body["symbol"])
             return ExtractedMeta(None, None, "control", "unknown", "unknown")
 
         seq = None

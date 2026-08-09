@@ -66,11 +66,14 @@ async def test_poll_frames_polls_every_spec_on_each_tick():
         return "{}"
 
     await _drain(poll_frames(object(), [SPEC, OTHER], 0.01, 0.055, fetch=fetch))
-    # Both endpoints on every tick, not one per tick round-robin: a symbol that
-    # is only sampled every other interval has a mark price series with half the
-    # resolution of the one the cadence promises.
-    assert seen.count(SPEC.url) == seen.count(OTHER.url)
+    # Both endpoints at the full cadence, not one per tick round-robin: a
+    # symbol sampled every other interval has a mark price series with half
+    # the resolution the cadence promises. Phasing may put the two specs on
+    # different ticks - the promise is equal RATE, so the counts may differ by
+    # at most the one poll the phase offset delays.
+    assert abs(seen.count(SPEC.url) - seen.count(OTHER.url)) <= 1
     assert seen.count(SPEC.url) >= 2
+    assert seen.count(OTHER.url) >= 2
 
 
 async def test_poll_frames_keeps_polling_after_an_endpoint_fails():
@@ -246,3 +249,55 @@ def test_the_measured_weights_reach_the_specs():
     specs |= {s.stream: s for s in BinanceFundingVenue().poll_specs(["BTCUSDT"])}
     assert specs["premiumIndex"].weight == 10
     assert specs["depthSnapshot"].weight == 50
+
+
+async def test_specs_sharing_a_cadence_are_phased_not_burst():
+    """857 polls due in one tick is 857 concurrent sockets and 857 writes in
+    one synchronous sweep - the hour-boundary burst shape, moved to REST. Specs
+    on one cadence must spread across it; each still polls at full rate."""
+    from capture.venues import PollSpec
+
+    specs = [PollSpec("v", "openInterest", f"S{n}", f"https://x/{n}", weight=1)
+             for n in range(10)]
+    ticks: list[int] = []
+
+    async def fetch(spec):
+        ticks.append(len(ticks))
+        return "{}"
+
+    first_batch = []
+
+    async def fetch_counting(spec):
+        first_batch.append(spec.url)
+        return "{}"
+
+    # One short window: only the earliest-phased slice of the group may fire.
+    await _drain(poll_frames(object(), specs, 0.05, 0.012, fetch=fetch_counting))
+    assert 0 < len(first_batch) < len(specs), (
+        "the whole group firing on the first tick is exactly the burst "
+        "phasing exists to prevent")
+
+
+async def test_open_interest_specs_cover_the_universe_at_the_declared_cadence():
+    """One spec per instrument, each carrying the budget-derived cadence and
+    the measured weight - the numbers the docstring discloses, pinned."""
+    from capture.venues.binance_funding import BinanceFundingVenue
+
+    specs = BinanceFundingVenue().universe_poll_specs(["BTCUSDT", "ETHUSDT"])
+    assert [s.symbol for s in specs] == ["BTCUSDT", "ETHUSDT"]
+    assert all(s.stream == "openInterest" for s in specs)
+    assert all(s.interval_seconds == 300.0 for s in specs)
+    assert all(s.weight == 1 for s in specs)
+    assert all(s.symbol in s.url for s in specs)
+
+
+async def test_open_interest_body_routes_as_data_not_control():
+    """Verbatim body from the live probe. Filed as control it is present on
+    disk but flagged as venue chatter, which downstream readers rightly skip -
+    measured on the first 90-second run: all 170 OI bodies."""
+    body = {"symbol": "BTCUSDT", "openInterest": "107525.679", "time": 1786291894891}
+    meta = BinanceVenue().extract(body)
+    assert meta.kind == "data"
+    assert meta.stream == "openInterest"
+    assert meta.symbol == "BTCUSDT"
+    assert meta.t_exch_ms == 1786291894891

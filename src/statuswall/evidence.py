@@ -294,6 +294,14 @@ def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
                                 "liquidation feed")
 
 
+def probe_open_interest(facts: SystemFacts) -> ProbeResult:
+    # Three carriers, verified on stored frames 2026-08-09: binance's
+    # per-symbol `openInterest` poll, and the `openInterest` field riding
+    # bybit's `linearTickers` and hyperliquid's `assetCtx` funding polls.
+    return _silent_stream_probe(
+        facts, ("openInterest", "linearTickers", "assetCtx"), "open interest")
+
+
 def probe_mark_price(facts: SystemFacts) -> ProbeResult:
     # `premiumIndex` is the REST poll that replaced the withheld `markPrice`
     # websocket stream on 2026-08-03; it carries mark, index and settlement
@@ -1007,6 +1015,7 @@ PROBES = {
     "spot ohlcv trade tape multi venue": probe_trade_tape,
     "l2 order book depth 20 50 levels": probe_l2_depth,
     "liquidation feed": probe_liquidation_feed,
+    "open interest": probe_open_interest,
     "mark price vs index vs oracle price per venue": probe_mark_price,
     "gap detection provenance flagged backfill": probe_gap_detection,
     "per feed data quality score": probe_data_quality_score,

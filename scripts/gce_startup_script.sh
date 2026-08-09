@@ -95,7 +95,7 @@ start_as_user "capture_supervisor.sh hyperliquid" \
 # fan-out crossed four boundaries alive. Same venue name, so files land in
 # raw/binance/ and the per-IP rate budget stays one bucket.
 start_as_user "capture_supervisor.sh binance-funding" \
-  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-funding BTCUSDT"
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-funding BTCUSDT ALL"
 # Funding only, and captured rather than traded - no key exists for this venue.
 # Poll-only, so no symbols are named: the response is the whole linear market.
 start_as_user "capture_supervisor.sh bybit" \

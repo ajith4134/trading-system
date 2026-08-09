@@ -273,6 +273,19 @@ class VenueRecorder:
         }
         self._session_start_ns = clock_ns()
         self._silence_grace_ns = int(silence_grace_seconds * 1e9)
+        # A polled spec's cadence is a declared fact about how often it can
+        # possibly speak, and silence judged below it is an alarm for being on
+        # schedule. A 300-second poll phased late in its cycle would otherwise
+        # be recorded silent at the 60-second grace - before its first request
+        # was even due. The floor is the same multiple the adaptive threshold
+        # uses on measured gaps, applied to the declared gap.
+        self._declared_cadence_ns = {}
+        for spec in specs:
+            cadence = getattr(spec, "interval_seconds", None)
+            if cadence:
+                key = self._silence_key(spec.stream, spec.symbol)
+                self._declared_cadence_ns[key] = max(
+                    self._declared_cadence_ns.get(key, 0), int(cadence * 1e9))
         # Per stream: when it last spoke, how many frames it has sent, and its
         # recent frame-to-frame gaps - the evidence `_silence_threshold_ns`
         # judges silence against. `_recorded_silent_days` keeps reporting to one
@@ -557,9 +570,11 @@ class VenueRecorder:
         """
         gaps = self._recent_gaps_ns.get(key)
         routine_ns = quantile_ns(sorted(gaps), _SILENCE_CADENCE_QUANTILE) if gaps else 0
+        declared_ns = self._declared_cadence_ns.get(key, 0)
         return min(int(_SILENCE_CEILING_SECONDS * 1e9),
                    max(self._silence_grace_ns,
-                       int(_SILENCE_STALL_MULTIPLE * routine_ns)))
+                       int(_SILENCE_STALL_MULTIPLE * routine_ns),
+                       int(_SILENCE_STALL_MULTIPLE * declared_ns)))
 
     def _check_stream_health(self, now_ns: int) -> None:
         """Run the silence check, at most once per `_SILENCE_CHECK_INTERVAL_NS`.

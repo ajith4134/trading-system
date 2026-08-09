@@ -58,13 +58,23 @@ class BinanceFundingVenue(BinanceVenue):
         return []
 
     def poll_specs(self, symbols: list[str]) -> list[PollSpec]:
-        """The funding fan-out, and nothing else.
+        """The funding fan-out, and nothing else symbol-independent.
 
         The depth snapshot stays with the recorder: it is three symbols on a
         60-second cadence, it is not a fan-out, and it belongs beside the depth
-        diffs it exists to let anyone replay.
+        diffs it exists to let anyone replay. Open interest is per symbol and
+        needs the discovered universe, so it arrives through
+        `universe_poll_specs` once the CLI has resolved `--tail-symbols ALL`.
         """
         return self.funding_poll_specs()
+
+    def universe_poll_specs(self, universe: list[str]) -> list[PollSpec]:
+        """Per-symbol polls that only make sense across the whole listing.
+
+        This process is the right home for the same reason funding moved here:
+        heavy polling shares no event loop with a keepalive-sensitive socket.
+        """
+        return self.open_interest_poll_specs(universe)
 
     def ws_url(self, specs: list[StreamSpec]) -> str:
         raise BinanceFundingPushesNothing(

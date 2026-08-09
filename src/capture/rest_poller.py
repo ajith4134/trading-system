@@ -101,9 +101,11 @@ async def poll_frames(venue, specs, interval_seconds: float,
                       budget=None) -> AsyncIterator[str]:
     """Sample every spec once per interval and yield the bodies, verbatim.
 
-    Every spec is polled on every tick, concurrently. Round-robin would halve
-    the resolution of each symbol's series relative to the cadence the caller
-    asked for, and mark price is a series whose whole value is its regularity.
+    Every spec is polled at exactly the cadence asked for - never round-robin,
+    which would halve the resolution of each symbol's series - but specs
+    sharing a cadence are spread across it rather than fired together; see the
+    phasing note below. A series' value is its regularity, and each spec keeps
+    exactly that; only the phase between symbols differs.
 
     `duration_seconds` may be infinite, which is the run-until-interrupted mode.
     The deadline is re-checked before each tick and the sleep is clipped to it,
@@ -111,13 +113,37 @@ async def poll_frames(venue, specs, interval_seconds: float,
     """
     fetch = fetch or _fetch_text
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + duration_seconds
+    started = loop.time()
+    deadline = started + duration_seconds
 
     # When each spec is next due. A spec may carry its own cadence because the
     # feeds cost wildly different request-weight: a depth snapshot is 20 against
     # a 2400/minute budget, the funding poll is 1. Running both at one rate
     # either starves the cheap feed or bans the IP on the expensive one.
-    next_due = {id(spec): 0.0 for spec in specs}
+    #
+    # Specs sharing a cadence are PHASED across it rather than all due at once.
+    # 857 per-symbol polls due together is 857 concurrent sockets in one
+    # `gather` and 857 file writes in one tick - the same burst shape that
+    # killed the binance recorder at every hour boundary, and a request spike
+    # the venue has every right to answer with a 418. Spread over the cadence
+    # it is one request every ~350ms, spending the identical budget smoothly.
+    # Each symbol's own series still arrives at exactly the cadence asked for;
+    # only the phase differs, and a poll's value is its regularity, not its
+    # phase. Groups keyed per cadence so a lone depth snapshot at 60s is not
+    # delayed by where 857 OI polls sit in their 300s cycle.
+    cadence_groups: dict[float, list] = {}
+    for spec in specs:
+        cadence = spec.interval_seconds
+        cadence_groups.setdefault(
+            interval_seconds if cadence is None else cadence, []).append(spec)
+    # Anchored on the run's own start: `loop.time()` is monotonic with an
+    # arbitrary origin, so a bare offset would compare as already-due and the
+    # whole group would burst on the first tick anyway. The first spec of each
+    # group polls immediately; the last, one cadence in.
+    next_due = {}
+    for cadence, group in cadence_groups.items():
+        for position, spec in enumerate(group):
+            next_due[id(spec)] = started + position * cadence / len(group)
 
     while True:
         tick_started = loop.time()
