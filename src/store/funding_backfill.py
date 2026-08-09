@@ -44,6 +44,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -181,6 +182,14 @@ def fetch_binance_history(symbol: str, venue: str = "binance", budget=None,
     abandoning the other 856 for, and a symbol that returns nothing is visible as
     a gap in the built dataset.
     """
+    # The archive names a symbol path-safely; the venue does not know that name.
+    # Binance lists 币安人生USDT and 龙虾USDT, `_safe_path_token` stores them as
+    # `_b32_...`, and asking the API for `_b32_4W4IDZNORHSLVOXHSSPVK` returns an
+    # empty list - which is how three symbols came back with "no history" and
+    # read like delistings rather than like us sending our own filename.
+    from capture.venue_recorder import decode_path_token
+
+    venue_symbol = decode_path_token(symbol)
     fetched_at = now_ns()
     rows: list[ReconstructedFunding] = []
     end_time_ms: int | None = None
@@ -188,7 +197,8 @@ def fetch_binance_history(symbol: str, venue: str = "binance", budget=None,
     for _ in range(max(1, pages)):
         if budget is not None and not budget.try_spend(_REQUEST_WEIGHT):
             break
-        url = f"{_BINANCE_FUNDING_HISTORY}?symbol={symbol}&limit={_PAGE_LIMIT}"
+        url = (f"{_BINANCE_FUNDING_HISTORY}?symbol={quote(venue_symbol)}"
+               f"&limit={_PAGE_LIMIT}")
         if end_time_ms is not None:
             url += f"&endTime={end_time_ms}"
         try:

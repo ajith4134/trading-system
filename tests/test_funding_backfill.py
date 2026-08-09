@@ -160,3 +160,27 @@ def test_a_budget_that_refuses_stops_the_fetch(tmp_path):
 
     assert called == [], "spent weight the budget had refused"
     assert result["rows"] == 0
+
+
+def test_the_venue_is_asked_for_its_own_symbol_not_our_filename(tmp_path):
+    """The archive names a symbol path-safely and the venue does not know that
+    name. Asking Binance for `_b32_4W4IDZNORHSLVOXHSSPVK` returns an empty list,
+    which is how three symbols came back with "no history" and read like
+    delistings rather than like us sending our own filename.
+    """
+    from capture.venue_recorder import _safe_path_token
+    from store.funding_backfill import fetch_binance_history
+
+    encoded = _safe_path_token("币安人生USDT")
+    asked = []
+
+    def record(url):
+        asked.append(url)
+        return "[]"
+
+    fetch_binance_history(encoded, fetch=record, now_ns=lambda: FETCHED_NS)
+
+    assert asked, "no request was made"
+    assert encoded not in asked[0], "sent our own filename to the venue"
+    # URL-encoded, because the venue's name is not ASCII.
+    assert "%E5%B8%81" in asked[0], asked[0]

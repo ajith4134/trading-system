@@ -332,13 +332,27 @@ def _dollar_quoted_only(symbols: list[str], capture_root: Path, venue: str, date
               f"later map is correct for any pair that existed on the day",
               file=sys.stderr)
 
+    # Archive filenames are path-SAFE names; the venue's quote map keys are the
+    # venue's own. They differ for any symbol carrying a character a filename
+    # cannot: Binance lists 币安人生USDT, 龙虾USDT and 我踏马来了USDT, and
+    # `_safe_path_token` base32-encodes them to `_b32_...` so nothing steers a
+    # write out of the archive.
+    #
+    # Comparing the encoded form against the venue's map matched nothing, so
+    # every one of them fell through to "unlisted" and was built. Measured
+    # 2026-08-09: `币安人生U` is quoted in **U**, not dollars, and it was going
+    # into the store anyway - the exact thing this filter exists to prevent,
+    # defeated by a name the filter could not read.
+    from capture.venue_recorder import decode_path_token
+
+    venue_name = {symbol: decode_path_token(symbol) for symbol in symbols}
     known_non_dollar = set(partition.non_dollar)
-    kept = [s for s in symbols if s not in known_non_dollar]
-    dropped = sorted(set(symbols) & known_non_dollar)
+    kept = [s for s in symbols if venue_name[s] not in known_non_dollar]
+    dropped = sorted(s for s in symbols if venue_name[s] in known_non_dollar)
     if dropped:
         by_quote: dict[str, int] = {}
         for symbol in dropped:
-            quote = partition.non_dollar[symbol]
+            quote = partition.non_dollar[venue_name[symbol]]
             by_quote[quote] = by_quote.get(quote, 0) + 1
         top = ", ".join(f"{q} {n}" for q, n in
                         sorted(by_quote.items(), key=lambda kv: -kv[1])[:8])
@@ -347,8 +361,9 @@ def _dollar_quoted_only(symbols: list[str], capture_root: Path, venue: str, date
 
     # Both reported, never folded into the exclusion count, and never silent -
     # a symbol built without a known denomination is a fact the operator owns.
-    unknown = sorted(set(symbols) & set(partition.unknown))
-    unlisted = sorted(set(kept) - set(partition.dollar) - set(unknown))
+    unknown = sorted(s for s in symbols if venue_name[s] in partition.unknown)
+    unlisted = sorted(s for s in kept
+                      if venue_name[s] not in partition.dollar and s not in unknown)
     if unknown:
         print(f"UNCLASSIFIED quote asset, built anyway: {unknown[:10]}"
               f"{' ...' if len(unknown) > 10 else ''}", file=sys.stderr)

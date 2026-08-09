@@ -1192,3 +1192,51 @@ def test_the_day_being_built_is_classified_at_its_END(tmp_path, monkeypatch):
                                "binance-spot", "2026-08-02")
 
     assert kept == ["LATEUSDT"]
+
+
+def test_a_symbol_the_filename_cannot_hold_is_still_classified(tmp_path, monkeypatch):
+    """Binance lists 币安人生USDT, 龙虾USDT and 我踏马来了USDT. `_safe_path_token`
+    base32-encodes them so nothing steers a write out of the archive - and the
+    quote map is keyed on the venue's name, not ours.
+
+    Comparing the encoded form against that map matched nothing, so every one of
+    them fell through to "unlisted" and was built. Measured 2026-08-09: 币安人生U
+    is quoted in **U**, not dollars, and it went into the store anyway - the
+    exact thing this filter exists to prevent, defeated by a name it could not
+    read.
+    """
+    from capture.venue_recorder import _safe_path_token
+    from store.cli import _dollar_quoted_only
+
+    dollar, non_dollar = "币安人生USDT", "币安人生U"
+    # Explicit, because the helper's `s[-3:]` heuristic mangles a CJK name -
+    # 币安人生U would come out quoted in "人生U" and land in `unknown`, which
+    # would pass this test for the wrong reason.
+    from capture.universe_tracker import UniverseTracker
+    UniverseTracker(tmp_path, "binance-spot").record_snapshot(
+        [dollar, non_dollar, "BTCUSDT"], 1785600000_000_000_000,
+        quote_assets={dollar: "USDT", non_dollar: "U", "BTCUSDT": "USDT"})
+    captured = [_safe_path_token(dollar), _safe_path_token(non_dollar), "BTCUSDT"]
+    assert captured[1].startswith("_b32_"), "fixture is not exercising the encoding"
+
+    kept = _dollar_quoted_only(captured, tmp_path, "binance-spot", "2026-08-02")
+
+    assert _safe_path_token(non_dollar) not in kept, "a U-quoted pair was built"
+    assert _safe_path_token(dollar) in kept, "a USDT-quoted pair was excluded"
+
+
+def test_the_kept_names_are_the_archive_names_not_the_decoded_ones(tmp_path):
+    """Classification decodes; the return value must not. The builder looks up
+    files by the path-safe name, and handing it the venue's name would find
+    nothing on disk."""
+    from capture.venue_recorder import _safe_path_token
+    from store.cli import _dollar_quoted_only
+
+    symbol = "龙虾USDT"
+    from capture.universe_tracker import UniverseTracker
+    UniverseTracker(tmp_path, "binance-spot").record_snapshot(
+        [symbol], 1785600000_000_000_000, quote_assets={symbol: "USDT"})
+    encoded = _safe_path_token(symbol)
+
+    kept = _dollar_quoted_only([encoded], tmp_path, "binance-spot", "2026-08-02")
+    assert kept == [encoded]
