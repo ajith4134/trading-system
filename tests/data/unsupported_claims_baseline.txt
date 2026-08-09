@@ -24,19 +24,15 @@
 RX-005
 
 # VX-001 and VX-002 cleared 2026-08-09: the §5a.4 breadth gate is the Trial
-# Registry's first caller. §5a.5 requires every scan to count, and
-# `validation.breadth.run_gate` registers each configuration before measuring it.
-# Left as a comment because the ratchet fails on a baselined row that is no
-# longer unsupported, which is how it keeps its teeth.
+# Registry's first caller.
 #
-# The rest of validation/ is still reached only through promotion_gate, and
-# promotion_gate by nothing. That is the honest shape of machinery whose consumer
-# does not exist yet: there is no promotion pipeline to score a candidate. They
-# clear when Phase 4 takes a family through it, not before.
-VX-004
-VX-006
-VX-007
-VX-008
-VX-009
-VX-010
+# VX-004, VX-006, VX-007, VX-008, VX-009 and VX-010 cleared the same day, when
+# `validation.promotion_pipeline` became the first caller `promotion_gate` had
+# ever had - which reached purged CPCV, deflated Sharpe, MinBTL, PBO and the
+# holdout custodian behind it. Left as comments because the ratchet fails on a
+# baselined row that is no longer unsupported, which is how it keeps its teeth.
+
+# validation.superior_predictive_ability is reached by the pipeline, but VX-011
+# names a claim the module does not yet satisfy on its own terms. Left until the
+# row and the code are read against each other properly.
 VX-011
