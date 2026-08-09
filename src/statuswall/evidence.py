@@ -531,26 +531,53 @@ def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
     earliest availability time and confirm nothing comes back. A probe that
     only confirmed `src/store/clock_gated_reader.py` exists on disk would pass
     just as happily against a gate that leaks everything.
+
+    "Earliest" is taken over every stored version, read straight off the
+    partitions, and NOT over what `read_as_of` returns. A corrected bar is two
+    rows for the same key: the original, available at the bar boundary, and the
+    correction, available whenever the fix ran. The corrected view carries only
+    the second, so its minimum availability sits AFTER the moment the original
+    first became visible - and reading one nanosecond before that minimum
+    legitimately returns the pre-correction rows. This probe read that as the
+    gate leaking and put the wall's core-guarantee tile into FAILING for a store
+    whose gate was correct; the first correction ever written was what broke it.
     """
     datasets = _bar_datasets(facts)
     if not datasets:
         return ProbeResult(NOT_BUILT, "no store to gate", "src/store/clock_gated_reader.py")
     from store.clock_gated_reader import ClockGatedReader
+    from store.parquet_partition import read_dataset
     from store.temporal_schema import AVAILABILITY_TIME
 
-    reader = ClockGatedReader(_store_root(facts), datasets[0].name)
-    everything = reader.read_as_of(2**62)
-    if everything.empty:
+    store_root, dataset = _store_root(facts), datasets[0].name
+    reader = ClockGatedReader(store_root, dataset)
+    stored = read_dataset(store_root, dataset)
+    if stored.empty or reader.read_as_of(2**62).empty:
         return ProbeResult(DEGRADED, "store exists but reads empty", "ClockGatedReader.read_as_of")
 
-    earliest = int(everything[AVAILABILITY_TIME].min())
+    earliest = int(stored[AVAILABILITY_TIME].min())
     hidden = reader.read_as_of(earliest - 1)
     if not hidden.empty:
         # The gate is the whole layer. If it lets anything through early, that is
         # a failure of the system's core guarantee, not a degraded metric.
         return ProbeResult(FAILING, f"{len(hidden)} row(s) visible before their availability time",
                            "ClockGatedReader.read_as_of")
-    return ProbeResult(OK, f"gate holds: nothing visible before {earliest}",
+
+    # The negative check alone passes against a gate that serves nothing at all
+    # before some late cutoff and then everything at once. This second read sits
+    # inside the data and asserts the invariant on what actually came back, which
+    # is the guarantee stated rather than a proxy for it.
+    midpoint = int(stored[AVAILABILITY_TIME].median())
+    served = reader.read_as_of(midpoint)
+    ahead = served[served[AVAILABILITY_TIME] > midpoint]
+    if not ahead.empty:
+        return ProbeResult(FAILING,
+                           f"{len(ahead)} of {len(served)} row(s) served at {midpoint} "
+                           f"carry a later availability time",
+                           "ClockGatedReader.read_as_of")
+    return ProbeResult(OK,
+                       f"gate holds: nothing visible before {earliest}, and all "
+                       f"{len(served)} row(s) served mid-history were already available",
                        "ClockGatedReader.read_as_of, exercised live")
 
 

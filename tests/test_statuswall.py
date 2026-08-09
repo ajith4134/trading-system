@@ -309,6 +309,77 @@ def test_clock_gate_probe_reports_failing_when_a_row_leaks_before_availability(t
     assert "visible before their availability time" in result.detail
 
 
+def test_clock_gate_probe_stays_ok_when_the_store_holds_a_correction(tmp_path):
+    """A corrected bar must not read as a leak.
+
+    Both versions of the same key are stored: the original available at the bar
+    boundary, the correction available when the fix ran. `read_as_of` serves only
+    the correction, so the corrected view's earliest availability is the FIX time
+    - and reading one ns before that legitimately returns the original. Deriving
+    the earliest from the corrected view turned that into FAILING on the wall's
+    core-guarantee tile for a gate that was working.
+    """
+    import pandas as pd
+    from statuswall.evidence import OK, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    def _row(availability, low):
+        return pd.DataFrame({
+            SYMBOL: ["BTCUSDT"], VENUE: ["binance"], EVENT_TIME: [1_000],
+            INGESTION_TIME: [1_050], AVAILABILITY_TIME: [availability],
+            "low": [low], "close": [63113.2],
+        }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64",
+                   AVAILABILITY_TIME: "int64"})
+
+    append_partition(tmp_path / "store", "bars_60000000000ns", _row(1_100, 0.0), "snap1")
+    append_partition(tmp_path / "store", "bars_60000000000ns", _row(9_000, 63113.1), "fix1")
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == OK, result.detail
+    # 1100, the original's availability - not 9000, the correction's.
+    assert "nothing visible before 1100" in result.detail
+
+
+def test_clock_gate_probe_fails_a_gate_that_serves_rows_ahead_of_the_clock(tmp_path, monkeypatch):
+    """The negative check alone passes against a gate that hides everything until
+    some late cutoff and then serves the lot. This is the invariant itself: a read
+    at T may not contain a row that became available after T."""
+    import pandas as pd
+    from statuswall.evidence import FAILING, probe_clock_gated_access
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    frame = pd.DataFrame({
+        SYMBOL: ["BTCUSDT"] * 3, VENUE: ["binance"] * 3,
+        EVENT_TIME: [1_000, 2_000, 3_000], INGESTION_TIME: [1_050, 2_050, 3_050],
+        AVAILABILITY_TIME: [1_100, 2_100, 3_100], "close": [1.0, 2.0, 3.0],
+    }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64", AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path / "store", "bars_60000000000ns", frame, "snap1")
+
+    class LateOpeningGate:
+        """Hides everything below the earliest availability, then serves the lot."""
+
+        def __init__(self, store_root, dataset):
+            self._store_root, self._dataset = store_root, dataset
+
+        def read_as_of(self, sim_clock_ns, symbols=None):
+            from store.parquet_partition import read_dataset
+            everything = read_dataset(self._store_root, self._dataset)
+            if int(sim_clock_ns) < int(everything[AVAILABILITY_TIME].min()):
+                return everything.iloc[0:0]
+            return everything
+
+    import store.clock_gated_reader as cgr
+    monkeypatch.setattr(cgr, "ClockGatedReader", LateOpeningGate)
+
+    result = probe_clock_gated_access(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "carry a later availability time" in result.detail
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
