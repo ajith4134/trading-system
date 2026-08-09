@@ -126,3 +126,41 @@ def test_assess_is_pure_and_needs_no_registry():
     assert assess_venue(HEALTHY) is None
     assert assess_venue({"silent_streams": 0, "corrupting_non_gap": 1})[0] == HALT_CORRUPTING
     assert assess_venue({"silent_streams": 1845, "corrupting_non_gap": 0}) is None
+
+
+def test_every_observation_stamps_when_it_happened(tmp_path):
+    """"Not halted" means nothing without a date on it.
+
+    The status wall read this state file on 2026-08-09 and rendered "3 venue(s)
+    tradeable" from a verdict written 19 hours earlier by an ad-hoc run. A
+    reader could not tell a venue that is fine from a venue nothing has looked
+    at since yesterday, because the file did not say when it was written.
+    """
+    reg = VenueHaltRegistry(tmp_path, clock_ns=lambda: 4_000)
+    reg.observe("binance", HEALTHY)
+    assert reg.last_observed_ns("binance") == 4_000
+
+
+def test_a_venue_never_observed_has_no_observation_time(tmp_path):
+    reg = VenueHaltRegistry(tmp_path, clock_ns=lambda: 4_000)
+    assert reg.last_observed_ns("binance") is None
+
+
+def test_a_halted_venue_is_stamped_too(tmp_path):
+    """The stamp is about when it was checked, not about the verdict. A halt
+    nobody has re-examined for a day is its own thing worth knowing."""
+    reg = VenueHaltRegistry(tmp_path, clock_ns=lambda: 7_000)
+    reg.observe("binance", {"silent_streams": 0, "corrupting_non_gap": 5})
+    assert not reg.is_tradeable("binance")
+    assert reg.last_observed_ns("binance") == 7_000
+
+
+def test_a_state_file_from_before_the_stamp_existed_reads_as_unobserved(tmp_path):
+    """Fails to the cautious side. A file with no stamp cannot prove freshness,
+    and treating it as fresh is how the stale verdict got rendered as current."""
+    import json
+    (tmp_path / "venue_halts.json").write_text(json.dumps({
+        "binance": {"halted": False, "reason": None, "detail": None,
+                    "since_ns": None, "healthy_since_ns": 1}}), encoding="utf-8")
+    reg = VenueHaltRegistry(tmp_path, clock_ns=lambda: 9_000)
+    assert reg.last_observed_ns("binance") is None

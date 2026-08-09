@@ -139,7 +139,15 @@ class VenueHaltRegistry:
         verdict = assess_venue(report)
         entry = self._state.setdefault(
             venue, {"halted": False, "reason": None, "detail": None,
-                    "since_ns": None, "healthy_since_ns": None})
+                    "since_ns": None, "healthy_since_ns": None,
+                    "last_observed_ns": None})
+        # Stamped on every observation, halted or healthy, because "not halted"
+        # is only meaningful alongside when it was last checked. Without this the
+        # state file is a verdict with no date on it, and a reader cannot tell a
+        # venue that is fine from a venue nothing has looked at since yesterday -
+        # which is exactly what the status wall was doing with it, reporting a
+        # 19-hour-old judgement as current on 2026-08-09.
+        entry["last_observed_ns"] = now
 
         if verdict is not None:
             reason, detail = verdict
@@ -174,6 +182,19 @@ class VenueHaltRegistry:
         if entry is None:
             return HALT_UNKNOWN
         return entry["reason"] if entry["halted"] else None
+
+    def last_observed_ns(self, venue: str) -> int | None:
+        """When a health report was last fed in for this venue, or None.
+
+        None covers both "never" and "written by a build that predated this
+        field", and both mean the same thing to a caller: nothing here can be
+        treated as a current statement about the venue.
+        """
+        entry = self._state.get(venue)
+        if entry is None:
+            return None
+        value = entry.get("last_observed_ns")
+        return value if isinstance(value, int) else None
 
     def history(self) -> list[dict]:
         """Every halt and clear, in order. A halt nobody can explain afterwards

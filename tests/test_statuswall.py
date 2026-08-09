@@ -6,6 +6,7 @@ feature as fine when nothing measured it.
 from __future__ import annotations
 
 import datetime as dt
+import time
 from pathlib import Path
 
 import pytest
@@ -795,3 +796,100 @@ def test_not_measured_is_not_on_the_health_colour_axis():
     like "nearly fine"."""
     from statuswall.evidence import DEGRADED, NOT_MEASURED, OK
     assert STATE_STYLE[NOT_MEASURED][0] not in {STATE_STYLE[OK][0], STATE_STYLE[DEGRADED][0]}
+
+
+# --------------------------------------------------------------------------
+# the venue-health tile
+#
+# It read "health monitoring live and auto-halt armed" until 2026-08-09 and the
+# second half was measured by nothing. `observe()` and `assess_venue()` have no
+# callers anywhere in src/, so no degradation can halt a venue - and the stored
+# state the tile rendered as current had been written once, 19 hours earlier, by
+# an ad-hoc run. A green claim about a safety mechanism is worse than no claim:
+# it is what stops anyone checking whether the mechanism exists.
+# --------------------------------------------------------------------------
+
+def _health_facts(tmp_path, **report):
+    base = {"silent_streams": 0, "corrupting_non_gap": 0}
+    base.update(report)
+    return _facts(capture_root=tmp_path, venues=["binance"], reports={"binance": base})
+
+
+def test_the_tile_never_claims_the_halt_is_armed_when_nothing_feeds_it():
+    """The exact false claim. No registry state at all is the honest zero case."""
+    from statuswall.evidence import DEGRADED, probe_venue_health
+    result = probe_venue_health(_health_facts(Path("/nonexistent")))
+
+    assert result.state == DEGRADED
+    assert "NOT ARMED" in result.detail
+    assert "armed (" not in result.detail, "still asserting the halt is armed"
+
+
+def test_a_stale_halt_verdict_is_not_reported_as_current(tmp_path):
+    """The state on disk on 2026-08-09: healthy, and 19 hours old. Rendering it
+    as "3 venue(s) tradeable" is a statement about yesterday."""
+    from ops.venue_halt import VenueHaltRegistry
+    from statuswall.evidence import DEGRADED, probe_venue_health
+
+    day_ago = time.time_ns() - 19 * 3600 * 1_000_000_000
+    VenueHaltRegistry(tmp_path / "ops", clock_ns=lambda: day_ago).observe(
+        "binance", {"silent_streams": 0, "corrupting_non_gap": 0})
+
+    result = probe_venue_health(_health_facts(tmp_path))
+
+    assert result.state == DEGRADED
+    assert "NOT ARMED" in result.detail
+    assert "19h" in result.detail, result.detail
+
+
+def test_a_freshly_fed_registry_is_what_earns_the_ok(tmp_path):
+    """The state this tile is allowed to be green in - and the one nothing in
+    the system currently produces, because no caller feeds the registry."""
+    from ops.venue_halt import VenueHaltRegistry
+    from statuswall.evidence import OK, probe_venue_health
+
+    VenueHaltRegistry(tmp_path / "ops", clock_ns=time.time_ns).observe(
+        "binance", {"silent_streams": 0, "corrupting_non_gap": 0})
+
+    result = probe_venue_health(_health_facts(tmp_path))
+
+    assert result.state == OK
+    assert "1 of 1 venue(s) tradeable" in result.detail
+
+
+def test_the_tradeable_count_comes_from_the_registry_not_the_venue_list(tmp_path):
+    """It was `len(facts.reports)` - the number of venues capturing, which is not
+    a statement about whether any of them may be traded, and which can never
+    disagree with itself however halted everything is."""
+    from ops.venue_halt import VenueHaltRegistry
+    from statuswall.evidence import probe_venue_health
+
+    now = time.time_ns()
+    registry = VenueHaltRegistry(tmp_path / "ops", clock_ns=lambda: now)
+    registry.observe("binance", {"silent_streams": 0, "corrupting_non_gap": 0})
+    registry.observe("hyperliquid", {"silent_streams": 0, "corrupting_non_gap": 0})
+
+    facts = _facts(capture_root=tmp_path, venues=["binance", "hyperliquid"],
+                   reports={"binance": {"silent_streams": 0, "corrupting_non_gap": 0},
+                            "hyperliquid": {"silent_streams": 0, "corrupting_non_gap": 0},
+                            "binance-spot": {"silent_streams": 0, "corrupting_non_gap": 0}})
+    result = probe_venue_health(facts)
+
+    # binance-spot was never observed, so it is not tradeable and the tile is not
+    # allowed to count it.
+    assert "NOT ARMED" in result.detail
+    assert "binance-spot" in result.detail
+
+
+def test_a_recorded_halt_still_outranks_everything_on_the_tile(tmp_path):
+    """Whatever else is wrong, a venue someone marked untradeable has to show."""
+    from ops.venue_halt import VenueHaltRegistry
+    from statuswall.evidence import FAILING, probe_venue_health
+
+    VenueHaltRegistry(tmp_path / "ops", clock_ns=time.time_ns).observe(
+        "binance", {"silent_streams": 0, "corrupting_non_gap": 9})
+
+    result = probe_venue_health(_health_facts(tmp_path, corrupting_non_gap=9))
+
+    assert result.state == FAILING
+    assert "HALTED: binance" in result.detail

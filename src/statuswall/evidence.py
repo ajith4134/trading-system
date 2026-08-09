@@ -309,37 +309,84 @@ def probe_resource_watchdog(facts: SystemFacts) -> ProbeResult:
     )
 
 
+# A halt registry nothing has fed for this long is not guarding anything, however
+# healthy its stored verdict looks. Generous by design - the point is to catch a
+# registry with no driver at all, not to grade a slow cycle.
+_HALT_OBSERVATION_MAX_AGE_SECONDS = 3600
+
+
 def probe_venue_health(facts: SystemFacts) -> ProbeResult:
+    """Health monitoring and the auto-halt, reported separately because only one
+    of them is running.
+
+    This tile read "health monitoring live and auto-halt armed" until 2026-08-09,
+    and the second half was never measured by anything. `VenueHaltRegistry` is
+    imported here and nowhere else in `src/`; `observe()` and `assess_venue()`
+    have no callers, so nothing can record a halt. The stored state had been
+    written once, 19 hours earlier, by an ad-hoc run - and the tile rendered its
+    "3 venue(s) tradeable" as a current fact.
+
+    Rule 8's exact failure, inside the board built to prevent it, and worse than
+    a missing tile: a green claim about a safety mechanism is what stops anyone
+    checking whether the mechanism exists.
+
+    Both halves are now measured. Health monitoring comes from `capture_health`,
+    which is real. The halt comes from `last_observed_ns` on the registry's own
+    state - when nothing has fed it, the tile says so instead of inferring that
+    silence means safety.
+    """
+    if not facts.reports:
+        return ProbeResult(NOT_BUILT, "no venue data", "capture_health")
+
     alarms = []
     for venue, report in facts.reports.items():
         if report.get("silent_streams"):
             alarms.append(f"{venue}: {report['silent_streams']} silence events")
         if report.get("corrupting_non_gap"):
             alarms.append(f"{venue}: {report['corrupting_non_gap']} corrupting events")
-    if not facts.reports:
-        return ProbeResult(NOT_BUILT, "no venue data", "capture_health")
-    # The halt registry is read, never driven from here: a display must not
-    # decide whether a venue may be traded. It reports what the registry
-    # recorded, so a halt shows on the wall with the reason that caused it.
+    monitoring = "; ".join(alarms) if alarms else "no venue alarms"
+
+    # The registry is read, never driven from here: a display must not decide
+    # whether a venue may be traded.
     from ops.venue_halt import VenueHaltRegistry
 
     registry = VenueHaltRegistry(Path(facts.capture_root) / "ops")
-    halted = {v: registry.halt_reason(v) for v in facts.reports
-              if not registry.is_tradeable(v)}
+    proof = "src/ops/venue_halt.py last_observed_ns + capture_health"
 
-    detail = "; ".join(alarms) if alarms else "no venue alarms"
+    halted = {v: registry.halt_reason(v) for v in facts.reports
+              if not registry.is_tradeable(v) and registry.last_observed_ns(v) is not None}
     if halted:
+        # A recorded halt outranks everything else here, stale or not: a venue
+        # someone marked untradeable stays untradeable until something says
+        # otherwise.
         return ProbeResult(
             FAILING,
-            f"HALTED: " + ", ".join(f"{v} ({r})" for v, r in sorted(halted.items()))
-            + f". {detail}",
-            "src/ops/venue_halt.py + capture_health")
+            "HALTED: " + ", ".join(f"{v} ({r})" for v, r in sorted(halted.items()))
+            + f". {monitoring}", proof)
+
+    ages = {venue: _seconds_since(registry.last_observed_ns(venue))
+            for venue in facts.reports}
+    unfed = sorted(v for v, age in ages.items()
+                   if age > _HALT_OBSERVATION_MAX_AGE_SECONDS)
+    if unfed:
+        freshest = min((ages[v] for v in unfed), default=float("inf"))
+        # An unstamped state file cannot prove "never" - only that it carries no
+        # observation this code can date. Saying "never" there would be a smaller
+        # version of the over-claim this probe was rewritten to remove.
+        when = ("never, or not since the registry began stamping"
+                if freshest == float("inf") else f"not for {freshest / 3600:.0f}h")
+        return ProbeResult(
+            DEGRADED,
+            f"monitoring live, AUTO-HALT NOT ARMED - nothing has fed the halt "
+            f"registry for {', '.join(unfed)} ({when}), so no degradation can "
+            f"halt a venue. {monitoring}", proof)
+
+    tradeable = [v for v in facts.reports if registry.is_tradeable(v)]
     return ProbeResult(
         DEGRADED if alarms else OK,
-        f"health monitoring live and auto-halt armed ({detail}); "
-        f"{len(facts.reports)} venue(s) tradeable",
-        "src/ops/venue_halt.py + capture_health",
-    )
+        f"monitoring live and auto-halt fed within the hour; "
+        f"{len(tradeable)} of {len(facts.reports)} venue(s) tradeable. {monitoring}",
+        proof)
 
 
 def probe_data_quality_score(facts: SystemFacts) -> ProbeResult:
