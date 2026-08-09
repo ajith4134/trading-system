@@ -304,10 +304,16 @@ def probe_open_interest(facts: SystemFacts) -> ProbeResult:
 
 def probe_mark_price(facts: SystemFacts) -> ProbeResult:
     # `premiumIndex` is the REST poll that replaced the withheld `markPrice`
-    # websocket stream on 2026-08-03; it carries mark, index and settlement
-    # price in one body. `markPrice` stays listed so an archive written before
-    # that date still answers this tile.
-    return _silent_stream_probe(facts, ("premiumIndex", "markPrice"), "mark price")
+    # websocket stream on 2026-08-03; it carries binance's mark and index in
+    # one body. `markPrice` stays listed so an archive written before that
+    # date still answers this tile. The other carriers, verified on stored
+    # frames 2026-08-09: bybit's `linearTickers` (markPrice, indexPrice) and
+    # hyperliquid's `assetCtx` (markPx, oraclePx, midPx) - the oracle-vs-mark
+    # distinction the catalogue flags as commonly missed is exactly the
+    # difference between those two bodies, and both are on disk per minute.
+    return _silent_stream_probe(
+        facts, ("premiumIndex", "markPrice", "linearTickers", "assetCtx"),
+        "mark/index/oracle price")
 
 
 def probe_gap_detection(facts: SystemFacts) -> ProbeResult:
