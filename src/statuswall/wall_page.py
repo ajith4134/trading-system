@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 from statuswall.catalogue import Feature
 from statuswall.evidence import (
-    BUILT, DEGRADED, FAILING, NOT_BUILT, OK, PARTIAL, SEVERITY_ORDER, STATE_LABEL,
-    STOPPED, ProbeResult, SystemFacts,
+    BUILT, DEGRADED, FAILING, NOT_BUILT, NOT_MEASURED, OK, PARTIAL, SEVERITY_ORDER,
+    STATE_LABEL, STOPPED, ProbeResult, SystemFacts,
 )
 
 # Semantic status colour is separate from any accent: these hues mean one thing
@@ -22,13 +22,20 @@ STATE_STYLE = {
     FAILING:   ("#FF4D4D", "#3A0F12", "#FF8A8A", "#C0121B", "#FFE3E3"),
     DEGRADED:  ("#FFB020", "#3A2A08", "#FFD27A", "#9A6300", "#FFF1D6"),
     STOPPED:   ("#C08BFF", "#2A1B3D", "#D9B8FF", "#6B3FA0", "#F0E4FF"),
+    # Hazard yellow-white, deliberately not on the green-to-red axis: this state
+    # is not a degree of health, it is the absence of a reading. Anything on that
+    # axis invites being read as "nearly OK".
+    NOT_MEASURED: ("#E8E06A", "#2E2C0F", "#F2ECA0", "#7A7100", "#FBF8DC"),
     PARTIAL:   ("#4FC3E8", "#0E2A34", "#9BDCF2", "#0F6382", "#DFF3FA"),
     OK:        ("#3FD68A", "#0D2C1E", "#8FE9BE", "#12764A", "#DDF6E9"),
     BUILT:     ("#7C96A8", "#17222A", "#A9BFCC", "#3C5A6C", "#E3EBF0"),
     NOT_BUILT: ("#4A5560", "#101820", "#66727D", "#6E7B85", "#E8ECEF"),
 }
 
-_ATTENTION_STATES = (FAILING, DEGRADED, STOPPED)
+# An unmeasured feature belongs here for the same reason it has its own colour:
+# a tile nobody probed is a question, and the panel is where questions go. Being
+# absent from this list is how it would quietly become invisible.
+_ATTENTION_STATES = (FAILING, DEGRADED, STOPPED, NOT_MEASURED)
 
 
 @dataclass(frozen=True)

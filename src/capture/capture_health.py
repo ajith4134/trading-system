@@ -229,6 +229,11 @@ def build_report(root: Path, venue: str, date: str,
     # is the routine bucket that is never alerted on.
     silent_streams = 0
     silent_stream_names: set[str] = set()
+    # The newest descriptor-pool report, or None when the recorder never wrote
+    # one. None is a distinct answer from a healthy pool and is kept distinct all
+    # the way to the tile: a display must not read "nobody measured" as "fine".
+    writer_pool: dict | None = None
+    writer_pool_ts_ns: int | None = None
     for event in events:
         # A ledger line can be valid JSON and still carry a mistyped severity,
         # which `read_all` has no reason to reject. Bucketing it keeps one odd
@@ -241,6 +246,14 @@ def build_report(root: Path, venue: str, date: str,
             silent_streams += 1
             if isinstance(event.stream, str):
                 silent_stream_names.add(event.stream)
+        elif event.kind == "writer_pool":
+            # Newest wins rather than last-seen: `read_all` makes no ordering
+            # promise across a day's ledger files, and a tile quoting an older
+            # report would understate a pool that started evicting later.
+            ts = event.ts_ns if isinstance(event.ts_ns, int) else None
+            if isinstance(event.detail, dict) and (
+                    writer_pool_ts_ns is None or (ts is not None and ts >= writer_pool_ts_ns)):
+                writer_pool, writer_pool_ts_ns = dict(event.detail), ts
         elif severity == SEVERITY_CORRUPTING:
             # `unwritable_stream_total` is the worst thing in the ledger - a
             # stream being dropped entirely - and it is not a gap.
@@ -271,6 +284,11 @@ def build_report(root: Path, venue: str, date: str,
         "corrupting_non_gap": corrupting_non_gap,
         "silent_streams": silent_streams,
         "silent_stream_names": sorted(silent_stream_names),
+        # None when the recorder never reported its descriptor pool - a fresh
+        # install, or a version predating the report. Never defaulted to a
+        # healthy-looking zero.
+        "writer_pool": writer_pool,
+        "writer_pool_ts_ns": writer_pool_ts_ns,
         "raw_data_bytes": raw_data_bytes,
         # Per stream-symbol, so a live stream cannot report presence on behalf of
         # a dead sibling - see `_measure_raw_bytes_by_stream`. A stream that

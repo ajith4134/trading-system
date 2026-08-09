@@ -27,17 +27,24 @@ from statuswall.catalogue import Feature, normalise_key
 FAILING = "failing"
 DEGRADED = "degraded"
 STOPPED = "stopped"
+# Built, and nothing measured it. Distinct from NOT_BUILT, which says the thing
+# does not exist, and distinct from OK, which is a measurement that came back
+# clean. Rule 8: absence of evidence renders as its own state, never as green and
+# never as blank. It sorts above PARTIAL because being blind about something that
+# exists is worse than knowing it is half-done.
+NOT_MEASURED = "not_measured"
 PARTIAL = "partial"
 OK = "ok"
 BUILT = "built"
 NOT_BUILT = "not_built"
 
-SEVERITY_ORDER = [FAILING, DEGRADED, STOPPED, PARTIAL, OK, BUILT, NOT_BUILT]
+SEVERITY_ORDER = [FAILING, DEGRADED, STOPPED, NOT_MEASURED, PARTIAL, OK, BUILT, NOT_BUILT]
 
 STATE_LABEL = {
     FAILING: "FAILING",
     DEGRADED: "DEGRADED",
     STOPPED: "STOPPED",
+    NOT_MEASURED: "NOT MEASURED",
     PARTIAL: "PARTIAL",
     OK: "OK",
     BUILT: "BUILT",
@@ -666,6 +673,95 @@ def probe_cost_engine(facts: SystemFacts) -> ProbeResult:
         f"newest {age_hours:.1f}h old; funding and book datasets present", proof)
 
 
+# A pool this full is one burst of new symbols away from evicting, and eviction
+# is the thing this tile exists to make visible before it becomes routine.
+_POOL_HEADROOM_WARNING = 0.80
+# Older than this and the newest report describes a recorder that is no longer
+# running - twice the reporting cadence, so one missed interval is not an alarm.
+_POOL_REPORT_MAX_AGE_SECONDS = 600
+
+
+def _seconds_since(ts_ns: object) -> float:
+    """Age of a nanosecond timestamp, with "no timestamp" reading as infinitely old.
+
+    Infinity rather than zero on purpose: a missing timestamp must not make a
+    report look freshly taken. Everything here grades staleness upward, so the
+    unknown case lands on the cautious side by construction.
+    """
+    if not isinstance(ts_ns, int):
+        return float("inf")
+    return (time.time_ns() - ts_ns) / 1e9
+
+
+def probe_writer_descriptor_pool(facts: SystemFacts) -> ProbeResult:
+    """What the open-hour pool is doing, per venue, as the recorder last reported it.
+
+    The failure this watches for is not dramatic and that is exactly why it needs
+    a tile. A pool evicting steadily loses nothing and breaks nothing - it just
+    reopens hours over and over, writing shorter zstd frames and compressing
+    worse, and it looks identical on the board to a pool doing nothing. The only
+    difference is a counter.
+
+    Read from the ledger rather than from a live process, because the wall must
+    keep reporting after the recorder that produced the number has gone. That is
+    also why staleness is graded: a healthy report from a recorder which died
+    three hours ago is a fact about three hours ago.
+    """
+    proof = "capture_health writer_pool, recorded by VenueRecorder"
+    if not facts.reports:
+        return ProbeResult(NOT_BUILT, "no venue data", proof)
+
+    reported = {venue: report["writer_pool"] for venue, report in facts.reports.items()
+                if report.get("writer_pool")}
+    unreported = sorted(set(facts.reports) - set(reported))
+    if not reported:
+        # The honest answer for a recorder predating the report, or one that has
+        # not run since. Not OK, and certainly not zero evictions.
+        return ProbeResult(
+            NOT_MEASURED,
+            f"no venue has reported its descriptor pool ({', '.join(sorted(facts.reports))})",
+            proof)
+
+    evicting, tight, lines = [], [], []
+    for venue, pool in sorted(reported.items()):
+        evicted = int(pool.get("evicted", 0))
+        peak, budget = int(pool.get("peak_open_hours", 0)), int(pool.get("budget", 0))
+        share = peak / budget if budget else 0.0
+        lines.append(f"{venue}: peak {peak} of {budget} open hours "
+                     f"({share * 100:.0f}%), {evicted} evicted")
+        if evicted:
+            evicting.append(venue)
+        elif share >= _POOL_HEADROOM_WARNING:
+            tight.append(venue)
+
+    stale = sorted(
+        venue for venue, report in facts.reports.items()
+        if venue in reported and _seconds_since(report.get("writer_pool_ts_ns"))
+        > _POOL_REPORT_MAX_AGE_SECONDS)
+
+    detail = "; ".join(lines)
+    if unreported:
+        detail += f". Not reported by {', '.join(unreported)}"
+    if stale:
+        detail += (f". Newest report from {', '.join(stale)} is over "
+                   f"{_POOL_REPORT_MAX_AGE_SECONDS // 60} minutes old")
+
+    if evicting:
+        # Degraded, not failing: nothing is lost. Every evicted hour was finished
+        # properly and reopened on the next frame. What it costs is compression,
+        # and a recorder evicting at all means the descriptor budget is now the
+        # binding constraint rather than a safety net.
+        return ProbeResult(DEGRADED, f"evicting open hours - {detail}", proof)
+    if stale or unreported:
+        return ProbeResult(PARTIAL, detail, proof)
+    if tight:
+        return ProbeResult(
+            DEGRADED,
+            f"within {100 - _POOL_HEADROOM_WARNING * 100:.0f}% of the budget - {detail}",
+            proof)
+    return ProbeResult(OK, f"bounded, nothing evicted - {detail}", proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -694,6 +790,7 @@ PROBES = {
     "stored bar price validity gate": probe_bar_price_validity,
     "clock gated access api": probe_clock_gated_access,
     "cost engine round trip breakeven gate": probe_cost_engine,
+    "bounded writer descriptor pool": probe_writer_descriptor_pool,
 }
 
 

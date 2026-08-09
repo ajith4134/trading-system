@@ -80,6 +80,21 @@ _RESERVED_FDS = 256
 # to work with is treated as a limit to ignore. A recorder that evicts on almost
 # every frame is not capturing.
 _MIN_OPEN_WRITERS = 64
+# How often the pool reports itself to the ledger, in stream time. Five minutes
+# is fine enough that a wall tile is never quoting a number from a different
+# regime, and coarse enough to cost 288 lines per venue per day against a ledger
+# that already carries hundreds of thousands of gap events.
+_POOL_REPORT_INTERVAL_NS = 300_000_000_000
+# How long a session waits before its first report. Not zero: a recorder opens
+# its hours as symbols first trade, so a report from the first frame describes a
+# pool holding one hour and nothing else. Measured live 2026-08-09 - a recorder
+# four minutes into a run, holding 1,158 descriptors, had told the ledger
+# "peak 1 of 32640 open hours (0%)", which is a true statement about the first
+# millisecond and a misleading one about the tile it renders.
+#
+# Short enough that a healthy recorder is on the board within half a minute, and
+# a session that dies before reaching it is covered by the close-time report.
+_POOL_WARMUP_NS = 30_000_000_000
 
 
 def max_open_writers_for(soft_limit: int) -> int:
@@ -237,6 +252,12 @@ class VenueRecorder:
         self._open_writers: OrderedDict[tuple[str, str], RawWriter] = OrderedDict()
         self._max_open_writers = (max_open_writers if max_open_writers is not None
                                   else max_open_writers_for(_descriptor_soft_limit()))
+        self._peak_open_writers = 0
+        # None until the first frame arms it, because the warm-up is measured
+        # from stream time and there is none before then.
+        self._next_pool_report_ns: int | None = None
+        self._pool_reported_at_close = False
+        self._last_frame_recv_ns: int | None = None
         # Zero so the first frame sweeps once and sets the real boundary. At that
         # point there are no writers yet, so the sweep costs nothing.
         self._next_hour_starts_ns = 0
@@ -272,6 +293,18 @@ class VenueRecorder:
         else:
             self._open_writers[key] = writer
             self._evict_until_within_budget()
+            # After eviction, not before. The insert above only marks the key -
+            # `append` is what opens the files - so a pool momentarily holding
+            # budget+1 entries never held budget+1 descriptors, and a peak taken
+            # before the eviction reported "9 of 8 open hours (112%)" on the
+            # tile. A number over 100% of its own budget reads as a bug in the
+            # board, which is a good way to have a real one ignored.
+            #
+            # Only an insert can grow the pool, so this is here rather than on
+            # every frame. It is what says how close the budget came to biting on
+            # a run that evicted nothing - the difference between headroom and luck.
+            if len(self._open_writers) > self._peak_open_writers:
+                self._peak_open_writers = len(self._open_writers)
         return writer
 
     def _evict_until_within_budget(self) -> None:
@@ -661,8 +694,75 @@ class VenueRecorder:
                 # so it cannot be reported silent in the same breath.
                 self._check_stream_health(t_recv_ns)
                 self._settle_writers_whose_hour_ended(t_recv_ns)
+                self._report_writer_pool_if_due(t_recv_ns)
         finally:
             self.close()
+
+    def _report_writer_pool_if_due(self, t_recv_ns: int) -> None:
+        """Put the descriptor pool's state in the ledger on a fixed cadence.
+
+        Emitted whether or not anything was evicted, and that is the point. A
+        pool reported only when it evicts leaves the wall unable to tell "nothing
+        was evicted" from "nothing ever looked", and Rule 8 says those must not
+        render the same. This event is what makes the tile's OK a measurement
+        rather than an absence of bad news.
+
+        The cadence also makes staleness legible: the tile reads the newest event
+        and can say how old it is, so a recorder that died hours ago stops
+        reporting a healthy pool on its behalf.
+
+        One integer compare per frame, for the same reason `_check_stream_health`
+        is guarded that way - see `_settle_writers_whose_hour_ended` for what an
+        unguarded per-frame walk did to the event loop here.
+        """
+        # Kept so `close()` can stamp its final report without reading the clock.
+        # `_record_unwritable_stream_totals` states the constraint: close is
+        # called from a `finally` that tests reach with a finite clock iterator
+        # sized to the frames they feed, so a clock read there is one every such
+        # test has to be rewritten to supply.
+        self._last_frame_recv_ns = t_recv_ns
+        if self._next_pool_report_ns is None:
+            self._next_pool_report_ns = t_recv_ns + _POOL_WARMUP_NS
+            return
+        if t_recv_ns < self._next_pool_report_ns:
+            return
+        self._next_pool_report_ns = t_recv_ns + _POOL_REPORT_INTERVAL_NS
+        self._record_writer_pool(t_recv_ns)
+
+    def _record_writer_pool(self, ts_ns: int) -> None:
+        self._ledger.record(LedgerEvent(
+            ts_ns=ts_ns, venue=self._venue.name, stream="writer_pool",
+            kind="writer_pool", severity=SEVERITY_INFO,
+            detail={"open_hours": len(self._open_writers),
+                    "peak_open_hours": self._peak_open_writers,
+                    "budget": self._max_open_writers,
+                    "evicted": self._stats["writers_evicted"]},
+        ))
+
+    def _record_writer_pool_totals(self) -> None:
+        """Report the pool one last time as the session ends.
+
+        The cadence alone is not enough, and the gap is worst exactly where this
+        tile matters. A recorder dying every forty seconds - which is what
+        `Errno 24` did to this one on 2026-08-09 - never reaches the five-minute
+        interval, so the only line it ever writes is the one from its first
+        frame: zero evicted, one hour open. The tile would have read OK straight
+        through the crash loop it exists to catch.
+
+        Measured while building it, before this existed: a run that evicted 72
+        times reported `evicted: 0` to the ledger, because the first frame was
+        the only report it ever made.
+
+        Stamped with the last frame's receive time rather than the clock, for the
+        same reason `_record_unwritable_stream_totals` reads no clock here. A
+        session that saw no frames has no such time and reports nothing - which
+        is the honest answer: nothing measured the pool, so the tile must say
+        nothing measured the pool.
+        """
+        if self._pool_reported_at_close or self._last_frame_recv_ns is None:
+            return
+        self._pool_reported_at_close = True
+        self._record_writer_pool(self._last_frame_recv_ns)
 
     def _record_malformed_frame(self, payload: str, t_recv_ns: int) -> None:
         """Flag a frame that is not JSON - and store it verbatim anyway."""
@@ -748,6 +848,13 @@ class VenueRecorder:
         # one, because it leaves no file anywhere to notice the absence of.
         try:
             self._record_silent_streams(self._clock_ns())
+        except Exception as exc:
+            errors.append(exc)
+        # Before the writers are closed, so `open_hours` describes the session
+        # rather than the shutdown - a pool reported after everything is closed
+        # says zero open hours on every run, which is true and useless.
+        try:
+            self._record_writer_pool_totals()
         except Exception as exc:
             errors.append(exc)
         for writer in self._writers.values():

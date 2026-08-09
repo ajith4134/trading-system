@@ -676,3 +676,122 @@ def test_price_validity_probe_judges_what_the_reader_serves_not_the_files(tmp_pa
     _bars_partition(tmp_path, "fixed", symbol="BTCUSDT", low=63870.0, available_at=9_999)
 
     assert probe_bar_price_validity(_facts(capture_root=tmp_path)).state == OK
+
+
+# --------------------------------------------------------------------------
+# the descriptor pool tile
+#
+# The failure it watches for is quiet by nature: a pool evicting steadily loses
+# nothing and breaks nothing, it just reopens hours and compresses worse, and it
+# looks identical on the board to a pool doing nothing. The only difference is a
+# counter, so a tile that cannot tell them apart is not worth having.
+# --------------------------------------------------------------------------
+
+def _pool_report(evicted=0, peak=100, budget=32640, ts_ns=None, **extra):
+    import time
+    return {"writer_pool": {"evicted": evicted, "peak_open_hours": peak,
+                            "budget": budget, "open_hours": peak},
+            "writer_pool_ts_ns": time.time_ns() if ts_ns is None else ts_ns,
+            **extra}
+
+
+def test_pool_tile_is_not_measured_when_no_recorder_ever_reported_one():
+    """Rule 8, and the whole reason this state exists. A recorder predating the
+    report, or one that has not run, must not read as a healthy pool - "nobody
+    looked" and "nothing was evicted" are different facts."""
+    from statuswall.evidence import NOT_MEASURED, probe_writer_descriptor_pool
+    facts = _facts(reports={"binance": {"writer_pool": None, "writer_pool_ts_ns": None}})
+
+    result = probe_writer_descriptor_pool(facts)
+
+    assert result.state == NOT_MEASURED
+    assert "binance" in result.detail
+
+
+def test_pool_tile_is_ok_only_when_a_report_says_nothing_was_evicted():
+    from statuswall.evidence import OK, probe_writer_descriptor_pool
+    facts = _facts(reports={"binance": _pool_report(evicted=0, peak=1200)})
+
+    result = probe_writer_descriptor_pool(facts)
+
+    assert result.state == OK
+    assert "nothing evicted" in result.detail
+    # The numbers, not just the verdict: a tile whose proof cannot be checked
+    # against the ledger is an assertion.
+    assert "1200 of 32640" in result.detail
+
+
+def test_pool_tile_degrades_as_soon_as_anything_is_evicted():
+    """Degraded rather than failing - no frame is lost. But a recorder evicting
+    at all means the descriptor budget has become the binding constraint rather
+    than the safety net it is meant to be."""
+    from statuswall.evidence import DEGRADED, probe_writer_descriptor_pool
+    facts = _facts(reports={"binance": _pool_report(evicted=5216, peak=384, budget=384)})
+
+    result = probe_writer_descriptor_pool(facts)
+
+    assert result.state == DEGRADED
+    assert "5216 evicted" in result.detail
+
+
+def test_pool_tile_warns_before_eviction_starts_rather_than_after():
+    """A pool at 80% of budget is one burst of new listings away from evicting.
+    Reporting only after the fact makes the tile a historian."""
+    from statuswall.evidence import DEGRADED, OK, probe_writer_descriptor_pool
+
+    tight = probe_writer_descriptor_pool(
+        _facts(reports={"binance": _pool_report(evicted=0, peak=90, budget=100)}))
+    roomy = probe_writer_descriptor_pool(
+        _facts(reports={"binance": _pool_report(evicted=0, peak=50, budget=100)}))
+
+    assert tight.state == DEGRADED
+    assert roomy.state == OK
+
+
+def test_pool_tile_says_so_when_the_newest_report_is_stale():
+    """A healthy report from a recorder that died three hours ago is a fact about
+    three hours ago. Rule 8: staleness has to be loud, not implied."""
+    import time
+    from statuswall.evidence import PARTIAL, probe_writer_descriptor_pool
+    old = time.time_ns() - 3 * 3600 * 1_000_000_000
+    facts = _facts(reports={"binance": _pool_report(ts_ns=old)})
+
+    result = probe_writer_descriptor_pool(facts)
+
+    assert result.state == PARTIAL
+    assert "minutes old" in result.detail
+
+
+def test_pool_tile_names_the_venues_that_reported_nothing():
+    """One venue reporting is not every venue reporting, and the difference is
+    exactly where a blind spot would hide."""
+    from statuswall.evidence import PARTIAL, probe_writer_descriptor_pool
+    facts = _facts(reports={"binance": _pool_report(),
+                            "hyperliquid": {"writer_pool": None, "writer_pool_ts_ns": None}})
+
+    result = probe_writer_descriptor_pool(facts)
+
+    assert result.state == PARTIAL
+    assert "Not reported by hyperliquid" in result.detail
+
+
+def test_an_unmeasured_tile_reaches_the_attention_panel_and_renders():
+    """Rule 8 again: a board with no way to show a state has not been tested
+    against it. Unmeasured must be visible, not merely defined."""
+    from statuswall.evidence import NOT_MEASURED
+    features = [_feature("Bounded writer descriptor pool")]
+    results = {features[0].key: ProbeResult(NOT_MEASURED, "nobody reported one", "ledger")}
+
+    page = render_wall(WallInput(features, results, _facts()))
+
+    assert "NOT MEASURED" in page
+    assert "nobody reported one" in page
+    assert "Needs attention" in page
+
+
+def test_not_measured_is_not_on_the_health_colour_axis():
+    """It is not a degree of health, so it must not borrow a hue that reads as
+    one. Sharing green's or amber's colour is how "nobody looked" starts looking
+    like "nearly fine"."""
+    from statuswall.evidence import DEGRADED, NOT_MEASURED, OK
+    assert STATE_STYLE[NOT_MEASURED][0] not in {STATE_STYLE[OK][0], STATE_STYLE[DEGRADED][0]}

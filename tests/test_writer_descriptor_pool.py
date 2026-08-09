@@ -281,3 +281,115 @@ def test_a_writer_that_closed_with_an_error_refuses_to_resume_from_memory(tmp_pa
         writer.close()
 
     assert writer._closed_hour is None, "resumed from memory after a failed close"
+
+
+# --------------------------------------------------------------------------
+# what the wall gets to see
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_pool_reports_its_totals_to_the_ledger_when_the_session_ends(tmp_path: Path):
+    """The five-minute cadence alone misses the case the tile exists for.
+
+    A recorder dying every forty seconds - which is what `Errno 24` did on
+    2026-08-09 - never reaches the interval, so the only line it writes is the
+    one from its first frame: nothing evicted, one hour open. Measured while
+    building this: a run that evicted 72 times reported `evicted: 0`, and the
+    tile read OK straight through the thrash.
+    """
+    from capture.capture_ledger import read_all
+
+    symbols = [f"SYM{i}USDT" for i in range(40)]
+    rec = recorder(tmp_path, symbols, cap=8)
+    await rec.consume(_frames([trade(s, i) for _ in range(2)
+                               for i, s in enumerate(symbols)]))
+
+    events = [e for e in read_all(tmp_path, "binance-spot", "2026-08-02")
+              if e.kind == "writer_pool"]
+    # This session's clock never advances, so it never clears the warm-up and the
+    # periodic report never fires - exactly the shape of a recorder that dies in
+    # its first seconds. The close-time report is therefore the ONLY line, and it
+    # has to carry the whole session or the thrash is invisible.
+    assert len(events) == 1, [e.detail for e in events]
+    assert events[0].detail["evicted"] == rec.stats()["writers_evicted"] > 0
+    assert events[0].detail["budget"] == 8
+
+
+@pytest.mark.asyncio
+async def test_the_reported_peak_never_exceeds_the_budget(tmp_path: Path):
+    """The insert marks a key; `append` is what opens the files. A peak counted
+    before eviction reported "9 of 8 open hours (112%)" - a number over 100% of
+    its own budget reads as a bug in the board, which is a good way to get a real
+    one ignored."""
+    symbols = [f"SYM{i}USDT" for i in range(40)]
+    rec = recorder(tmp_path, symbols, cap=8)
+    await rec.consume(_frames([trade(s, i) for i, s in enumerate(symbols)]))
+
+    assert rec._peak_open_writers == 8
+
+
+@pytest.mark.asyncio
+async def test_a_thrashing_pool_reaches_the_tile_as_degraded(tmp_path: Path):
+    """End to end, because every link in this chain is somewhere the number
+    could quietly become zero: recorder -> ledger -> capture_health -> probe."""
+    import time as _time
+    from capture.capture_health import build_report
+    from statuswall.evidence import DEGRADED, SystemFacts, probe_writer_descriptor_pool
+
+    now_ns = _time.time_ns()
+    venue = BinanceSpotVenue()
+    symbols = [f"SYM{i}USDT" for i in range(40)]
+    rec = VenueRecorder(venue, venue.tail_specs(symbols), tmp_path,
+                        clock_ns=lambda: now_ns, max_open_writers=8)
+    await rec.consume(_frames([trade(s, i) for _ in range(2)
+                               for i, s in enumerate(symbols)]))
+
+    date = _time.strftime("%Y-%m-%d", _time.gmtime(now_ns / 1e9))
+    report = build_report(tmp_path, "binance-spot", date, free_bytes=10**12, daily_bytes=1.0)
+    facts = SystemFacts(
+        measured_at=date, capture_root=tmp_path, repo_root=tmp_path, capture_running=True,
+        capture_pids=[1], latest_capture_date=date, hours_since_capture=0.0,
+        venues=["binance-spot"], reports={"binance-spot": report}, free_bytes=10**12,
+        daily_bytes=1.0, runway_days=99.0, runway_status="ok", restart_counts={})
+
+    result = probe_writer_descriptor_pool(facts)
+    assert result.state == DEGRADED
+    assert "evicting open hours" in result.detail
+    assert f"{rec.stats()['writers_evicted']} evicted" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_the_first_report_waits_for_a_pool_worth_reporting(tmp_path: Path):
+    """A recorder opens its hours as symbols first trade, so a report from the
+    first frame describes a pool holding one hour.
+
+    Measured live 2026-08-09: a recorder four minutes into a run and holding
+    1,158 descriptors had told the ledger `peak 1 of 32640 open hours (0%)` -
+    true about the first millisecond, misleading as a tile. A session that dies
+    inside the warm-up is not lost; the close-time report carries its totals.
+    """
+    from capture.capture_ledger import read_all
+    from capture.venue_recorder import _POOL_WARMUP_NS
+
+    venue = BinanceSpotVenue()
+    symbols = [f"SYM{i}USDT" for i in range(30)]
+    # One frame per symbol inside the warm-up, then one past it. The clock holds
+    # its last value rather than running out: `close` reads it too, and a test
+    # that has to count the recorder's clock reads breaks whenever one is added.
+    past_warmup = _BASE_NS + _POOL_WARMUP_NS + 1
+    stamps = [_BASE_NS + i for i in range(len(symbols))] + [past_warmup]
+    reads = iter(range(len(stamps)))
+
+    def clock():
+        return stamps[next(reads, len(stamps) - 1)]
+    rec = VenueRecorder(venue, venue.tail_specs(symbols), tmp_path,
+                        clock_ns=clock, max_open_writers=64)
+    await rec.consume(_frames(
+        [trade(s, i) for i, s in enumerate(symbols)] + [trade(symbols[0], 999)]))
+
+    periodic = [e for e in read_all(tmp_path, "binance-spot", "2026-08-02")
+                if e.kind == "writer_pool"]
+    assert periodic, "the pool never reported itself"
+    # The first line on the ledger is the one written after the warm-up, and by
+    # then every symbol has opened its hour.
+    assert periodic[0].detail["peak_open_hours"] == 30
