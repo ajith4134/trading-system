@@ -465,14 +465,23 @@ def test_spot_polls_its_own_depth_endpoint():
     assert "/api/v3/depth" in specs["depthSnapshot"].url
 
 
-def test_the_snapshot_polls_far_slower_than_the_funding_poll():
-    """Measured 2026-08-08 off the x-mbx-used-weight header: a limit=1000 spot
-    snapshot costs 50 request-weight, against 1 for premiumIndex. At the
-    funding cadence it would spend the whole budget on books."""
+def test_every_poll_carries_its_own_cadence_and_neither_runs_at_one_second():
+    """Two different budgets, and the funding one is not what it looks like.
+
+    The snapshot's limit is request weight: measured 2026-08-08 off
+    x-mbx-used-weight, a limit=1000 snapshot costs 50 against premiumIndex's 1.
+
+    The funding poll's limit is WRITES. One request at weight 10 is nothing; the
+    857-instrument response it returns is 857 files. At a one-second cadence
+    that killed capture on 2026-08-09 - the recorder crash-looped every ~120s on
+    `ConnectionClosedError`, the websocket keepalive going unanswered while the
+    event loop wrote. 783 ms for the opens on the first tick alone.
+    """
     specs = {s.stream: s for s in BinanceVenue().poll_specs(["BTCUSDT"])}
-    assert specs["depthSnapshot"].interval_seconds is not None
     assert specs["depthSnapshot"].interval_seconds >= 30
-    assert specs["premiumIndex"].interval_seconds is None      # keeps the run cadence
+    assert specs["premiumIndex"].interval_seconds >= 30, (
+        "a fan-out poll must never inherit the run's one-second cadence - "
+        "the cost is the writes, not the request")
 
 
 def test_spot_still_polls_no_funding():

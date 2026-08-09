@@ -63,6 +63,26 @@ _ALL_MARKET_SYMBOL = "ALL"
 # Measured from the venue's own x-mbx-used-weight header, not assumed: the
 # all-market premiumIndex is 10 against the per-symbol form's 1.
 _PREMIUM_INDEX_ALL_WEIGHT = 10
+# Sixty seconds, and it is a WRITE budget rather than a request budget.
+#
+# At one second this killed capture. Measured 2026-08-09 on the live recorder:
+# it crash-looped every ~120s on `ConnectionClosedError: no close frame received
+# or sent` - the websocket keepalive going unanswered because the event loop was
+# busy. The request is one call at weight 10, but the RESPONSE is 857
+# instruments, and each one is a file: 783 ms for the opens on the first tick,
+# then 857 appends a second, each of which fsyncs on its own flush cadence.
+#
+# This box has been here before. `4ba56eb` fixed an hour-boundary sweep that
+# "blocked the event loop for seconds on fsync", and the sweep's own docstring
+# records a recorder dying with a keepalive ping timeout for the same reason.
+# The lesson that did not transfer: what costs is not the poll, it is the writes
+# the poll fans out into.
+#
+# Sixty seconds is still sixty times finer than the 8-hourly settlement this
+# feed exists to record. Mark and index prices ride on the same response and do
+# move continuously - that resolution is what was traded away, deliberately,
+# because a feed that kills capture records nothing at all.
+_PREMIUM_INDEX_INTERVAL_SECONDS = 60.0
 
 # The stream name each event routes to. It must equal the `stream` on the
 # StreamSpec that subscribed to it (`channel.split("@")[0]`), or one logical
@@ -140,6 +160,7 @@ class BinanceVenue:
         specs = [
             PollSpec(self.name, _POLL_STREAM, _ALL_MARKET_SYMBOL,
                      _PREMIUM_INDEX_URL, weight=_PREMIUM_INDEX_ALL_WEIGHT,
+                     interval_seconds=_PREMIUM_INDEX_INTERVAL_SECONDS,
                      fan_out=True),
         ]
         # Only the core symbols carry depth diffs, so only they need a snapshot

@@ -20,10 +20,12 @@ _FUNDING_STREAM = "assetCtx"
 _ALL_MARKET_SYMBOL = "ALL"
 # Funding here is HOURLY on an oracle price and capped at 4%/hour - different
 # economics from Binance's 8-hourly mark, and the reason this venue's carry is a
-# distinct signal rather than a copy. Five seconds is far finer than an hourly
-# rate needs, and the response also carries mark, oracle, premium and open
-# interest, which do move continuously.
-_FUNDING_INTERVAL_SECONDS = 5.0
+# distinct signal rather than a copy. Sixty seconds, matching binance and for
+# the same reason: the cost is not the request, it is the 232 files the response
+# fans out into. Still sixty times finer than the hourly settlement; the mark,
+# oracle and open interest that ride along are what the coarser cadence trades
+# away.
+_FUNDING_INTERVAL_SECONDS = 60.0
 # NOT measured against this venue's own limits, unlike the Binance weights.
 # Hyperliquid's budget is consensus-bound and shaped differently, and nothing
 # here has read a rate-limit header from it. Set to Binance's all-market cost as
