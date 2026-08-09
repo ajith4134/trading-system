@@ -627,6 +627,15 @@
     "tests/test_spot_perp_basis.py",
     "src/features/spot_perp_basis.py"
    ]
+  },
+  "features.peg_monitor": {
+   "learning": "pass: no constant in the decision path is typed. The peg LEVEL is the median of each asset's own reference window (so EURI is judged at 1.156, not at a hardcoded 1.0), the breach distance is that asset's own worst wobble while it held, and the floor under it is the cost engine's measured round-trip from verified fee schedules. The fixed part is four declared items - window length, two dispersion bands, minimum history - named in the module docstring rather than buried",
+   "reasoning": "pass: which assets are pegged is measured, never spelled, and the live data proves the spelling rule wrong in both directions - TUSDT is the T token at $0.0037 and is refused on its volatility, while EURIUSDT is a real peg at $1.16 that a dollar assumption would report permanently broken. Assets between the bands are returned undecided rather than forced. Two structural defects were found by their own failing tests: judging a bar against statistics it contributed to made a depeg invisible, and classifying on the whole window made a peg that walked disappear as 'never was a peg'",
+   "depth": "fail: nothing consumes a breach. The intended consumer is position sizing on assets quoted in a broken peg, and no sizer exists - so by the master test this cannot yet change what the system does when it is wrong. Recorded as a fail rather than deferred: this is the tail_specs shape, and the wall's tile says the same thing rather than reading green",
+   "evidence": [
+    "tests/test_peg_monitor.py",
+    "src/features/peg_monitor.py"
+   ]
   }
  }
 }

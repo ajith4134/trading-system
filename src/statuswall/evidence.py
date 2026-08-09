@@ -294,6 +294,33 @@ def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
                                 "liquidation feed")
 
 
+def probe_peg_monitor(facts: SystemFacts) -> ProbeResult:
+    # Runs the monitor rather than checking that a file exists. Caps at
+    # PARTIAL and says why: nothing consumes a breach yet, because position
+    # sizing does not exist - the module's own axis verdict fails DEPTH for
+    # the same reason. A green tile over an unwired monitor is the Rule 8
+    # failure this board was built to prevent.
+    try:
+        from features.peg_monitor import monitor_pegs
+        table = monitor_pegs(facts.capture_root / "store", int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"peg monitor failed: {error}",
+                           "features/peg_monitor.py")
+    if table.rows.empty:
+        return ProbeResult(NOT_BUILT, "no asset has enough history to judge",
+                           "capture/store/bars")
+    breached = int((table.rows["verdict"] == "BREACHED").sum())
+    moved = int(table.rows["level_moved"].sum())
+    unfloored = int((~table.rows["threshold_floored"]).sum())
+    return ProbeResult(
+        PARTIAL,
+        f"{len(table.rows)} pegged (venue, asset) pairs judged: {breached} breached, "
+        f"{moved} at a moved level, {unfloored} on thresholds no verified fee "
+        f"schedule could floor; {table.skipped['not_pegged']} assets measured "
+        f"not-pegged. Nothing consumes a breach - no sizer exists",
+        "features/peg_monitor.py + capture/store/bars")
+
+
 def probe_spot_perp_basis(facts: SystemFacts) -> ProbeResult:
     # Computes the actual number rather than checking that files exist: the
     # basis is a derivation, and the only proof a derivation works is running
@@ -1064,6 +1091,7 @@ PROBES = {
     "open interest": probe_open_interest,
     "perpetual funding rate history schedule": probe_funding_rates,
     "spot perp basis term structure": probe_spot_perp_basis,
+    "stablecoin peg monitor": probe_peg_monitor,
     "mark price vs index vs oracle price per venue": probe_mark_price,
     "gap detection provenance flagged backfill": probe_gap_detection,
     "per feed data quality score": probe_data_quality_score,
