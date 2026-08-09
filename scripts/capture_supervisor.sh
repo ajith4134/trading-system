@@ -42,6 +42,28 @@ HEALTHY_RUN_SECONDS=120
 
 mkdir -p "$STATE_DIR"
 
+# One raw and one index file stay open per (stream, symbol) for the whole hour,
+# so the broad tail needs file descriptors in proportion to the universe: 2,115
+# symbols is over 4,000 before websockets and the ops files. The startup script
+# runs this under `sudo -H bash -lc`, which hands the recorder PAM's default soft
+# limit of 1024 - and the hard limit here is 524288, so the ceiling was never the
+# system's, only the one inherited.
+#
+# Measured 2026-08-09: the binance recorder died on `OSError: [Errno 24] Too many
+# open files` with exactly 1024 descriptors open, and the supervisor restarted it
+# into the same wall. Median run length that day was 39 seconds against 880 the
+# day before - each cycle losing the frames in flight and tearing whichever hour
+# was mid-write.
+#
+# Raised, not removed: a leak should still fail rather than exhaust the box, and
+# a failure to raise must not stop capture starting at the old limit.
+NOFILE_TARGET=65536
+if ! ulimit -n "$NOFILE_TARGET" 2>/dev/null; then
+    printf '{"ts":"%s","venue":"%s","event":"nofile_raise_refused","target":%d,"soft":"%s","hard":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$VENUE" "$NOFILE_TARGET" \
+        "$(ulimit -Sn)" "$(ulimit -Hn)" >>"$RESTART_LOG"
+fi
+
 child_pid=""
 archive_repair_pid=""
 
