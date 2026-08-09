@@ -251,6 +251,90 @@ def _hour_files(capture_root: Path, venue: str, date: str,
     return sorted(folder.glob(f"{stream}_{symbol}_*{RAW_SUFFIX}"))
 
 
+def _end_of_day_ns(date: str) -> int:
+    """The last instant of a UTC day, for classifying that day's universe.
+
+    End rather than start: a pair listed at 14:00 traded that day and its bars
+    will be built, so classifying against 00:00 would leave it unclassified and
+    silently excluded on its first day. Point-in-time is still preserved - the
+    partition never sees a snapshot recorded after the day being built.
+    """
+    return (int(dt.datetime.fromisoformat(date)
+                .replace(tzinfo=dt.timezone.utc).timestamp()) + 86_400) * 1_000_000_000 - 1
+
+
+def _dollar_quoted_only(symbols: list[str], capture_root: Path, venue: str, date: str,
+                        include_non_dollar: bool = False) -> list[str]:
+    """Drop what is not priced in dollars, and say what was dropped.
+
+    Ledger row DM-066 settled this in 2026-08-08 - *filter to dollar quotes, do
+    not convert*, because conversion needs an FX rate the archive does not
+    capture and a wrong rate corrupts a P&L silently. The library was written
+    that day and **nothing called it**, so `--symbols ALL` kept building every
+    captured pair. Measured on the live store 2026-08-09 before this: 536
+    non-dollar symbols held 89,097 bars, 29.4% of binance-spot's, priced in TRY,
+    EUR, JPY, IDR, BRL, BTC and ETH.
+
+    That is not a storage problem, it is a correctness one, and it bites at the
+    layer above: a cross-sectional strategy ranking those bars compares a lira
+    price against a USDT price as if both were dollars.
+
+    Only what is KNOWN not to be a dollar is dropped. Two other groups survive
+    and are named instead:
+
+    - **unknown** - in the quote map, quote asset not recognised. A new
+      stablecoin lands here, and excluding it would shrink the tradeable universe
+      on the day it listed with no symptom. See `QuotePartition`.
+    - **unlisted** - captured, and absent from the snapshot entirely. A pair
+      delisted since, or one captured before the universe was recorded.
+
+    Both are the same epistemic state as each other and the opposite of a
+    finding: not known to be a dollar is not known not to be. Dropping either
+    would be assuming a denomination, which is the thing
+    `QuoteAssetsNotRecorded` refuses to do three lines down. Building them costs
+    storage; dropping them costs a market.
+    """
+    from store.quote_currency import QuoteAssetsNotRecorded, dollar_quoted_symbols
+
+    if include_non_dollar:
+        print(f"--include-non-dollar: building all {len(symbols)} captured symbol(s) "
+              f"regardless of denomination", file=sys.stderr)
+        return symbols
+    try:
+        partition = dollar_quoted_symbols(capture_root, venue, _end_of_day_ns(date))
+    except QuoteAssetsNotRecorded as refusal:
+        # Refuses rather than falling back to "build everything". A mixed-currency
+        # store is the failure this exists to prevent, and producing one quietly
+        # because a snapshot was missing would be the same defect wearing an
+        # excuse. The supervisor retries; the message names the fix.
+        raise SystemExit(f"refusing to build {venue} {date}: {refusal}")
+
+    known_non_dollar = set(partition.non_dollar)
+    kept = [s for s in symbols if s not in known_non_dollar]
+    dropped = sorted(set(symbols) & known_non_dollar)
+    if dropped:
+        by_quote: dict[str, int] = {}
+        for symbol in dropped:
+            quote = partition.non_dollar[symbol]
+            by_quote[quote] = by_quote.get(quote, 0) + 1
+        top = ", ".join(f"{q} {n}" for q, n in
+                        sorted(by_quote.items(), key=lambda kv: -kv[1])[:8])
+        print(f"excluding {len(dropped)} non-dollar-quoted symbol(s) ({top}); "
+              f"building {len(kept)}", file=sys.stderr)
+
+    # Both reported, never folded into the exclusion count, and never silent -
+    # a symbol built without a known denomination is a fact the operator owns.
+    unknown = sorted(set(symbols) & set(partition.unknown))
+    unlisted = sorted(set(kept) - set(partition.dollar) - set(unknown))
+    if unknown:
+        print(f"UNCLASSIFIED quote asset, built anyway: {unknown[:10]}"
+              f"{' ...' if len(unknown) > 10 else ''}", file=sys.stderr)
+    if unlisted:
+        print(f"NOT IN THE UNIVERSE SNAPSHOT, built anyway: {unlisted[:10]}"
+              f"{' ...' if len(unlisted) > 10 else ''}", file=sys.stderr)
+    return kept
+
+
 def captured_symbols(capture_root: Path, venue: str, date: str) -> list[str]:
     """Every symbol whose trade tape this venue-day actually holds, sorted.
 
@@ -633,8 +717,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--venue", required=True, choices=sorted(_TRADE_STREAMS))
     parser.add_argument("--date", required=True, help="UTC date, YYYY-MM-DD")
     parser.add_argument("--symbols", required=True,
-                        help=f"comma-separated, or {SYMBOLS_ALL} for every symbol "
-                             f"whose trade tape this venue-day holds")
+                        help=f"comma-separated, or {SYMBOLS_ALL} for every "
+                             f"DOLLAR-QUOTED symbol whose trade tape this venue-day "
+                             f"holds. A named list is built as given - the filter "
+                             f"applies to {SYMBOLS_ALL}, which is where a universe "
+                             f"gets chosen rather than stated")
+    parser.add_argument("--include-non-dollar", action="store_true",
+                        help=f"build every captured symbol under {SYMBOLS_ALL}, "
+                             f"including pairs quoted in TRY, EUR, BTC and the rest. "
+                             f"For archaeology on what was captured, not for a store "
+                             f"anything ranks across")
     parser.add_argument("--capture-root", default=str(Path.home() / "capture"))
     parser.add_argument("--store-root", default=str(Path.home() / "capture" / "store"))
     parser.add_argument("--interval-ns", type=int, default=DEFAULT_INTERVAL_NS)
@@ -662,6 +754,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"{len(symbols)} symbol(s) captured for {args.venue} {args.date}",
               file=sys.stderr)
+        symbols = _dollar_quoted_only(
+            symbols, Path(args.capture_root), args.venue, args.date,
+            include_non_dollar=args.include_non_dollar)
+        if not symbols:
+            print(f"no dollar-quoted symbols captured for {args.venue} {args.date}; "
+                  f"nothing to build", file=sys.stderr)
+            return 0
     else:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
         if not symbols:

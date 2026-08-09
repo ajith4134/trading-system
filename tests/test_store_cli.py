@@ -245,10 +245,25 @@ def test_a_batched_run_builds_every_symbol_without_holding_them_all(tmp_path, mo
     assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
 
 
+def _record_quote_assets(tmp_path, venue, symbols, ts_ns=1785600000_000_000_000):
+    """A universe snapshot naming each symbol's quote currency.
+
+    Required by `--symbols ALL` since 2026-08-09: the build refuses rather than
+    assume a denomination, because a store mixing TRY and USDT prices is what the
+    filter exists to prevent and producing one quietly would be the same defect
+    wearing an excuse.
+    """
+    from capture.universe_tracker import UniverseTracker
+    UniverseTracker(tmp_path, venue).record_snapshot(
+        list(symbols), ts_ns,
+        quote_assets={s: ("USDT" if s.endswith("USDT") else s[-3:]) for s in symbols})
+
+
 def _two_symbol_capture(tmp_path, monkeypatch):
     from capture.frame_codec import IndexEntry
     from store import cli as store_cli
 
+    _record_quote_assets(tmp_path, "binance", ["BTCUSDT", "ETHUSDT"])
     source = tmp_path / "raw" / "binance" / "2026-08-02"
     source.mkdir(parents=True)
     for symbol in ("BTCUSDT", "ETHUSDT"):
@@ -1017,3 +1032,163 @@ def test_the_rebuild_after_a_live_day_hour_closes_is_a_new_snapshot(tmp_path):
     assert complete["bars"] == 1
     assert complete["snapshot_id"] != skipped["snapshot_id"], (
         "the rebuild must not be refused as a duplicate of the incomplete build")
+
+
+# --------------------------------------------------------------------------
+# the dollar-quote filter on --symbols ALL
+#
+# Ledger row DM-066 settled this on 2026-08-08 - filter to dollar quotes, do not
+# convert - and the library written that day had zero callers, so ALL kept
+# building everything. Measured on the live store 2026-08-09: 536 non-dollar
+# symbols held 89,097 bars, 29.4% of binance-spot's, priced in TRY, EUR, JPY,
+# IDR, BRL, BTC and ETH. Not a storage problem - a cross-sectional strategy
+# ranking those compares a lira price against a USDT price as if both were dollars.
+# --------------------------------------------------------------------------
+
+def _mixed_currency_capture(tmp_path, monkeypatch, symbols, quote_assets):
+    from capture.frame_codec import IndexEntry
+    from capture.universe_tracker import UniverseTracker
+    from store import cli as store_cli
+
+    UniverseTracker(tmp_path, "binance-spot").record_snapshot(
+        list(quote_assets), 1785600000_000_000_000, quote_assets=quote_assets)
+
+    source = tmp_path / "raw" / "binance-spot" / "2026-08-02"
+    source.mkdir(parents=True)
+    for symbol in symbols:
+        (source / f"trade_{symbol}_2026-08-02T00.ndjson.zst").write_bytes(symbol.encode())
+        (source / f"trade_{symbol}_2026-08-02T00.idx.zst").write_bytes(b"placeholder")
+
+    entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
+                       seq=None, kind="data", esc=False)
+
+    def one_trade_per_file(raw, idx):
+        symbol = Path(raw).name.split("_")[1]
+        return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
+                 f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
+
+    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    return store_cli
+
+
+def _built_symbols(tmp_path):
+    dataset = tmp_path / "store" / "bars_60000000000ns"
+    return sorted(p.name.removeprefix("symbol=") for p in dataset.iterdir())
+
+
+def test_all_does_not_build_a_pair_quoted_in_lira(tmp_path, monkeypatch):
+    """The 312 TRY pairs, in miniature."""
+    store_cli = _mixed_currency_capture(
+        tmp_path, monkeypatch, ["BTCUSDT", "BTCTRY"],
+        {"BTCUSDT": "USDT", "BTCTRY": "TRY"})
+
+    code = store_cli.main([
+        "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "ALL",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1"])
+
+    assert code == 0
+    assert _built_symbols(tmp_path) == ["BTCUSDT"]
+
+
+def test_a_named_symbol_list_is_built_as_given(tmp_path, monkeypatch):
+    """The filter applies to ALL, which is where a universe gets CHOSEN. A named
+    list is a universe STATED, and second-guessing it would make the flag a
+    suggestion."""
+    store_cli = _mixed_currency_capture(
+        tmp_path, monkeypatch, ["BTCUSDT", "BTCTRY"],
+        {"BTCUSDT": "USDT", "BTCTRY": "TRY"})
+
+    code = store_cli.main([
+        "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "BTCTRY",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store")])
+
+    assert code == 0
+    assert _built_symbols(tmp_path) == ["BTCTRY"]
+
+
+def test_an_unrecognised_quote_asset_is_built_and_named(tmp_path, monkeypatch, capsys):
+    """A new stablecoin lands here. Excluding it would shrink the tradeable
+    universe on the day it listed, with no symptom - so it is built, and said
+    out loud rather than folded into the exclusion count."""
+    store_cli = _mixed_currency_capture(
+        tmp_path, monkeypatch, ["BTCUSDT", "BTCNEWCOIN"],
+        {"BTCUSDT": "USDT", "BTCNEWCOIN": "NEWCOIN"})
+
+    store_cli.main([
+        "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "ALL",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1"])
+
+    assert _built_symbols(tmp_path) == ["BTCNEWCOIN", "BTCUSDT"]
+    assert "UNCLASSIFIED quote asset" in capsys.readouterr().err
+
+
+def test_a_captured_symbol_absent_from_the_snapshot_is_built_and_named(tmp_path, monkeypatch, capsys):
+    """Same epistemic state as an unknown quote asset: not known to be a dollar
+    is not known NOT to be. Dropping it would be assuming a denomination, which
+    is the thing the refusal below exists to avoid."""
+    store_cli = _mixed_currency_capture(
+        tmp_path, monkeypatch, ["BTCUSDT", "DELISTEDPAIR"], {"BTCUSDT": "USDT"})
+
+    store_cli.main([
+        "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "ALL",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1"])
+
+    assert _built_symbols(tmp_path) == ["BTCUSDT", "DELISTEDPAIR"]
+    assert "NOT IN THE UNIVERSE SNAPSHOT" in capsys.readouterr().err
+
+
+def test_the_build_refuses_when_no_snapshot_says_what_anything_is_priced_in(tmp_path, monkeypatch):
+    """Falling back to "build everything" would produce the mixed-currency store
+    this filter exists to prevent - the same defect, wearing an excuse."""
+    from capture.frame_codec import IndexEntry
+    from store import cli as store_cli
+
+    source = tmp_path / "raw" / "binance-spot" / "2026-08-02"
+    source.mkdir(parents=True)
+    (source / "trade_BTCUSDT_2026-08-02T00.ndjson.zst").write_bytes(b"x")
+    (source / "trade_BTCUSDT_2026-08-02T00.idx.zst").write_bytes(b"x")
+    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [])
+
+    with pytest.raises(SystemExit) as refusal:
+        store_cli.main([
+            "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "ALL",
+            "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store")])
+
+    assert "refusing to build" in str(refusal.value)
+    assert "record_universe_snapshot" in str(refusal.value)
+
+
+def test_the_escape_hatch_builds_everything_and_says_it_did(tmp_path, monkeypatch, capsys):
+    """Archaeology on what was captured is a real need. Doing it silently is not."""
+    store_cli = _mixed_currency_capture(
+        tmp_path, monkeypatch, ["BTCUSDT", "BTCTRY"],
+        {"BTCUSDT": "USDT", "BTCTRY": "TRY"})
+
+    store_cli.main([
+        "--venue", "binance-spot", "--date", "2026-08-02", "--symbols", "ALL",
+        "--include-non-dollar",
+        "--capture-root", str(tmp_path), "--store-root", str(tmp_path / "store"),
+        "--batch-size", "1"])
+
+    assert _built_symbols(tmp_path) == ["BTCTRY", "BTCUSDT"]
+    assert "--include-non-dollar" in capsys.readouterr().err
+
+
+def test_the_day_being_built_is_classified_at_its_END(tmp_path, monkeypatch):
+    """A pair listed at 14:00 traded that day and its bars will be built, so
+    classifying against 00:00 would leave it unlisted on its first day. Still
+    point-in-time: a snapshot recorded after the day is never used."""
+    from capture.universe_tracker import UniverseTracker
+    from store.cli import _end_of_day_ns, _dollar_quoted_only
+
+    UniverseTracker(tmp_path, "binance-spot").record_snapshot(
+        ["LATEUSDT", "LATETRY"], _end_of_day_ns("2026-08-02") - 3_600_000_000_000,
+        quote_assets={"LATEUSDT": "USDT", "LATETRY": "TRY"})
+
+    kept = _dollar_quoted_only(["LATEUSDT", "LATETRY"], tmp_path,
+                               "binance-spot", "2026-08-02")
+
+    assert kept == ["LATEUSDT"]

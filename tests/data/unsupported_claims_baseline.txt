@@ -14,10 +14,10 @@
 # entry point or hand-run CLI. The code exists and its tests pass; nothing calls
 # it. Recorded 2026-08-09.
 
-# store.quote_currency - the dollar-quote filter. Library correct, applied
-# nowhere: store.cli --symbols ALL builds every captured symbol unfiltered, so
-# 539 of 2,123 non-dollar-quoted pairs go into bars. Needs a call site.
-DM-066
+# DM-066 cleared 2026-08-09: `store.cli --symbols ALL` now calls
+# `dollar_quoted_symbols`, so the filter has the call site it was missing. Left
+# here as a comment only, because the ratchet fails on a baselined row that is no
+# longer unsupported and that is how this file keeps its teeth.
 
 # execution.state_recovery - reconciliation against exchange truth on restart.
 # Nothing runs it at recorder start. Phase 2, named in DECISIONS.md §13.
