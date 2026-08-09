@@ -89,5 +89,10 @@ start_as_user "capture_supervisor.sh binance-spot" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh binance-spot BTCUSDT,ETHUSDT,SOLUSDT ALL"
 start_as_user "capture_supervisor.sh hyperliquid" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh hyperliquid BTC,ETH,SOL"
+# Last, and after the capture supervisors on purpose: it reports on what they
+# produce, and starting it first would have it observe an empty archive and
+# record "nothing captured" as this boot's first verdict.
+start_as_user "health_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/health_supervisor.sh"
 
 log "startup-script finished"

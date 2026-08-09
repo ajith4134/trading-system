@@ -120,14 +120,46 @@ def _paper_transport(intent: OrderIntent, client_order_id: str) -> dict:
             "venue": intent.venue, "paper": True}
 
 
+class KillSwitchEngaged(RuntimeError):
+    """A kill is in force, so nothing may be journalled or submitted."""
+
+
 def run(store_root: Path, wal_root: Path, symbol: str, venue: str,
         participation: Decimal, target_bps: Decimal,
-        notional: Decimal, max_hold_bars: int = 5, out=sys.stdout) -> Tally:
-    """Walk the tape one bar at a time and report every outcome."""
+        notional: Decimal, max_hold_bars: int = 5, out=sys.stdout,
+        kill_root: Path | None = None) -> Tally:
+    """Walk the tape one bar at a time and report every outcome.
+
+    Refuses to start while a kill is in force. `ops.watchdog` calls the kill file
+    "checked by anything that would trade", and until now nothing checked it -
+    `is_killed` had zero callers, so the most consequential control in the system
+    was a function with no reader.
+
+    This path is paper and journals to a WAL rather than to a venue, so the gate
+    costs nothing today. That is the argument for putting it here rather than
+    later: the call site is correct now and stays correct when the same path
+    carries capital, and a kill switch first wired in on the day it is needed is
+    a kill switch first tested on that day.
+    """
+    from ops.watchdog import is_killed, kill_reason
+
+    kill_root = Path(kill_root) if kill_root is not None else Path(wal_root)
+    if is_killed(kill_root):
+        raise KillSwitchEngaged(
+            f"a kill is in force at {kill_root}: {kill_reason(kill_root)}. "
+            f"Nothing was journalled.")
+
     reader = ClockGatedReader(store_root, BARS_DATASET)
     # Read once at the end of time only to learn WHICH bars exist; every decision
     # below re-reads at that bar's own availability time.
     catalogue = reader.read_as_of(2**62, symbols=[symbol])
+    # Emptiness first. `read_dataset` returns a frame with NO COLUMNS when the
+    # dataset is absent, so filtering on "venue" before checking raises KeyError
+    # instead of reporting the honest "nothing to prove" a page below - a crash
+    # on the one path a first-time reader hits, having not built a store yet.
+    if catalogue.empty:
+        print(f"no bars for {symbol} on {venue}; nothing to prove", file=out)
+        return Tally()
     catalogue = catalogue[catalogue["venue"] == venue].sort_values("event_time_ns")
     if catalogue.empty:
         print(f"no bars for {symbol} on {venue}; nothing to prove", file=out)
@@ -374,14 +406,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wal-root", required=True,
                         help="where the order intent WAL is written. Required so a "
                              "demo run cannot land in a real trading journal")
+    parser.add_argument("--kill-root", default=None,
+                        help="where the watchdog writes its kill file; defaults to "
+                             "the WAL root, so a demo checks the same switch that "
+                             "guards the journal it writes to")
     args = parser.parse_args(argv)
 
     if args.participation <= 0 or args.participation > 1:
         parser.error("--participation must be in (0, 1]")
 
-    tally = run(Path(args.store_root), Path(args.wal_root), args.symbol, args.venue,
-                args.participation, args.target_bps, args.notional,
-                max_hold_bars=args.max_hold_bars)
+    try:
+        tally = run(Path(args.store_root), Path(args.wal_root), args.symbol, args.venue,
+                    args.participation, args.target_bps, args.notional,
+                    max_hold_bars=args.max_hold_bars,
+                    kill_root=Path(args.kill_root) if args.kill_root else None)
+    except KillSwitchEngaged as refusal:
+        # Loud and nonzero. A kill switch whose refusal reads like a quiet no-op
+        # is one an operator assumes did not fire.
+        print(f"REFUSED: {refusal}", file=sys.stderr)
+        return 2
     _report(tally, args.symbol, args.venue)
     return 0
 
