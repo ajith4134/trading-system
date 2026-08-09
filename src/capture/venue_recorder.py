@@ -135,9 +135,24 @@ _SILENCE_CHECK_INTERVAL_NS = 1_000_000_000
 # 4.2-4.4 ms on this box's ext4, at a median fsync of 1.40 ms. Closing binance's
 # ~600 writers in one pass therefore blocks the event loop for 2.65 s and spot's
 # ~1,000 for 4.17 s, which pauses the socket and backdates `t_recv_ns` for every
-# frame behind the stall. 25 keeps one slice near 110 ms while still draining a
-# thousand writers within a second of frames.
-_MAX_HOUR_CLOSES_PER_FRAME = 25
+# frame behind the stall.
+#
+# Lowered from 25 to 4 on 2026-08-09, taking one slice from ~110 ms to ~18 ms.
+#
+# **This is a reduction, not a diagnosis, and the distinction matters.** The
+# binance recorder still died at the hour boundary with `sent 1011 (internal
+# error) keepalive ping timeout` after the funding fan-out was moved to its own
+# process, so the stall is somewhere in this rotation - but 25 slices of 110 ms
+# do not add to the 20 s a keepalive timeout needs, and what does has not been
+# identified. `binance-spot` carries MORE writers and survives the same boundary,
+# which rules out writer count as the discriminator and leaves the real cause
+# open.
+#
+# The load-bearing change is `_PING_TIMEOUT_SECONDS` in `capture.cli`, which
+# stops a stall of unknown length from killing a healthy socket. This one just
+# makes the stall smaller. The backlog is not in a hurry either way: an hour has
+# 3,600 seconds and a rotated file is finished, not urgent.
+_MAX_HOUR_CLOSES_PER_FRAME = 4
 # However slow a stream claims to be, silence becomes reportable eventually -
 # an hour, one file rotation. Without it a stream can talk its way into never
 # being checked again, and detection has to be bounded regardless of history.

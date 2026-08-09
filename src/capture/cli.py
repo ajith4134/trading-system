@@ -66,6 +66,23 @@ def archive_name_for(venue_key: str) -> str:
 
 
 _OPEN_TIMEOUT_SECONDS = 20
+# Keepalive, and this pair is a deliberate trade rather than a default.
+#
+# The recorder dies at hour boundaries with `sent 1011 (internal error) keepalive
+# ping timeout` - the library's own keepalive task failing to be scheduled while
+# this process is closing hundreds of hour files, each fsyncing twice. websockets
+# defaults to a 20 s timeout, which a rotation under load exceeds.
+#
+# **This does not stop the stall; it stops the stall from killing a healthy
+# socket.** Frames buffer in the kernel during it and are read afterwards. The
+# honest cost is detection latency: a genuinely dead connection now takes up to
+# 90 s to notice rather than 40. That is the right way round for this system -
+# the supervisor reconnects in seconds and a false disconnect costs a torn hour
+# on every stream, while a real one costs only the extra seconds.
+#
+# The interval is unchanged, so a dead socket is still probed just as often.
+_PING_INTERVAL_SECONDS = 20
+_PING_TIMEOUT_SECONDS = 90
 _UNIVERSE_TIMEOUT_SECONDS = 20
 _INTERRUPTED_EXIT_CODE = 130       # 128 + SIGINT, the shell convention
 
@@ -94,7 +111,9 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
     """
     loop = asyncio.get_running_loop()
     async with websockets.connect(venue.ws_url(specs),
-                                  open_timeout=_OPEN_TIMEOUT_SECONDS) as socket:
+                                  open_timeout=_OPEN_TIMEOUT_SECONDS,
+                                  ping_interval=_PING_INTERVAL_SECONDS,
+                                  ping_timeout=_PING_TIMEOUT_SECONDS) as socket:
         for message in venue.subscribe_messages(specs):
             await socket.send(json.dumps(message))
         deadline = loop.time() + duration_seconds
