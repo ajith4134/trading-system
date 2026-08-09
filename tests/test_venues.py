@@ -565,3 +565,78 @@ def test_hyperliquid_quotes_every_perp_in_usd():
                             {"name": "OLD", "isDelisted": True}],
                "collateralToken": 0}
     assert v.parse_quote_assets(payload) == {"BTC": "USD", "ETH": "USD"}
+
+
+# --------------------------------------------------------------------------
+# hyperliquid funding — positionally paired, which is the whole danger
+# --------------------------------------------------------------------------
+
+def test_hyperliquid_polls_funding_because_it_pushes_none():
+    """`poll_specs` returned [] until 2026-08-09, on the note that this venue
+    pushes everything it is asked for. True of trades and books, and it left
+    funding uncaptured entirely - on a venue whose funding is hourly on an
+    oracle price and capped at 4%/hour, materially different economics from
+    Binance's 8-hourly mark."""
+    from capture.venues.hyperliquid import HyperliquidVenue
+
+    specs = HyperliquidVenue().poll_specs(["BTC"])
+
+    assert len(specs) == 1
+    assert specs[0].fan_out is True
+    assert specs[0].method == "POST", "/info answers no GET"
+    assert specs[0].body == '{"type":"metaAndAssetCtxs"}'
+
+
+def test_hyperliquid_pairs_the_universe_with_its_contexts_by_position():
+    from capture.venues.hyperliquid import HyperliquidVenue
+
+    v = HyperliquidVenue()
+    spec = v.poll_specs(["BTC"])[0]
+
+    pairs = v.fan_out_poll(spec, [
+        {"universe": [{"name": "BTC"}, {"name": "ETH"}]},
+        [{"funding": "0.001", "markPx": "64000"}, {"funding": "0.002", "markPx": "3000"}],
+    ])
+
+    assert [name for name, _ in pairs] == ["BTC", "ETH"]
+    assert pairs[0][1]["funding"] == "0.001"
+    assert pairs[1][1]["funding"] == "0.002"
+
+
+def test_the_coin_is_merged_into_the_stored_record():
+    """A ctx names no coin. A record that cannot be decoded without the half of
+    the response that was not stored beside it is not an archive."""
+    from capture.venues.hyperliquid import HyperliquidVenue
+
+    v = HyperliquidVenue()
+    pairs = v.fan_out_poll(v.poll_specs(["BTC"])[0], [
+        {"universe": [{"name": "BTC"}]}, [{"funding": "0.001"}]])
+
+    assert pairs[0][1]["coin"] == "BTC"
+
+
+def test_a_length_mismatch_drops_the_whole_response_rather_than_zipping():
+    """`zip` truncates to the shorter side without a word, and the halves are
+    joined by INDEX - so an off-by-one silently files BTC's funding under ETH
+    and every carry number downstream is wrong while every file looks
+    well-formed. The venue changing shape must be loud, not lossy."""
+    from capture.venues.hyperliquid import HyperliquidVenue
+
+    v = HyperliquidVenue()
+    spec = v.poll_specs(["BTC"])[0]
+
+    assert v.fan_out_poll(spec, [
+        {"universe": [{"name": "BTC"}, {"name": "ETH"}]},
+        [{"funding": "0.001"}],
+    ]) == [], "zipped a mismatched response instead of refusing it"
+
+
+def test_a_response_of_the_wrong_shape_splits_into_nothing():
+    from capture.venues.hyperliquid import HyperliquidVenue
+
+    v = HyperliquidVenue()
+    spec = v.poll_specs(["BTC"])[0]
+
+    assert v.fan_out_poll(spec, {"universe": []}) == []
+    assert v.fan_out_poll(spec, [{"universe": [{"name": "BTC"}]}]) == []
+    assert v.fan_out_poll(spec, [{"nope": []}, []]) == []
