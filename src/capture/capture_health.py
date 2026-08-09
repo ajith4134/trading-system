@@ -137,6 +137,27 @@ def _has_captured_anything(root: Path) -> bool:
     return next(raw_root.rglob(f"*{RAW_SUFFIX}"), None) is not None
 
 
+def _measure_raw_newest_mtime_by_stream(folder: Path) -> dict[str, int]:
+    """Newest file mtime (ns) per stream-symbol, for the recovery rule below.
+
+    A silence event and a file write are both timestamped facts, and their
+    order is the difference between "died" and "was quiet, then spoke again".
+    The mtime is the cheapest honest timestamp the archive already carries -
+    no new bookkeeping, and it cannot disagree with the bytes it describes.
+    """
+    if not folder.is_dir():
+        return {}
+    newest: dict[str, int] = {}
+    for path in folder.glob(f"*{RAW_SUFFIX}"):
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            continue          # rotated or removed mid-scan
+        stream_symbol = path.name[: -len(RAW_SUFFIX)].rsplit("_", 1)[0]
+        newest[stream_symbol] = max(newest.get(stream_symbol, 0), mtime_ns)
+    return newest
+
+
 def _measure_raw_bytes_by_stream(folder: Path) -> dict[str, int]:
     """Bytes of captured data in one venue-day folder, split per stream-symbol.
 
@@ -229,6 +250,7 @@ def build_report(root: Path, venue: str, date: str,
     # is the routine bucket that is never alerted on.
     silent_streams = 0
     silent_stream_names: set[str] = set()
+    silent_symbol_ts: dict[str, int] = {}
     # The newest descriptor-pool report, or None when the recorder never wrote
     # one. None is a distinct answer from a healthy pool and is kept distinct all
     # the way to the tile: a display must not read "nobody measured" as "fine".
@@ -246,6 +268,20 @@ def build_report(root: Path, venue: str, date: str,
             silent_streams += 1
             if isinstance(event.stream, str):
                 silent_stream_names.add(event.stream)
+                # Per (stream, symbol), in `raw_bytes_by_stream`'s own key
+                # format, because silence is recorded per symbol and the name
+                # alone cannot say WHICH one died. On a market-wide event
+                # stream that granularity is the whole question: 700 quiet
+                # liquidation symbols are the market being calm, and folding
+                # them into one name made the five delivering symbols read as
+                # part of a dead feed (measured on bybit-liq's first day).
+                # The newest event timestamp is kept per symbol so recovery
+                # can be judged against it below.
+                symbol = (event.detail or {}).get("symbol")
+                if isinstance(symbol, str) and symbol:
+                    entry = f"{event.stream}_{symbol}"
+                    ts = event.ts_ns if isinstance(event.ts_ns, int) else 0
+                    silent_symbol_ts[entry] = max(silent_symbol_ts.get(entry, 0), ts)
         elif event.kind == "writer_pool":
             # Newest wins rather than last-seen: `read_all` makes no ordering
             # promise across a day's ledger files, and a tile quoting an older
@@ -259,9 +295,20 @@ def build_report(root: Path, venue: str, date: str,
             # stream being dropped entirely - and it is not a gap.
             corrupting_non_gap += 1
 
-    raw_bytes_by_stream = _measure_raw_bytes_by_stream(
-        _venue_day_folder(root, venue, date))
+    day_folder = _venue_day_folder(root, venue, date)
+    raw_bytes_by_stream = _measure_raw_bytes_by_stream(day_folder)
     raw_data_bytes = sum(raw_bytes_by_stream.values())
+
+    # The recovery rule: a silence event is superseded by any write that
+    # postdates it. Without this, one quiet spell early in a day condemned the
+    # stream for the whole day - the ledger records an incident once per day
+    # and a recovered stream had no way to say so until midnight. The event
+    # stays in the ledger (it happened); only the CURRENT-state report stops
+    # repeating it.
+    newest_mtime = _measure_raw_newest_mtime_by_stream(day_folder)
+    silent_stream_symbols = sorted(
+        entry for entry, event_ts in silent_symbol_ts.items()
+        if newest_mtime.get(entry, 0) <= event_ts)
     if raw_data_bytes > 0:
         capture_status = STATUS_PRESENT
     elif _has_captured_anything(root):
@@ -284,6 +331,7 @@ def build_report(root: Path, venue: str, date: str,
         "corrupting_non_gap": corrupting_non_gap,
         "silent_streams": silent_streams,
         "silent_stream_names": sorted(silent_stream_names),
+        "silent_stream_symbols": silent_stream_symbols,
         # None when the recorder never reported its descriptor pool - a fresh
         # install, or a version predating the report. Never defaulted to a
         # healthy-looking zero.

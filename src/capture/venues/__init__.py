@@ -17,6 +17,66 @@ class UrlBudgetTooSmall(Exception):
     """
 
 
+def shard_for_connection(venue, specs) -> list[list]:
+    """Split `specs` into connections that fit whatever budget this venue has.
+
+    Two budget shapes exist and a venue carries at most one. Binance's limit is
+    the URL request line (`max_url_bytes` — streams ride in the URL), Bybit's is
+    the cumulative characters of subscribe `args` sent over the socket
+    (`max_subscribe_chars` — the URL never grows). A venue declaring neither
+    gets one connection, which is a statement about Hyperliquid: it subscribes
+    over the socket and documents no ceiling.
+
+    This is the function call sites use; the two shard functions below are its
+    mechanisms. Keeping the choice here means a new venue's budget shape is a
+    venue declaration, not a CLI edit.
+    """
+    if getattr(venue, "max_subscribe_chars", None) is not None:
+        return shard_by_subscribe_budget(venue, specs)
+    return shard_by_url_budget(venue, specs)
+
+
+def shard_by_subscribe_budget(venue, specs) -> list[list]:
+    """Split `specs` so each connection's subscribe args fit the venue ceiling.
+
+    Bybit documents at most 21,000 characters of `args` per public connection.
+    The measure below is what the venue itself counts — the character length of
+    every topic string plus the JSON list's own punctuation (a quote pair and a
+    separating comma per element) — computed from the channel names rather than
+    by rendering messages, so the answer cannot drift from what
+    `subscribe_messages` later sends.
+
+    Measured 2026-08-09: the full linear universe (805 topics) is 21,244
+    characters, already past the line, and one probe connection over it did
+    work. Sharding to the documented budget anyway costs one extra socket and
+    removes the bet that the venue never starts enforcing its own ceiling.
+    """
+    specs = list(specs)
+    if not specs:
+        return []
+    budget = venue.max_subscribe_chars
+
+    def arg_chars(spec) -> int:
+        return len(spec.channel) + 3      # "topic", -> 2 quotes + 1 comma
+
+    shards: list[list] = []
+    current: list = []
+    current_chars = 0
+    for spec in specs:
+        cost = arg_chars(spec)
+        if cost > budget:
+            raise UrlBudgetTooSmall(
+                f"{venue.name} subscription {spec.channel!r} needs {cost} "
+                f"characters of args on its own, over the {budget}-character budget")
+        if current and current_chars + cost > budget:
+            shards.append(current)
+            current, current_chars = [], 0
+        current.append(spec)
+        current_chars += cost
+    shards.append(current)
+    return shards
+
+
 def shard_by_url_budget(venue, specs, max_url_bytes: int | None = None) -> list[list]:
     """Split `specs` into the fewest connections whose URLs each fit the budget.
 

@@ -169,6 +169,11 @@ _MAX_HOUR_CLOSES_PER_FRAME = 4
 # being checked again, and detection has to be bounded regardless of history.
 _SILENCE_CEILING_SECONDS = 3600.0
 
+# The symbol a market-wide stream's silence is filed under. A name no venue
+# lists ("-" is not legal in any captured venue's symbols), so it can never
+# collide with a real instrument's silence record.
+_MARKET_WIDE_SYMBOL = "ALL-MARKET"
+
 
 def _safe_path_token(value: str) -> str:
     """Turn a routing field into a filename component without losing it.
@@ -249,10 +254,21 @@ class VenueRecorder:
         self._queue_size = queue_size
         self._clock_ns = clock_ns
         self._ledger = CaptureLedger(root, venue.name)
+        # Streams the venue declares market-wide have their silence judged as
+        # one stream, not per symbol. On an event stream like liquidations a
+        # single symbol is rightly quiet for hours - that is the market, not a
+        # fault - and per-symbol judgement recorded 800 of 805 symbols silent
+        # on bybit-liq's first 75-second run, byte-holders included. What CAN
+        # die and matter is the whole feed, so the whole feed is the unit that
+        # is tracked, thresholded and reported, under the sentinel symbol
+        # below. Writers stay per symbol; only silence accounting merges.
+        self._market_wide_streams = frozenset(
+            s.casefold() for s in getattr(venue, "market_wide_streams", ()))
         # Subscribed streams, keyed the way writers are keyed, so "did this one
         # ever speak?" is a lookup in `_writers`. See `_record_silent_streams`.
         self._expected_streams = {
-            (spec.stream.casefold(), spec.symbol.casefold()): (spec.stream, spec.symbol)
+            self._silence_key(spec.stream, spec.symbol):
+                (spec.stream, self._silence_symbol(spec.stream, spec.symbol))
             for spec in specs
         }
         self._session_start_ns = clock_ns()
@@ -425,11 +441,14 @@ class VenueRecorder:
         ENOSPC, a bad descriptor, MemoryError - is a whole-recorder condition,
         and pretending it is per-stream would spin instead of surfacing it.
         """
+        # The quarantine key stays per symbol - damage is per hour-file. The
+        # silence key may differ: a market-wide stream's frames all feed one
+        # liveness record, whichever symbol they carry.
         key = (stream.casefold(), symbol.casefold())
         # Liveness is recorded before anything can go wrong with the write: a
         # stream whose hour is quarantined is still speaking, and reporting it
         # dead as well would be false.
-        self._note_stream_spoke(key, t_recv_ns)
+        self._note_stream_spoke(self._silence_key(stream, symbol), t_recv_ns)
 
         hour = hour_key(t_recv_ns)
         # This stream has moved on to another hour, so whatever it lost in the
@@ -497,6 +516,15 @@ class VenueRecorder:
         recorded, self._unwritable_hours = self._unwritable_hours, {}
         self._record_unwritable_hour_totals(list(recorded.values()),
                                             ts_ns=self._clock_ns())
+
+    def _silence_symbol(self, stream: str, symbol: str) -> str:
+        if stream.casefold() in self._market_wide_streams:
+            return _MARKET_WIDE_SYMBOL
+        return symbol
+
+    def _silence_key(self, stream: str, symbol: str) -> tuple[str, str]:
+        """The unit silence is judged in: per symbol, or per whole stream."""
+        return (stream.casefold(), self._silence_symbol(stream, symbol).casefold())
 
     def _note_stream_spoke(self, key: tuple[str, str], t_recv_ns: int) -> None:
         """Remember that this stream is alive, and how far apart its frames come.
@@ -839,7 +867,7 @@ class VenueRecorder:
             self._append_or_quarantine_stream(
                 stream, _safe_path_token(symbol), json.dumps(element, separators=(",", ":")),
                 t_recv_ns, None, None, kind="data")
-            self._note_stream_spoke((stream.casefold(), symbol.casefold()), t_recv_ns)
+            self._note_stream_spoke(self._silence_key(stream, symbol), t_recv_ns)
 
     def _route_frame(self, parsed, payload: str, t_recv_ns: int,
                      route_hint=None) -> None:

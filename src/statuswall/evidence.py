@@ -244,15 +244,31 @@ def _silent_stream_probe(facts: SystemFacts, streams: tuple[str, ...],
 
     # Bytes alone do not make a feed healthy: a stream that filled a file for a
     # week and then died leaves exactly the same bytes behind as one still
-    # running. A route counts only where it has data AND is not reported silent
-    # - judged per (venue, stream), not per venue, so a live poll answers the
-    # tile even while the withheld websocket stream it replaced is silent on
-    # that same venue for that same feature.
+    # running. A route counts only where it has data AND is not reported silent.
+    #
+    # Silence is judged per SYMBOL where the report can say (newer reports
+    # carry `silent_stream_symbols`), and per stream name only as the fallback
+    # for reports written before that key existed. The granularity is the whole
+    # question on a market-wide event stream: bybit-liq's first day had 700+
+    # liquidation symbols correctly quiet and five delivering, and name-level
+    # judgement read the five as part of a dead feed. Per symbol, a quiet
+    # symbol is the market being calm; a dead FEED is every symbol silent,
+    # which then leaves no live route and the tile fails as it should.
     live_bytes = {}
     for name, size in _stream_bytes(facts, streams).items():
         venue, _, stream_symbol = name.partition("/")
-        if (venue, stream_symbol.split("_", 1)[0]) not in silent_routes:
-            live_bytes[name] = size
+        stream = stream_symbol.split("_", 1)[0]
+        report = facts.reports.get(venue, {})
+        if "silent_stream_symbols" in report:
+            silent_symbols = report["silent_stream_symbols"]
+            # A market-wide stream files its silence under the ALL-MARKET
+            # sentinel; that entry condemns every symbol's bytes at once,
+            # because on such a stream the whole feed is the unit that dies.
+            if stream_symbol in silent_symbols or f"{stream}_ALL-MARKET" in silent_symbols:
+                continue
+        elif (venue, stream) in silent_routes:
+            continue
+        live_bytes[name] = size
     if live_bytes:
         state, why = _capture_liveness(facts)
         return ProbeResult(state, f"{label} streaming. {why}", "raw_bytes_by_stream")
@@ -268,7 +284,14 @@ def _silent_stream_probe(facts: SystemFacts, streams: tuple[str, ...],
 
 
 def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
-    return _silent_stream_probe(facts, ("forceOrder",), "liquidation feed")
+    # `allLiquidation` is bybit-liq's market-wide stream, added 2026-08-09 as
+    # the second venue DECISIONS §12.6 said would end this tile's wait - the
+    # probe measured 16 frames in 90s from this host before the venue module
+    # was written. `forceOrder` stays listed: binance's subscription is kept
+    # deliberately (a recovery would be noticed), and an archive written before
+    # today still answers this tile through it.
+    return _silent_stream_probe(facts, ("forceOrder", "allLiquidation"),
+                                "liquidation feed")
 
 
 def probe_mark_price(facts: SystemFacts) -> ProbeResult:

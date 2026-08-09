@@ -609,6 +609,15 @@
     "tests/test_build_progress.py",
     "src/statuswall/build_progress.py"
    ]
+  },
+  "capture.venues.bybit_liquidation": {
+   "learning": "n/a: a capture adapter. Nothing is fitted - the one number in its decision path (21,000 subscribe chars) is the venue's own documented ceiling, quoted not chosen",
+   "reasoning": "pass: it was written against the wire, not the docs - the stream was probed from this host (16 frames in 90s) before the module existed, because the Binance lesson is that a subscribe ack proves nothing. Its universe parser refuses a paginated listing rather than silently truncating it",
+   "depth": "pass: it changes behaviour when wrong. A second listing page RAISES with the fix named; an error body wearing HTTP 200 yields no instruments; a malformed row falls back to the topic's own symbol rather than orphaning the frame; and declaring the stream market-wide moved silence to the unit that can actually die - the whole feed - after per-symbol judgement condemned 800 of 805 symbols in one 75-second run",
+   "evidence": [
+    "tests/test_bybit_liquidation.py",
+    "src/capture/venues/bybit_liquidation.py"
+   ]
   }
  }
 }

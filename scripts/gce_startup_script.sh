@@ -100,6 +100,10 @@ start_as_user "capture_supervisor.sh binance-funding" \
 # Poll-only, so no symbols are named: the response is the whole linear market.
 start_as_user "capture_supervisor.sh bybit" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh bybit BTCUSDT"
+# Liquidations, market-wide - the feed Binance withholds from this host
+# (DM-020). Its own process so a websocket cut cannot stall the funding poll.
+start_as_user "capture_supervisor.sh bybit-liq" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh bybit-liq BTCUSDT ALL"
 # Last, and after the capture supervisors on purpose: it reports on what they
 # produce, and starting it first would have it observe an empty archive and
 # record "nothing captured" as this boot's first verdict.

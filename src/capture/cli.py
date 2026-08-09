@@ -24,11 +24,12 @@ from capture.rest_poller import merge_frame_sources, poll_frames
 from capture.universe_tracker import UniverseTracker
 from ops.rate_budget import RateBudget
 from capture.venue_recorder import VenueRecorder
-from capture.venues import shard_by_url_budget
+from capture.venues import shard_for_connection
 from capture.venues.binance import BinanceVenue
 from capture.venues.binance_funding import BinanceFundingVenue
 from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.bybit import BybitVenue
+from capture.venues.bybit_liquidation import BybitLiquidationVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 _VENUES = {
@@ -45,6 +46,10 @@ _VENUES = {
     # after 857 funding writers rotating in one tick killed the recorder's
     # websocket at every hour boundary.
     "binance-funding": BinanceFundingVenue,
+    # Liquidations, market-wide, from the venue that pushes them - the feed
+    # Binance withholds from this host (DM-020). Captured, not traded; its own
+    # process so a websocket cut cannot take the funding poll down with it.
+    "bybit-liq": BybitLiquidationVenue,
 }
 
 def archive_name_for(venue_key: str) -> str:
@@ -338,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     stream_shards = [specs]
     if tail_symbols:
         tail_specs = venue.tail_specs(tail_symbols)
-        stream_shards.extend(shard_by_url_budget(venue, tail_specs))
+        stream_shards.extend(shard_for_connection(venue, tail_specs))
         specs = [*specs, *tail_specs]
 
     duration = args.seconds if args.seconds > 0 else float("inf")
