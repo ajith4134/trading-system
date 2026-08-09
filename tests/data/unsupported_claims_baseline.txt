@@ -32,7 +32,9 @@ RX-005
 # holdout custodian behind it. Left as comments because the ratchet fails on a
 # baselined row that is no longer unsupported, which is how it keeps its teeth.
 
-# validation.superior_predictive_ability is reached by the pipeline, but VX-011
-# names a claim the module does not yet satisfy on its own terms. Left until the
-# row and the code are read against each other properly.
-VX-011
+# VX-011 cleared 2026-08-09, after reading the row against the code rather than
+# against the reachability number. It names `risk.drawdown_distribution`, not
+# `superior_predictive_ability` as an earlier comment here guessed. It is reached
+# through `risk.tail_cap.derive_operating_limits`, which sets the circuit-breaker
+# ladder from the bootstrapped distribution and clamps every rung to the user's
+# ceiling.

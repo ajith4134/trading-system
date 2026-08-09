@@ -76,6 +76,48 @@ MAX_PBO = 0.50
 SPA_ALPHA = 0.05
 
 
+def tail_cap_gate(series: pd.Series, cap) -> dict:
+    """Would this candidate have lived inside the user's ceiling?
+
+    The promotion input promised when the ceiling was built. Paper is
+    unconstrained by ruling - fake capital does not need protecting - but a
+    candidate tuned with no ceiling was optimised against a different objective
+    from the one it must satisfy with money behind it. Promoting it hands capital
+    to a strategy never once tested against its own constraint.
+
+    So the run is replayed against the ceiling as an equity curve: worst single
+    day, and worst peak-to-trough. Nothing was stopped when it happened; this is
+    the record of whether it would have been.
+
+    A missing ceiling FAILS rather than being skipped. §6 reserves the number to
+    the user and says nothing trades real money without one - a gate that
+    quietly disappeared when unset would be the absence of evidence rendering as
+    green, which is the failure Rule 8 exists for.
+    """
+    if cap is None:
+        return {"name": "tail_cap", "passed": False, "measured": float("nan"),
+                "threshold": float("nan"),
+                "detail": "no tail-loss ceiling set; §6 reserves it to the user "
+                          "and nothing trades real money without one"}
+
+    equity = (1.0 + series).cumprod()
+    worst_day = float((-series).max())
+    worst_drawdown = float((1.0 - equity / equity.cummax()).max())
+    daily_limit = float(cap.daily_loss_fraction)
+    drawdown_limit = float(cap.drawdown_fraction)
+    inside = worst_day < daily_limit and worst_drawdown < drawdown_limit
+
+    return {"name": "tail_cap", "passed": inside,
+            "measured": max(worst_day / daily_limit,
+                            worst_drawdown / drawdown_limit),
+            "threshold": 1.0,
+            "detail": (f"worst day {worst_day * 100:.3f}% against a "
+                       f"{daily_limit * 100:.2f}% ceiling, worst peak-to-trough "
+                       f"{worst_drawdown * 100:.3f}% against "
+                       f"{drawdown_limit * 100:.2f}%"
+                       + ("" if inside else " - would have breached"))}
+
+
 @dataclass(frozen=True)
 class CarryCandidate:
     """One configuration of the carry rule. Every field is a global parameter."""
@@ -180,7 +222,7 @@ def fold_returns(series: pd.Series, fold) -> list[float]:
 
 def run(frame: pd.DataFrame, registry: TrialRegistry,
         candidates: list[CarryCandidate] | None = None,
-        min_deflated_sharpe: float = 0.95) -> PipelineResult:
+        min_deflated_sharpe: float = 0.95, cap=None) -> PipelineResult:
     """Take the best candidate through every gate, and report what refused it.
 
     Candidates are scored first, then the best is put through the gate - and the
@@ -265,6 +307,11 @@ def run(frame: pd.DataFrame, registry: TrialRegistry,
                 f"spa p={spa.p_value:.4f} did not reject the null that nothing "
                 f"beats standing aside")
 
+    tail = tail_cap_gate(series, cap)
+    gates.append(tail)
+    if not tail["passed"]:
+        refusals.append(f"tail_cap: {tail['detail']}")
+
     return PipelineResult(
         candidate=best.params() | {"name": best.name},
         promoted=verdict.promoted and not refusals,
@@ -328,6 +375,15 @@ def main(argv: list[str] | None = None) -> int:
     reader, custodian = sealed_reader(
         store_root, Path(args.trials_root), holdout_start, now_ns)
 
+    # The ceiling is read, never chosen here. A missing one fails the gate rather
+    # than being skipped - §6 reserves the number to the user.
+    from risk.tail_cap import CeilingNotSet, read_ceiling
+    try:
+        cap = read_ceiling(store_root.parent / "risk")
+    except CeilingNotSet as unset:
+        print(f"note: {unset}", file=sys.stderr)
+        cap = None
+
     # Read strictly BEFORE the holdout. Asking for anything later is what the
     # custodian is there to refuse, and it does.
     frame = reader.read_as_of(holdout_start - 1)
@@ -335,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
 
     grid = [CarryCandidate(lookback_days=lb, percentile=p)
             for lb in (10, 20, 30) for p in (0.80, 0.90, 0.95)]
-    result = run(frame, registry, grid)
+    result = run(frame, registry, grid, cap=cap)
 
     out = Path(args.out) if args.out else store_root.parent / "promotion.json"
     out.write_text(json.dumps({

@@ -246,3 +246,72 @@ def enforce(assessment: CapAssessment, watchdog, pids=()) -> dict | None:
                 f"peak {assessment.peak_nav}"),
         pids=list(pids),
     )
+
+
+@dataclass(frozen=True)
+class OperatingLimits:
+    """The ladder the system runs to, always inside the ceiling it cannot raise.
+
+    §6 draws the line this class sits on: *"the system may raise and lower its
+    own risk limits, and clear its own halts, inside a ceiling the user sets
+    once."* The rungs are the system's. The ceiling is not, and `clamped_rungs`
+    records every place the two disagreed.
+    """
+
+    ceiling: TailCap
+    rungs: tuple[tuple[float, Decimal, float], ...]   # (percentile, threshold, cut)
+    realized_max_drawdown: Decimal
+    clamped_rungs: tuple[float, ...]
+    provenance: str
+
+    def describe(self) -> str:
+        steps = ", ".join(f"p{q:g} at {t * 100:.2f}% cut {c:.0%}"
+                          for q, t, c in self.rungs)
+        clamped = (f"; {len(self.clamped_rungs)} rung(s) clamped to the ceiling"
+                   if self.clamped_rungs else "")
+        return f"{steps}{clamped}"
+
+
+def derive_operating_limits(cap: TailCap, returns: list[float],
+                            n_samples: int = 1000, block_size: int = 50,
+                            seed: int = 0) -> OperatingLimits:
+    """Set the circuit-breaker ladder from the bootstrapped drawdown distribution.
+
+    Ledger VX-011: *"sets non-arbitrary circuit-breaker thresholds off
+    bootstrapped p75-p90, not the single historical max"*. The realised maximum
+    is one draw from a distribution - the worst thing that happened to occur -
+    and sizing a breaker on it plans for a past that was lucky or unlucky rather
+    than for the range the strategy actually lives in. The block bootstrap
+    preserves the serial dependence that makes drawdowns deep, which is why it is
+    not an IID resample.
+
+    **Every rung is clamped to the user's ceiling, and clamping is recorded.**
+    That is the §6 boundary made mechanical: if the bootstrap says the p99
+    drawdown is 8% and the user set 3%, the ladder goes flat at 3% and says it
+    was cut down to it. A derived limit that could exceed the ceiling would be
+    the system raising its own cap by way of arithmetic, which is precisely the
+    move §6 reserves.
+    """
+    from risk.drawdown_distribution import circuit_breaker_ladder
+
+    ladder = circuit_breaker_ladder(returns, n_samples=n_samples,
+                                    block_size=block_size, seed=seed)
+    rungs = []
+    clamped = []
+    for rung in ladder.rungs:
+        measured = Decimal(str(rung.drawdown_threshold))
+        if measured > cap.drawdown_fraction:
+            clamped.append(rung.percentile)
+            measured = cap.drawdown_fraction
+        rungs.append((rung.percentile, measured, rung.gross_reduction))
+
+    return OperatingLimits(
+        ceiling=cap,
+        rungs=tuple(rungs),
+        realized_max_drawdown=Decimal(str(ladder.realized_max_drawdown)),
+        clamped_rungs=tuple(clamped),
+        provenance=(f"{ladder.n_bootstrap_samples} {ladder.method} block bootstrap "
+                    f"draws (block_size={ladder.block_size}) over {len(returns)} "
+                    f"observations; realised max drawdown "
+                    f"{ladder.realized_max_drawdown:.4f}"),
+    )

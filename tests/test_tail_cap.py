@@ -183,3 +183,62 @@ def test_a_live_breach_reaches_the_real_kill_file(tmp_path):
     enforce(a, Watchdog(tmp_path, identity_path=tmp_path / "absent"))
 
     assert is_killed(tmp_path), "a breached tail cap left trading enabled"
+
+
+# --------------------------------------------------------------------------
+# VX-011: the ladder inside the ceiling
+#
+# "Sets non-arbitrary circuit-breaker thresholds off bootstrapped p75-p90, not
+# the single historical max." The realised maximum is one draw - the worst that
+# happened to occur - and sizing a breaker on it plans for a past that was lucky
+# rather than for the range the strategy lives in.
+# --------------------------------------------------------------------------
+
+def _returns(n=400, seed=3, scale=0.004):
+    import random
+    rng = random.Random(seed)
+    return [rng.gauss(0.0002, scale) for _ in range(n)]
+
+
+def test_the_ladder_comes_from_the_bootstrap_not_the_realised_max():
+    from risk.tail_cap import derive_operating_limits
+
+    wide = TailCap(Decimal("0.010"), Decimal("1.0"))     # ceiling out of the way
+    limits = derive_operating_limits(wide, _returns())
+
+    assert len(limits.rungs) == 3
+    thresholds = [t for _, t, _ in limits.rungs]
+    assert thresholds == sorted(thresholds), "a deeper rung must sit deeper"
+    assert "block bootstrap" in limits.provenance
+    # The whole point of VX-011: the plan-for number exceeds what actually
+    # happened, because the realised max is a single draw.
+    assert thresholds[-1] > limits.realized_max_drawdown
+
+
+def test_the_deepest_rung_goes_flat_rather_than_reducing():
+    """Past the deepest rung the assumption the ladder was built on is the thing
+    that failed, so the response is not a reduction."""
+    from risk.tail_cap import derive_operating_limits
+
+    limits = derive_operating_limits(TailCap(Decimal("0.01"), Decimal("1.0")), _returns())
+    assert limits.rungs[-1][2] == 1.0
+
+
+def test_no_rung_may_exceed_the_ceiling_the_user_set():
+    """§6 made mechanical. A derived limit that could exceed the ceiling would
+    be the system raising its own cap by way of arithmetic."""
+    from risk.tail_cap import derive_operating_limits
+
+    tight = TailCap(Decimal("0.010"), Decimal("0.005"))
+    limits = derive_operating_limits(tight, _returns())
+
+    assert all(t <= tight.drawdown_fraction for _, t, _ in limits.rungs)
+    assert limits.clamped_rungs, "clamping happened and was not recorded"
+
+
+def test_a_ceiling_wide_enough_clamps_nothing_and_says_so():
+    from risk.tail_cap import derive_operating_limits
+
+    limits = derive_operating_limits(TailCap(Decimal("0.01"), Decimal("1.0")), _returns())
+    assert limits.clamped_rungs == ()
+    assert "clamped" not in limits.describe()

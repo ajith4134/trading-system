@@ -121,14 +121,48 @@ def test_pure_noise_does_not_manufacture_a_sharpe(tmp_path):
     assert result.promoted is False
 
 
+def _cap():
+    from decimal import Decimal
+    from risk.tail_cap import TailCap
+    return TailCap(Decimal("0.010"), Decimal("0.030"))
+
+
 def test_a_real_edge_is_promoted(tmp_path):
     """A gate stack that refuses everything is not a gate stack. The same
     machinery that rejects noise has to pass a signal, or it is measuring
     nothing."""
     result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
-                 TrialRegistry(tmp_path), _grid())
+                 TrialRegistry(tmp_path), _grid(), cap=_cap())
     assert result.observed_sharpe > 0.5
     assert result.promoted is True, result.refusals
+
+
+def test_a_missing_ceiling_refuses_rather_than_disappearing(tmp_path):
+    """§6 reserves the number to the user and says nothing trades real money
+    without one. A gate that quietly vanished when unset is absence of evidence
+    rendering as green."""
+    result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
+                 TrialRegistry(tmp_path), _grid(), cap=None)
+
+    tail = next(g for g in result.gates if g["name"] == "tail_cap")
+    assert tail["passed"] is False
+    assert result.promoted is False
+
+
+def test_a_candidate_that_would_have_breached_is_not_promoted(tmp_path):
+    """Paper is unconstrained by ruling, so nothing stopped it at the time. This
+    is the record of whether it could have lived inside the ceiling - promoting
+    without it hands capital to a strategy never tested against its own
+    constraint."""
+    from decimal import Decimal
+    from risk.tail_cap import TailCap
+
+    airless = TailCap(Decimal("0.00001"), Decimal("0.00001"))
+    result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
+                 TrialRegistry(tmp_path), _grid(), cap=airless)
+
+    assert result.promoted is False
+    assert any("would have breached" in r for r in result.refusals)
 
 
 def test_a_fold_is_scored_on_its_test_blocks_only():
