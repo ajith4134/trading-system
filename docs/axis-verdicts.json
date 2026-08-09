@@ -636,6 +636,15 @@
     "tests/test_peg_monitor.py",
     "src/features/peg_monitor.py"
    ]
+  },
+  "features.consolidated_price": {
+   "learning": "n/a: a weighted mean over stored books. Nothing is fitted - but nothing in the decision path is typed either: the weight is measured depth, the comparison band is the widest contributing spread, and the staleness limit is each venue's own measured cadence times a multiple already established in capture.venue_recorder rather than a second number chosen here",
+   "reasoning": "pass: it is built against the two ways a venue lies rather than against the happy path. A thin venue quoting a moved price is outvoted by depth (the Mango shape - an equal-weighted mean of 100 and 200 gives 150; this gives 100.0), and a FROZEN venue is excluded despite intact depth, which is the more dangerous case precisely because staleness preserves weight. Venue disagreement rides every row instead of being smoothed away",
+   "depth": "pass: it changes behaviour when wrong. Asked at wall-clock now it returns NOTHING and counts six stale exclusions rather than pricing off an 82-minute-old book - the store builds closed hours, and that lag is now a measured headline on the wall instead of an assumption. Every exclusion is counted by reason, and a one-venue price reports venues_used=1 rather than passing as a consensus",
+   "evidence": [
+    "tests/test_consolidated_price.py",
+    "src/features/consolidated_price.py"
+   ]
   }
  }
 }

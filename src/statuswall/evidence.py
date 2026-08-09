@@ -294,6 +294,41 @@ def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
                                 "liquidation feed")
 
 
+def probe_consolidated_price(facts: SystemFacts) -> ProbeResult:
+    # Asked at the newest clock the book dataset supports, not at wall-clock
+    # now, and the gap between those two is reported rather than hidden: the
+    # store builds closed hours, so Layer 1's depth trails live by up to an
+    # hour and a half. Measured 2026-08-09: 82 minutes. A consolidated price
+    # is a live-pricing input, so that lag is the honest headline about this
+    # feature - asking at `now` correctly returns nothing at all, every venue
+    # excluded as stale.
+    try:
+        from features.consolidated_price import consolidate_prices
+        from store.clock_gated_reader import ClockGatedReader
+        book = ClockGatedReader(facts.capture_root / "store", "book").read_as_of(2**62)
+        if book.empty:
+            return ProbeResult(NOT_BUILT, "no book dataset to consolidate from",
+                               "capture/store/book")
+        newest_ns = int(book["event_time_ns"].max())
+        lag_minutes = (time.time() * 1e9 - newest_ns) / 6e10
+        table = consolidate_prices(facts.capture_root / "store", newest_ns + 1)
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"consolidation failed: {error}",
+                           "features/consolidated_price.py")
+    if table.rows.empty:
+        return ProbeResult(DEGRADED,
+                           f"no symbol could be consolidated; excluded {table.excluded}",
+                           "features/consolidated_price.py")
+    multi = int((table.rows["venues_used"] > 1).sum())
+    worst = float(table.rows["disagreement_bps"].max())
+    return ProbeResult(
+        PARTIAL,
+        f"{len(table.rows)} symbol(s) consolidated, {multi} from more than one venue, "
+        f"worst venue disagreement {worst:.1f} bps; depth exists for the 3 core "
+        f"symbols only, and Layer 1's book trails live by {lag_minutes:.0f} min",
+        "features/consolidated_price.py + capture/store/book")
+
+
 def probe_peg_monitor(facts: SystemFacts) -> ProbeResult:
     # Runs the monitor rather than checking that a file exists. Caps at
     # PARTIAL and says why: nothing consumes a breach yet, because position
@@ -1092,6 +1127,7 @@ PROBES = {
     "perpetual funding rate history schedule": probe_funding_rates,
     "spot perp basis term structure": probe_spot_perp_basis,
     "stablecoin peg monitor": probe_peg_monitor,
+    "cross venue consolidated price liquidity weighted": probe_consolidated_price,
     "mark price vs index vs oracle price per venue": probe_mark_price,
     "gap detection provenance flagged backfill": probe_gap_detection,
     "per feed data quality score": probe_data_quality_score,
