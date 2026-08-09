@@ -139,19 +139,30 @@ _SILENCE_CHECK_INTERVAL_NS = 1_000_000_000
 #
 # Lowered from 25 to 4 on 2026-08-09, taking one slice from ~110 ms to ~18 ms.
 #
-# **This is a reduction, not a diagnosis, and the distinction matters.** The
-# binance recorder still died at the hour boundary with `sent 1011 (internal
-# error) keepalive ping timeout` after the funding fan-out was moved to its own
-# process, so the stall is somewhere in this rotation - but 25 slices of 110 ms
-# do not add to the 20 s a keepalive timeout needs, and what does has not been
-# identified. `binance-spot` carries MORE writers and survives the same boundary,
-# which rules out writer count as the discriminator and leaves the real cause
-# open.
+# **The discriminator is baseline loop saturation, not the rotation.** Measured
+# that day, after the binance recorder had died at every hour boundary with
+# `sent 1011 (internal error) keepalive ping timeout` while binance-spot crossed
+# the same boundaries untouched:
 #
-# The load-bearing change is `_PING_TIMEOUT_SECONDS` in `capture.cli`, which
-# stops a stall of unknown length from killing a healthy socket. This one just
-# makes the stall smaller. The backlog is not in a hurry either way: an hour has
-# 3,600 seconds and a rotated file is finished, not urgent.
+#   binance         575 recorder writers   2,415 frames/s   2.5 s of fsync
+#   binance-spot  1,321 recorder writers     102 frames/s   5.7 s of fsync
+#
+# Spot has MORE writers and MORE total fsync work at the boundary, and never
+# came close to dying. Both counts were red herrings. What differs is the loop
+# each burst lands on: binance runs at 24x the frame rate, already compressing
+# and appending 2,415 frames a second, so the drain arrives on a loop with
+# almost no slack and the keepalive's ping/pong finds no window. Spot's loop is
+# mostly idle at 102 f/s and has room throughout.
+#
+# That is also why this number matters: the drain is paced PER FRAME, so a
+# smaller budget interleaves ~6x more frames between fsync slices and hands the
+# socket a window each time. `_PING_TIMEOUT_SECONDS` in `capture.cli` covers
+# whatever stall remains; this is what makes the stall survivable in the first
+# place. Measured after both changes: a 6.0 s stall at the 13:00 rotation, and
+# the recorder crossed 13:00 and 14:00 alive.
+#
+# The backlog is not in a hurry either way: an hour has 3,600 seconds and a
+# rotated file is finished, not urgent.
 _MAX_HOUR_CLOSES_PER_FRAME = 4
 # However slow a stream claims to be, silence becomes reportable eventually -
 # an hour, one file rotation. Without it a stream can talk its way into never
