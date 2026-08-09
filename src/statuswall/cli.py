@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the feature catalogue this wall must not disagree with")
     parser.add_argument("--capture-root", default=str(Path.home() / "capture"))
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--ledger", default=None,
+                        help="the requirements ledger to check BUILT claims against; "
+                             "defaults to ledger/merged beside the feature catalogue")
     parser.add_argument("--out", required=True, help="where to write the HTML")
     args = parser.parse_args(argv)
 
@@ -40,10 +43,17 @@ def main(argv: list[str] | None = None) -> int:
     # failure rather than as 11 simultaneously orphaned probes.
     verify_probe_coverage(features)
 
+    # Derived from the catalogue rather than from $HOME: the two live together,
+    # and a probe guessing an absolute path would report a clean bill of health
+    # on any machine where the ledger sits somewhere else.
+    ledger_root = (Path(args.ledger) if args.ledger
+                   else features_path.parent / "ledger" / "merged")
+
     facts = measure_system(
         capture_root=Path(args.capture_root),
         repo_root=Path(args.repo_root),
         now=dt.datetime.now(dt.timezone.utc),
+        ledger_root=ledger_root if ledger_root.is_dir() else None,
     )
     results = assess(features, facts)
 

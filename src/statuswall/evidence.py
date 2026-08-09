@@ -81,6 +81,11 @@ class SystemFacts:
     runway_days: float
     runway_status: str
     restart_counts: dict[str, int]
+    # Where the requirements ledger lives, or None when this pass was not given
+    # one. Optional rather than assumed: a probe that fell back to a path under
+    # `$HOME` would report a clean bill of health on any machine where the ledger
+    # is somewhere else, which is the failure it exists to catch.
+    ledger_root: Path | None = None
 
 
 def _read_capture_pids() -> list[int]:
@@ -125,7 +130,8 @@ def _count_restarts(capture_root: Path) -> dict[str, int]:
     return counts
 
 
-def measure_system(capture_root: Path, repo_root: Path, now: dt.datetime) -> SystemFacts:
+def measure_system(capture_root: Path, repo_root: Path, now: dt.datetime,
+                   ledger_root: Path | None = None) -> SystemFacts:
     """Take one pass over the machine. Every number below was read, not assumed."""
     dates_by_venue = _capture_dates(capture_root)
     venues = sorted(dates_by_venue)
@@ -163,6 +169,7 @@ def measure_system(capture_root: Path, repo_root: Path, now: dt.datetime) -> Sys
         runway_days=runway,
         runway_status=classify_runway(runway),
         restart_counts=_count_restarts(capture_root),
+        ledger_root=ledger_root,
     )
 
 
@@ -809,6 +816,50 @@ def probe_writer_descriptor_pool(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, f"bounded, nothing evicted - {detail}", proof)
 
 
+def probe_unsupported_claims(facts: SystemFacts) -> ProbeResult:
+    """Ledger rows claiming BUILT whose named module nothing in `src/` can reach.
+
+    The board's own blind spot, put on the board. Every other tile here asks
+    whether a thing works; this one asks whether the thing the ledger says exists
+    is connected to anything. Four defects in this project have had that shape,
+    all failing in the flattering direction, and two of them were found on
+    2026-08-09 only because somebody went looking by hand.
+
+    DEGRADED rather than FAILING when rows are unsupported: nothing is broken at
+    runtime. What is broken is the record, and a wrong record is what makes the
+    next decision wrong. Nine of today's eleven are `validation/`, which is the
+    honest shape of a phase whose consumer does not exist yet.
+    """
+    proof = "integrity.unsupported_claims over src/ + the requirements ledger"
+    if facts.ledger_root is None:
+        # Not OK. A pass given no ledger checked nothing, and saying so is the
+        # difference between "no unsupported claims" and "no claims examined".
+        return ProbeResult(NOT_MEASURED, "no requirements ledger given to check against",
+                           proof)
+
+    from integrity.unsupported_claims import (
+        UNREACHABLE, audit_claims, classify_modules, invoked_modules, read_source_tree,
+    )
+
+    verdict = classify_modules(read_source_tree(Path(facts.repo_root) / "src"),
+                               invoked_modules(Path(facts.repo_root)))
+    dead = sorted(name for name, state in verdict.items() if state == UNREACHABLE)
+    audits = audit_claims(Path(facts.repo_root), Path(facts.ledger_root))
+    unsupported = [a for a in audits if a.is_unsupported]
+
+    census = (f"{len(dead)} unreachable module(s) of {len(verdict)}")
+    if not unsupported:
+        return ProbeResult(
+            OK, f"no ledger row claims BUILT for unreachable code; {census}", proof)
+
+    named = ", ".join(a.row_id for a in unsupported[:6])
+    more = f" and {len(unsupported) - 6} more" if len(unsupported) > 6 else ""
+    return ProbeResult(
+        DEGRADED,
+        f"{len(unsupported)} ledger row(s) claim BUILT for code nothing reaches "
+        f"({named}{more}); {census}", proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -838,6 +889,7 @@ PROBES = {
     "clock gated access api": probe_clock_gated_access,
     "cost engine round trip breakeven gate": probe_cost_engine,
     "bounded writer descriptor pool": probe_writer_descriptor_pool,
+    "reachability audit of every built claim": probe_unsupported_claims,
 }
 
 

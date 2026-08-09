@@ -893,3 +893,62 @@ def test_a_recorded_halt_still_outranks_everything_on_the_tile(tmp_path):
 
     assert result.state == FAILING
     assert "HALTED: binance" in result.detail
+
+
+# --------------------------------------------------------------------------
+# the reachability tile - the board's own blind spot, put on the board
+# --------------------------------------------------------------------------
+
+def test_the_reachability_tile_is_not_measured_without_a_ledger():
+    """"No unsupported claims" and "no claims examined" are different answers,
+    and a pass given no ledger produced the second one."""
+    from statuswall.evidence import NOT_MEASURED, probe_unsupported_claims
+    result = probe_unsupported_claims(_facts(ledger_root=None))
+
+    assert result.state == NOT_MEASURED
+    assert "no requirements ledger" in result.detail
+
+
+def test_the_reachability_tile_degrades_on_a_row_claiming_dead_code(tmp_path):
+    from statuswall.evidence import DEGRADED, probe_unsupported_claims
+
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "alive.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "orphan.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.sh").write_text("python -m alive\n", encoding="utf-8")
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "slice.md").write_text(
+        "| # | Requirement | Category | Status | Phase | Evidence | Sources | Notes |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| XX-001 | A thing | ops | BUILT | P0 | `src/orphan.py` | s | n |\n",
+        encoding="utf-8")
+
+    result = probe_unsupported_claims(
+        _facts(repo_root=tmp_path, ledger_root=ledger))
+
+    assert result.state == DEGRADED
+    assert "XX-001" in result.detail
+    assert "1 ledger row(s) claim BUILT" in result.detail
+
+
+def test_the_reachability_tile_is_ok_when_every_claim_is_reachable(tmp_path):
+    from statuswall.evidence import OK, probe_unsupported_claims
+
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "alive.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.sh").write_text("python -m alive\n", encoding="utf-8")
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "slice.md").write_text(
+        "| # | Requirement | Category | Status | Phase | Evidence | Sources | Notes |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| XX-001 | A thing | ops | BUILT | P0 | `src/alive.py` | s | n |\n",
+        encoding="utf-8")
+
+    result = probe_unsupported_claims(_facts(repo_root=tmp_path, ledger_root=ledger))
+
+    assert result.state == OK
+    assert "0 unreachable module(s) of 1" in result.detail
