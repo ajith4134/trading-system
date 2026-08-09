@@ -37,18 +37,52 @@ from store.temporal_schema import (
 _MS_TO_NS = 1_000_000
 
 
+# Which price a venue computes its funding against. Not decoration: Binance
+# funds on MARK and Hyperliquid on ORACLE, and `FEATURES.md` §1 flags the
+# distinction [MISSED] precisely because the gap between those prices is the
+# basis trade itself. A cross-venue carry number that does not know which price
+# each side was funded on is comparing two different quantities.
+FUNDS_ON_MARK = "mark"
+FUNDS_ON_ORACLE = "oracle"
+
+
 @dataclass(frozen=True)
 class FundingObservation:
-    """One `premiumIndex` poll, as it was received."""
+    """One funding poll, as it was received.
+
+    Four fields carry what differs BETWEEN venues rather than between rows, and
+    they exist so that a reader never has to know which venue it is holding in
+    order to read the row correctly.
+    """
 
     symbol: str
     venue: str
     funding_rate: Decimal          # the rate applied at the last settlement
     mark_price: Decimal
-    index_price: Decimal
+    index_price: Decimal | None    # None where the venue publishes none
     next_funding_time_ns: int
-    event_time_ns: int             # the venue's stamp
+    event_time_ns: int             # the venue's stamp, or our receipt - see the flag
     ingestion_time_ns: int         # when we received it
+    # The oracle price, where the venue has one. Hyperliquid funds on it; Binance
+    # publishes none, so this is None there rather than a copy of mark.
+    oracle_price: Decimal | None = None
+    # Which of the above the funding rate is computed against.
+    funds_on: str = FUNDS_ON_MARK
+    # True when `event_time_ns` is OUR receipt rather than the venue's stamp.
+    #
+    # Hyperliquid's asset context carries no timestamp of any kind - measured
+    # against the live endpoint 2026-08-09, the keys are exactly funding,
+    # openInterest, prevDayPx, dayNtlVlm, premium, oraclePx, markPx, midPx,
+    # impactPxs and dayBaseVlm. So there is no venue clock to key on and the
+    # only honest event time is when the poll landed.
+    #
+    # Flagged rather than silently equal, because a consumer comparing event
+    # times across venues would otherwise be comparing a venue stamp against a
+    # receipt and would have no way to tell. Rule 8, one layer down: the absence
+    # of a measurement is its own state.
+    event_time_is_receipt: bool = False
+    # True when `next_funding_time_ns` is unknown rather than known to be zero.
+    next_funding_time_unknown: bool = False
 
 
 def extract_funding(payload: str, entry, venue: str,
@@ -90,6 +124,63 @@ def extract_funding(payload: str, entry, venue: str,
     )]
 
 
+def extract_hyperliquid_funding(payload: str, entry, venue: str,
+                                symbol: str) -> list[FundingObservation]:
+    """Read one archived `assetCtx` record into the same shape as a Binance poll.
+
+    Same dataset, different venue model, and three of the differences are real
+    rather than cosmetic:
+
+    **It funds on the ORACLE price, hourly, capped at 4%/hour** - against
+    Binance's mark price every eight hours. Recorded in `funds_on` so a
+    cross-venue carry number knows which price each side was funded against
+    instead of assuming they match.
+
+    **There is no venue timestamp.** Measured against the live endpoint
+    2026-08-09, an asset context carries exactly funding, openInterest,
+    prevDayPx, dayNtlVlm, premium, oraclePx, markPx, midPx, impactPxs and
+    dayBaseVlm - no clock of any kind. So the event time is our receipt, and
+    `event_time_is_receipt` says so rather than letting it pass as a venue
+    stamp. Availability is unaffected: it was already keyed on receipt for every
+    venue, which is what makes the gate safe.
+
+    **There is no next settlement time.** Hyperliquid settles hourly, so it is
+    derivable from the clock - and deriving it here would put an assumption
+    about venue behaviour into a row that reads like an observation. Left
+    unknown and flagged; whoever needs it can apply the venue's schedule
+    knowingly.
+
+    Recognised by its own fields rather than by the file it came from, matching
+    `extract_funding`: misreading a trade as a funding rate would poison every
+    carry cost downstream.
+    """
+    try:
+        body = json.loads(payload)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(body, dict):
+        return []
+    if "funding" not in body or "markPx" not in body:
+        return []
+
+    return [FundingObservation(
+        symbol=body.get("coin") or symbol,
+        venue=venue,
+        funding_rate=Decimal(str(body["funding"])),
+        mark_price=Decimal(str(body["markPx"])),
+        # This venue publishes no index price. None, never a copy of mark.
+        index_price=None,
+        oracle_price=(Decimal(str(body["oraclePx"]))
+                      if body.get("oraclePx") is not None else None),
+        funds_on=FUNDS_ON_ORACLE,
+        next_funding_time_ns=0,
+        next_funding_time_unknown=True,
+        event_time_ns=int(entry.t_recv_ns),
+        event_time_is_receipt=True,
+        ingestion_time_ns=int(entry.t_recv_ns),
+    )]
+
+
 def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFrame:
     """One bitemporal row per observation.
 
@@ -106,7 +197,15 @@ def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFr
         VENUE: o.venue,
         "funding_rate": str(o.funding_rate),      # Decimal survives as its own text
         "mark_price": str(o.mark_price),
-        "index_price": str(o.index_price),
+        # None stays None rather than becoming a copy of mark. A venue that
+        # publishes no index has not published one, and filling it from a
+        # neighbouring price is the kind of quiet substitution that reads as
+        # data forever after.
+        "index_price": None if o.index_price is None else str(o.index_price),
+        "oracle_price": None if o.oracle_price is None else str(o.oracle_price),
+        "funds_on": o.funds_on,
+        "event_time_is_receipt": o.event_time_is_receipt,
+        "next_funding_time_unknown": o.next_funding_time_unknown,
         "next_funding_time_ns": o.next_funding_time_ns,
         EVENT_TIME: o.event_time_ns,
         INGESTION_TIME: o.ingestion_time_ns,
@@ -119,6 +218,24 @@ def build_funding_frame(observations: Iterable[FundingObservation]) -> pd.DataFr
     for column in (EVENT_TIME, INGESTION_TIME, AVAILABILITY_TIME,
                    "next_funding_time_ns"):
         frame[column] = frame[column].astype("int64")
+    for column in ("event_time_is_receipt", "next_funding_time_unknown"):
+        frame[column] = frame[column].astype("bool")
+    # Pinned to a string dtype even when every value in the partition is null.
+    #
+    # Not defensive typing - it broke the live dataset. Hyperliquid publishes no
+    # index price, so its first partition had `index_price` null for all 3,248
+    # rows, pyarrow inferred the column's type as `null`, and reading the dataset
+    # afterwards failed outright:
+    #
+    #   ArrowNotImplementedError: Unsupported cast from large_string to null
+    #
+    # One venue's absent field made every venue's funding unreadable, because a
+    # dataset is read across its partitions and their schemas have to unify. A
+    # column whose type depends on whether a particular day happened to carry a
+    # value is not a schema.
+    for column in ("funding_rate", "mark_price", "index_price", "oracle_price",
+                   "funds_on"):
+        frame[column] = frame[column].astype("string")
     return frame
 
 

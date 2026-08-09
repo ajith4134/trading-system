@@ -22,9 +22,18 @@ STATE_DIR="$CAPTURE_ROOT/store-builds"
 LOG="$STATE_DIR/build.log"
 RUNS="$STATE_DIR/runs.ndjson"
 
-# The symbols carrying depth and funding. Only the core has either: the broad
-# tail subscribes trades alone, so there is nothing polled to build from it.
+# The symbols carrying depth. Only the core has it: the broad tail subscribes
+# trades alone, and there is no all-market form of a depth snapshot.
 CORE="BTCUSDT,ETHUSDT,SOLUSDT"
+# Funding is no longer core-only and is no longer named here. Since 2026-08-09
+# both venues poll it for the whole market - 863 instruments on binance, 232 on
+# hyperliquid - and `build_polled --symbols ALL` reads the list off the archive.
+#
+# A hand-kept list is exactly what cost the trade tape 99.6% of itself: capture
+# subscribed 2,098 symbols while this supervisor asked for 9, and raw is evicted
+# after seven days so those days could not be recovered by fixing the list
+# later. Funding is not going to repeat it.
+FUNDING_SYMBOLS="ALL"
 # No hyperliquid core list any more: it existed only for the bars loop, which now
 # reads its symbols off the archive. An unused constant naming three symbols is
 # how the next reader concludes the build is still core-only.
@@ -74,9 +83,11 @@ while true; do
   yesterday=$(date -u -d 'yesterday' +%F)
 
   for day in "$yesterday" "$today"; do
-    for spec in "funding binance" "book binance" "book binance-spot"; do
+    for spec in "funding binance" "funding hyperliquid" "book binance" "book binance-spot"; do
       set -- $spec
-      result=$(build "$1" "$2" "$day" "$CORE")
+      # Funding reads its universe off the archive; depth is core-only.
+      if [ "$1" = "funding" ]; then symbols="$FUNDING_SYMBOLS"; else symbols="$CORE"; fi
+      result=$(build "$1" "$2" "$day" "$symbols")
       printf '{"ts":"%s","day":"%s","result":%s}\n' \
         "$started" "$day" "${result:-null}" >> "$RUNS"
     done

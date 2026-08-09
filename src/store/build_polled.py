@@ -24,9 +24,13 @@ import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
-from capture.raw_writer import read_pair
+import re
+
+from capture.raw_writer import RAW_SUFFIX, read_pair
 from store.book_snapshots import build_book_frame, extract_book_snapshot
-from store.funding_rates import build_funding_frame, extract_funding
+from store.funding_rates import (
+    build_funding_frame, extract_funding, extract_hyperliquid_funding,
+)
 from store.parquet_partition import append_partition
 
 # Which archived stream feeds which dataset, and how to read it. Keyed by
@@ -36,6 +40,61 @@ DATASETS: dict[str, tuple[str, Callable, Callable]] = {
     "funding": ("premiumIndex", extract_funding, build_funding_frame),
     "book": ("depthSnapshot", extract_book_snapshot, build_book_frame),
 }
+
+# Where a venue's raw stream is named differently from the dataset's default, or
+# needs a different reader. One DATASET, several venue models: Binance polls
+# `premiumIndex` and funds on mark every eight hours, Hyperliquid polls
+# `assetCtx` and funds on an oracle price hourly. Both belong in `funding` -
+# splitting them into two datasets would push "which venue am I holding" onto
+# every consumer, and cross-venue carry is a Phase 4/5 strategy in its own right
+# (ledger SP-059). The row-level differences travel as columns instead.
+VENUE_OVERRIDES: dict[tuple[str, str], tuple[str, Callable]] = {
+    ("funding", "hyperliquid"): ("assetCtx", extract_hyperliquid_funding),
+}
+
+
+def source_for(dataset: str, venue: str) -> tuple[str, Callable]:
+    """The archived stream and reader for one dataset on one venue."""
+    stream, extract, _ = DATASETS[dataset]
+    return VENUE_OVERRIDES.get((dataset, venue), (stream, extract))
+
+
+# Same word as `store.cli --symbols ALL`, so both ends of the pipeline read
+# alike rather than one saying ALL and the other expecting a list.
+SYMBOLS_ALL = "ALL"
+
+
+def polled_symbols(capture_root: Path, venue: str, date: str, stream: str) -> list[str]:
+    """Every symbol this venue-day polled, read off the archive.
+
+    Needed the moment funding went broad. `binance.poll_specs` fetched three
+    symbols until 2026-08-09 and the supervisor named them on the command line;
+    it now polls the whole market and writes 863 instruments, which no hand-kept
+    list is going to track. A dataset built from a stale list is the failure
+    already recorded against the trade tape - capture subscribed 2,098 symbols
+    while the supervisor asked for 9, so 99.6% of the tape became bars for
+    nobody, and raw is evicted after seven days so it could not be fixed later.
+
+    Read off the archive rather than off the universe snapshot, for the same
+    reason `captured_symbols` is: the snapshot says what the venue LISTED, and
+    only the archive knows what was POLLED.
+
+    The symbol is cut out with the date-and-hour tail anchored rather than by
+    splitting on "_", because a symbol carrying an underscore is a listing away
+    rather than impossible.
+    """
+    folder = Path(capture_root) / "raw" / venue / date
+    if not folder.is_dir():
+        return []
+    hour_file = re.compile(
+        rf"^{re.escape(stream)}_(?P<symbol>.+)_{re.escape(date)}T\d{{2}}"
+        rf"{re.escape(RAW_SUFFIX)}$")
+    return sorted({
+        match.group("symbol")
+        for match in (hour_file.match(path.name)
+                      for path in folder.glob(f"{stream}_*{RAW_SUFFIX}"))
+        if match is not None
+    })
 
 
 def _hour_files(capture_root: Path, venue: str, date: str, stream: str,
@@ -64,7 +123,8 @@ def build_for_day(capture_root: Path, store_root: Path, venue: str, date: str,
     """Read one venue-day of a polled stream and append it to its dataset."""
     if dataset not in DATASETS:
         raise SystemExit(f"unknown dataset {dataset!r}; known: {sorted(DATASETS)}")
-    stream, extract, build = DATASETS[dataset]
+    _, _, build = DATASETS[dataset]
+    stream, extract = source_for(dataset, venue)
 
     observations = []
     frames = 0
@@ -108,15 +168,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset", required=True, choices=sorted(DATASETS))
     parser.add_argument("--venue", required=True)
     parser.add_argument("--date", required=True, help="UTC date, YYYY-MM-DD")
-    parser.add_argument("--symbols", required=True, help="comma-separated")
+    parser.add_argument("--symbols", required=True,
+                        help=f"comma-separated, or {SYMBOLS_ALL} for every symbol "
+                             f"this venue-day actually polled")
     parser.add_argument("--capture-root", default=str(Path.home() / "capture"))
     parser.add_argument("--store-root",
                         default=str(Path.home() / "capture" / "store"))
     args = parser.parse_args(argv)
 
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    if not symbols:
-        parser.error("--symbols must name at least one symbol")
+    stream, _ = source_for(args.dataset, args.venue)
+    if args.symbols.strip().upper() == SYMBOLS_ALL:
+        symbols = polled_symbols(Path(args.capture_root), args.venue,
+                                 args.date, stream)
+        if not symbols:
+            print(f"no {stream} polls on disk for {args.venue} {args.date}; "
+                  f"nothing to build", file=sys.stderr)
+            return 0
+        print(f"{len(symbols)} symbol(s) polled {stream} for {args.venue} "
+              f"{args.date}", file=sys.stderr)
+    else:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        if not symbols:
+            parser.error("--symbols must name at least one symbol")
 
     import json
     print(json.dumps(build_for_day(
