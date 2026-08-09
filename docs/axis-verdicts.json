@@ -645,6 +645,15 @@
     "tests/test_consolidated_price.py",
     "src/features/consolidated_price.py"
    ]
+  },
+  "features.volume_quality": {
+   "learning": "n/a: a corroboration measure over stored bars, nothing fitted. The one fixed number is the window length and it is disclosed in the module docstring; there is deliberately NO threshold anywhere - the module reports a fraction and a discounted figure and leaves the judgement to whoever sizes",
+   "reasoning": "pass: it refuses to claim what it cannot show. The measure is named no_impact_fraction rather than wash_fraction because a quiet minute in an illiquid pair produces the identical shape - it is an upper bound on uncorroborated volume, and the live run supports that reading, since the worst symbols are the thin non-dollar pairs rather than the majors. It compares high to low rather than open to close, because a bar that returned to its open still formed price",
+   "depth": "fail: nothing consumes the discount. The intended consumer is position sizing, which does not exist - so it cannot yet change what the system does when it is wrong. Recorded as a fail rather than deferred, and the wall tile says the same",
+   "evidence": [
+    "tests/test_volume_quality.py",
+    "src/features/volume_quality.py"
+   ]
   }
  }
 }

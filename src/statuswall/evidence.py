@@ -294,6 +294,33 @@ def probe_liquidation_feed(facts: SystemFacts) -> ProbeResult:
                                 "liquidation feed")
 
 
+def probe_wash_trading_discount(facts: SystemFacts) -> ProbeResult:
+    # Computes the discount rather than checking a file exists. PARTIAL, not
+    # OK, and the reason is on the tile: nothing sizes off the discounted
+    # figure yet because no sizer exists, and the measure is an upper bound on
+    # uncorroborated volume rather than a wash-trading verdict.
+    try:
+        from features.volume_quality import measure_volume_quality
+        table = measure_volume_quality(facts.capture_root / "store",
+                                       int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"volume quality failed: {error}",
+                           "features/volume_quality.py")
+    if table.rows.empty:
+        return ProbeResult(NOT_BUILT, "no symbol has enough bars to corroborate",
+                           "capture/store/bars")
+    reported = float(table.rows["reported_volume"].sum())
+    discounted = float(table.rows["discounted_volume"].sum())
+    share = 0.0 if reported <= 0 else (reported - discounted) / reported
+    median = float(table.rows["no_impact_fraction"].median())
+    return ProbeResult(
+        PARTIAL,
+        f"{len(table.rows)} (venue, symbol) pairs corroborated: {share:.1%} of all "
+        f"reported volume moved no price, median symbol {median:.1%}. Upper bound "
+        f"on uncorroborated volume, not a wash verdict; nothing sizes off it yet",
+        "features/volume_quality.py + capture/store/bars")
+
+
 def probe_consolidated_price(facts: SystemFacts) -> ProbeResult:
     # Asked at the newest clock the book dataset supports, not at wall-clock
     # now, and the gap between those two is reported rather than hidden: the
@@ -1128,6 +1155,7 @@ PROBES = {
     "spot perp basis term structure": probe_spot_perp_basis,
     "stablecoin peg monitor": probe_peg_monitor,
     "cross venue consolidated price liquidity weighted": probe_consolidated_price,
+    "wash trading discount on reported volume": probe_wash_trading_discount,
     "mark price vs index vs oracle price per venue": probe_mark_price,
     "gap detection provenance flagged backfill": probe_gap_detection,
     "per feed data quality score": probe_data_quality_score,
