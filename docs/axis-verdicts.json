@@ -198,9 +198,10 @@
     },
     "capture.capture_console": {
       "learning": "n/a: a display. Nothing is fitted",
-      "reasoning": "n/a: it reports and decides nothing",
-      "depth": "fail: no test exercises it at all, so nothing demonstrates it renders correctly under any condition. An operator view that is wrong when the system is wrong is the Rule 8 failure in miniature, and there is no evidence either way",
+      "reasoning": "pass: it reads freshness from file mtimes rather than the ledger, because a stream silently doing nothing writes no events - the absence is the condition that must be visible, and only the archive carries it. It also reports a quarantined hour from the ledger, which file freshness gets exactly backwards: `reconcile_pair` rewrites the files a refused stream is not writing to, so a repaired hour looks freshly written while the recorder still refuses it",
+      "depth": "pass: cleared 2026-08-09, having failed for having no test at all. Nine tests now drive the FAILING states rather than the happy path - a stopped stream renders STALE in both the text and the HTML, a quarantined hour is surfaced, restarts are surfaced because a recorder restarting every two minutes looks identical to a healthy one in a snapshot of file ages, an empty archive renders rather than raising, and a symbol that is filename-legal but markup-dangerous is escaped. It also needs no server process that could itself die and take the view with it",
       "evidence": [
+        "tests/test_capture_console.py",
         "src/capture/capture_console.py"
       ]
     },
