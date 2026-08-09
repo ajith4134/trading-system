@@ -11,6 +11,10 @@ import datetime as dt
 import sys
 from pathlib import Path
 
+from statuswall.build_progress import (
+    count_unresolved_ledger_rows, probe_forward_paper, render_build_progress_page,
+    summarise_build_progress,
+)
 from statuswall.catalogue import read_catalogue
 from statuswall.evidence import (
     NOT_BUILT, SEVERITY_ORDER, STATE_LABEL, assess, measure_system, verify_probe_coverage,
@@ -60,6 +64,19 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_wall(WallInput(features, results, facts)), encoding="utf-8")
+
+    # The build-progress board rides the same measurement pass and lands beside
+    # the wall, so the boards supervisor serves it without knowing it exists.
+    paper_running, paper_evidence = probe_forward_paper(Path(args.capture_root))
+    progress_out = out.parent / "build-progress.html"
+    progress_out.write_text(render_build_progress_page(
+        phases=summarise_build_progress(features, results),
+        unresolved_rows=count_unresolved_ledger_rows(ledger_root),
+        paper_running=paper_running,
+        paper_evidence=paper_evidence,
+        generated_at=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    ), encoding="utf-8")
+    print(f"wrote {progress_out}")
 
     counts = {state: 0 for state in SEVERITY_ORDER}
     for result in results.values():

@@ -1,605 +1,614 @@
 {
-  "_note": [
-    "§1a.6: no module ships without a learning / reasoning / depth verdict, each",
-    "pass or fail with the evidence named. `n/a` is a first-class answer - a",
-    "Parquet writer does not reason - but it must be stated, not left blank.",
-    "",
-    "A verdict is a judgement and this file is where the judgement is recorded.",
-    "What is CHECKED mechanically by `integrity.axis_verdicts` is that every axis",
-    "is answered, that the answer is one of pass/fail/n/a, and that every named",
-    "artifact is on disk. A verdict citing a test nobody wrote fails the check.",
-    "",
-    "Completed 2026-08-09 for every module in src/. Four carry an explicit FAIL",
-    "and that is the point of the exercise: a standard that produces only passes",
-    "is a standard nobody fails. Three fail DEPTH because nothing calls them - a",
-    "module that cannot run cannot change what the system does when it is wrong,",
-    "which is the master test - and one because no test exercises it at all."
-  ],
-  "modules": {
-    "validation.breadth": {
-      "learning": "pass: no constant in the decision path is typed. The trigger threshold is a percentile of each symbol's OWN history (L1), and the collapse band 5-15 is quoted from §5a.4 rather than chosen here - a gate that picked its own threshold would be grading itself against a number selected to pass",
-      "reasoning": "pass: it distinguishes clustered arrivals from correlated outcomes and says which it found. The first draft read §5a.4's 'cluster AND correlate' as a disjunction and would have reported REDESIGN on data the spec does not call one; the conjunction is now pinned by a test",
-      "depth": "pass: changes behaviour when wrong. REDESIGN is a reachable verdict that stops Phase 4, and INCONCLUSIVE is returned rather than a number whenever the sample cannot support one",
-      "evidence": [
-        "tests/test_breadth_gate.py",
-        "src/validation/breadth.py"
-      ]
-    },
-    "validation.promotion_pipeline": {
-      "learning": "pass: every configuration scored is a Trial Registry entry, and the N that deflates the winner is the registry's cumulative count (L7) - a wider search raises its own bar",
-      "reasoning": "pass: it caught a lookahead in its own candidate. Pure noise scored Sharpe 3.90 and passed three of five gates; the return definition was selecting on information that had not settled. Both the noise case and the real-edge case are tests, because a stack that refuses everything measures nothing",
-      "depth": "pass: the master test. A refusal is the designed outcome, and the gates compose with AND so no single one can be outvoted",
-      "evidence": [
-        "tests/test_promotion_pipeline.py",
-        "src/validation/promotion_pipeline.py"
-      ]
-    },
-    "risk.tail_cap": {
-      "learning": "pass: the operating ladder is derived from a block-bootstrapped drawdown distribution rather than from the single realised maximum (VX-011), and the ceiling is read from a file the user owns rather than fitted at all",
-      "reasoning": "pass: it separates what it may change from what it may not. Every derived rung is clamped to the user's ceiling and the clamping is recorded - §6's line made mechanical rather than checked",
-      "depth": "pass: a missing ceiling FAILS rather than being skipped, and paper breaches are recorded as `would_have_breached` instead of being silently unenforced",
-      "evidence": [
-        "tests/test_tail_cap.py",
-        "src/risk/tail_cap.py"
-      ]
-    },
-    "store.funding_backfill": {
-      "learning": "n/a: it fetches and stores settled numbers. Nothing here is fitted and nothing claims to be",
-      "reasoning": "n/a: no decision is taken from the data it writes",
-      "depth": "pass: the safeguard is mechanical rather than documented. Availability time is the fetch, so every simulated clock in the past sees an empty dataset and no backtest can consume it by accident",
-      "evidence": [
-        "tests/test_funding_backfill.py",
-        "src/store/funding_backfill.py"
-      ]
-    },
-    "integrity.unsupported_claims": {
-      "learning": "n/a: a static analysis. Nothing is fitted",
-      "reasoning": "pass: it distinguishes three states rather than two - running, reachable only by hand, and unreachable - because its first version called nine hand-run modules dead and a check that cries wolf gets switched off",
-      "depth": "pass: it changes what happens when the project is wrong about itself. The ratchet fails in BOTH directions, so fixing a claim without updating the baseline is also an error",
-      "evidence": [
-        "tests/test_unsupported_claims.py",
-        "src/integrity/unsupported_claims.py"
-      ]
-    },
-    "integrity.axis_verdicts": {
-      "learning": "n/a: a coverage check over a record. Nothing is fitted",
-      "reasoning": "pass: it separates what it can measure from what it cannot. The verdict is a judgement; coverage and the existence of named evidence are measured, and the module says which is which",
-      "depth": "pass: modules are enumerated from `src/` rather than from this file, so a module added without a verdict makes the number fall instead of leaving the omission invisible",
-      "evidence": [
-        "tests/test_axis_verdicts.py",
-        "src/integrity/axis_verdicts.py"
-      ]
-    },
-    "ops.venue_health_watch": {
-      "learning": "n/a: it forwards measured health reports to a registry. No parameter is fitted",
-      "reasoning": "pass: a venue whose report cannot be built is named rather than skipped, because a silent skip leaves the registry serving a stale verdict with nothing saying the input stopped",
-      "depth": "pass: it is what makes the halt registry a mechanism rather than a library - `observe()` had zero callers while the wall claimed the auto-halt was armed",
-      "evidence": [
-        "tests/test_venue_health_watch.py",
-        "src/ops/venue_health_watch.py"
-      ]
-    },
-    "capture.venues.bybit": {
-      "learning": "n/a: a venue adapter. Nothing is fitted",
-      "reasoning": "pass: it checks `retCode` before reading a body, because this venue answers HTTP 200 with errors, and it skips dated futures on the venue's own empty `fundingRate` rather than on a naming heuristic",
-      "depth": "pass: `ws_url` raises rather than returning a URL nobody meant to connect, and the venue's clock is merged onto each record so a row can be dated without the envelope it arrived in",
-      "evidence": [
-        "tests/test_bybit_funding.py",
-        "src/capture/venues/bybit.py"
-      ]
-    },
-    "capture.venues.binance_funding": {
-      "learning": "n/a: a venue adapter. Nothing is fitted",
-      "reasoning": "pass: it exists because of a measured comparison - binance-spot survived the hour boundary with more writers, so the burst was the difference rather than the total - and the module records that the threshold was never proven",
-      "depth": "pass: the funding spec is defined once and returned only here, so the recorder cannot start polling it again by accident and the two processes cannot drift on cadence or weight",
-      "evidence": [
-        "tests/test_venues.py",
-        "src/capture/venues/binance_funding.py"
-      ]
-    },
-    "capture.raw_writer": {
-      "learning": "n/a: writes bytes. No parameter is fitted",
-      "reasoning": "pass: refuses an hour it cannot append to rather than guessing `n`, and states in its own docstring what a marker it could not place costs",
-      "depth": "pass: the flush cadence bounds crash loss to the frames since the last zstd boundary, and ordering is load-bearing - raw is fsynced before the index footer so an interrupted close can never leave the index ahead of the data",
-      "evidence": [
-        "tests/test_raw_writer.py",
-        "src/capture/raw_writer.py"
-      ]
-    },
-    "capture.venue_recorder": {
-      "learning": "pass: the silence threshold is a 0.90 quantile over each stream's own recent gaps, not a constant. A high-water mark was tried first and taught the check to ignore the stalls it existed to catch (L1)",
-      "reasoning": "pass: it separates a slow stream from a dead one on repetition rather than on magnitude, because on first sight a 200 s gap on a 200 s stream and a 200 s stall on a 1 s stream are identical",
-      "depth": "pass: a damaged hour is quarantined per (stream, symbol) rather than taking the venue down, and the frames lost are counted rather than dropped",
-      "evidence": [
-        "tests/test_venue_recorder.py",
-        "src/capture/venue_recorder.py"
-      ]
-    },
-    "capture.sequencing": {
-      "learning": "pass: the staleness baseline is learned from each stream's observed cadence, and the learning rule's own failure mode is documented where it is set",
-      "reasoning": "pass: gap detection is per venue by construction - Binance chains depth on U/u/pu and Hyperliquid publishes no sequence at all, so the second gets staleness rather than a chain it does not have",
-      "depth": "pass: a break in the chain is recorded as a corrupting ledger event, which is what stops a reconstructed book being trusted",
-      "evidence": [
-        "tests/test_sequencing.py",
-        "src/capture/sequencing.py"
-      ]
-    },
-    "capture.capture_health": {
-      "learning": "n/a: it counts what the ledger recorded. Nothing is fitted",
-      "reasoning": "pass: it distinguishes a stream that never connected from a market that never traded, and reports an uninitialised capture as its own state rather than as absence",
-      "depth": "pass: a mistyped severity is bucketed rather than raised, so one odd ledger line cannot leave a whole venue-day unreported - which would be indistinguishable from healthy",
-      "evidence": [
-        "tests/test_capture_health.py",
-        "src/capture/capture_health.py"
-      ]
-    },
-    "capture.capture_ledger": {
-      "learning": "n/a: an append-only event log. Nothing is fitted",
-      "reasoning": "n/a: it records what it is told and decides nothing",
-      "depth": "pass: anomalies are first-class queryable events rather than log lines, which is what lets every check above read them",
-      "evidence": [
-        "tests/test_capture_ledger.py",
-        "src/capture/capture_ledger.py"
-      ]
-    },
-    "capture.frame_codec": {
-      "learning": "n/a: byte-exact framing. Nothing is fitted",
-      "reasoning": "n/a: no decision is taken here",
-      "depth": "pass: escaping is reversible and the index entry is encoded before either file is written, so a failure cannot leave raw and index disagreeing",
-      "evidence": [
-        "tests/test_frame_codec.py",
-        "src/capture/frame_codec.py"
-      ]
-    },
-    "capture.repair_archive": {
-      "learning": "n/a: a filesystem repair pass. Nothing is fitted",
-      "reasoning": "pass: it distinguishes an hour a live writer holds from a torn one, and the two scopes are disjoint by construction so the background pass cannot reach an hour a recorder is opening",
-      "depth": "pass: markers are swept at any age and in any venue precisely because a stale one is silent - one blocked an hour from every backup for six days",
-      "evidence": [
-        "tests/test_repair_archive.py",
-        "src/capture/repair_archive.py"
-      ]
-    },
-    "capture.rest_poller": {
-      "learning": "n/a: a polling loop. Nothing is fitted",
-      "reasoning": "pass: it spends the shared rate budget BEFORE asking, so a poll that cannot afford its weight is skipped rather than earning a per-IP ban for every process",
-      "depth": "pass: a failed fetch yields no frame rather than propagating, because letting a 500 out would take that venue's whole capture down with it - and the silence is still visible as a stream producing nothing",
-      "evidence": [
-        "tests/test_rest_poller.py",
-        "src/capture/rest_poller.py"
-      ]
-    },
-    "capture.universe_tracker": {
-      "learning": "n/a: it records membership as observed. Nothing is fitted",
-      "reasoning": "pass: a snapshot that cannot be believed is refused rather than recorded, and a malformed quote map is distinguished from an absent one - the two must not collapse",
-      "depth": "pass: membership is point-in-time, so a symbol listed today cannot be assumed to have existed yesterday",
-      "evidence": [
-        "tests/test_universe_tracker.py",
-        "src/capture/universe_tracker.py"
-      ]
-    },
-    "capture.cli": {
-      "learning": "n/a: an entry point. Nothing is fitted",
-      "reasoning": "pass: it shards subscriptions against a measured URL budget rather than a documented stream cap, because the request line dies before the cap does",
-      "depth": "pass: a dying shard propagates rather than being swallowed - a process capturing three quarters of the universe is worse than one that visibly failed",
-      "evidence": [
-        "tests/test_cli_smoke.py",
-        "src/capture/cli.py"
-      ]
-    },
-    "capture.record_universe_snapshot": {
-      "learning": "n/a: fetches and records. Nothing is fitted",
-      "reasoning": "n/a: it takes no decision from what it records",
-      "depth": "pass: the quote currency is captured WITH membership, point-in-time, because a map fetched later covers a different set of symbols than the day being read",
-      "evidence": [
-        "tests/test_universe_tracker.py",
-        "src/capture/record_universe_snapshot.py"
-      ]
-    },
-    "capture.capture_console": {
-      "learning": "n/a: a display. Nothing is fitted",
-      "reasoning": "pass: it reads freshness from file mtimes rather than the ledger, because a stream silently doing nothing writes no events - the absence is the condition that must be visible, and only the archive carries it. It also reports a quarantined hour from the ledger, which file freshness gets exactly backwards: `reconcile_pair` rewrites the files a refused stream is not writing to, so a repaired hour looks freshly written while the recorder still refuses it",
-      "depth": "pass: cleared 2026-08-09, having failed for having no test at all. Nine tests now drive the FAILING states rather than the happy path - a stopped stream renders STALE in both the text and the HTML, a quarantined hour is surfaced, restarts are surfaced because a recorder restarting every two minutes looks identical to a healthy one in a snapshot of file ages, an empty archive renders rather than raising, and a symbol that is filename-legal but markup-dangerous is escaped. It also needs no server process that could itself die and take the view with it",
-      "evidence": [
-        "tests/test_capture_console.py",
-        "src/capture/capture_console.py"
-      ]
-    },
-    "capture.venues": {
-      "learning": "n/a: a venue adapter - the shared spec types and the URL-budget sharder. Nothing is fitted",
-      "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
-      "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
-      "evidence": [
-        "tests/test_venues.py",
-        "src/capture/venues/__init__.py"
-      ]
-    },
-    "capture.venues.binance": {
-      "learning": "n/a: a venue adapter - the perp adapter. Nothing is fitted",
-      "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
-      "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
-      "evidence": [
-        "tests/test_venues.py",
-        "src/capture/venues/binance.py"
-      ]
-    },
-    "capture.venues.binance_spot": {
-      "learning": "n/a: a venue adapter - the spot adapter. Nothing is fitted",
-      "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
-      "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
-      "evidence": [
-        "tests/test_venues.py",
-        "src/capture/venues/binance_spot.py"
-      ]
-    },
-    "capture.venues.hyperliquid": {
-      "learning": "n/a: a venue adapter - the hyperliquid adapter. Nothing is fitted",
-      "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
-      "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
-      "evidence": [
-        "tests/test_venues.py",
-        "src/capture/venues/hyperliquid.py"
-      ]
-    },
-    "store.clock_gated_reader": {
-      "learning": "n/a: a reader. Nothing is fitted",
-      "reasoning": "pass: it resolves corrections by (symbol, venue, event_time) keeping the last visible version, and the key includes venue because two venues legitimately share a symbol and an event time",
-      "depth": "pass: it is the ONLY door, so a windowing off-by-one cannot differ between backtest and live - and joins key on availability, never event time, with no parameter to change that",
-      "evidence": [
-        "tests/test_clock_gated_reader.py",
-        "src/store/clock_gated_reader.py"
-      ]
-    },
-    "store.temporal_schema": {
-      "learning": "n/a: a schema. Nothing is fitted",
-      "reasoning": "n/a: it asserts invariants and decides nothing",
-      "depth": "pass: a frame missing a required timestamp is refused at write time, which is why no later reader has to defend against it",
-      "evidence": [
-        "tests/test_temporal_schema.py",
-        "src/store/temporal_schema.py"
-      ]
-    },
-    "store.parquet_partition": {
-      "learning": "n/a: a writer. Nothing is fitted",
-      "reasoning": "pass: the snapshot id is content-derived, so a rebuild collides by design and a correction is a new snapshot rather than a rewrite",
-      "depth": "pass: schemas are unified across fragments before reading - without it a column added by a later partition is silently dropped, which cost `funding_interval_hours` on 2026-08-09",
-      "evidence": [
-        "tests/test_parquet_partition.py",
-        "src/store/parquet_partition.py"
-      ]
-    },
-    "store.trade_bars": {
-      "learning": "n/a: an aggregation. Nothing is fitted",
-      "reasoning": "pass: each bar carries when it became knowable rather than when it happened, which is what makes the gate above it meaningful",
-      "depth": "pass: a zero price is refused rather than aggregated - 746 bars ate placeholder frames into `low` via `min()` and every one of them looked normal",
-      "evidence": [
-        "tests/test_trade_bars.py",
-        "src/store/trade_bars.py"
-      ]
-    },
-    "store.cli": {
-      "learning": "n/a: a build entry point. Nothing is fitted",
-      "reasoning": "pass: it builds from EVENT time with a bounded lookahead rather than from the folder a frame landed in, and drops only what is known not to be dollar-quoted - unknown and unlisted are built and named",
-      "depth": "pass: a trade no build will ever read is quarantined and counted rather than dropped, and a live hour is skipped rather than read as an empty market",
-      "evidence": [
-        "tests/test_store_cli.py",
-        "src/store/cli.py"
-      ]
-    },
-    "store.funding_rates": {
-      "learning": "n/a: a projection of archived polls. Nothing is fitted",
-      "reasoning": "pass: it carries which price each venue funds on, because Binance funds on mark and Hyperliquid on oracle and a cross-venue carry number that does not know which is comparing two quantities",
-      "depth": "pass: no observations is an empty frame, never a zero rate - charging zero funding to a carry strategy is the optimistic default, not the conservative one",
-      "evidence": [
-        "tests/test_funding_rates.py",
-        "src/store/funding_rates.py"
-      ]
-    },
-    "store.book_snapshots": {
-      "learning": "n/a: a projection of archived snapshots. Nothing is fitted",
-      "reasoning": "n/a: it stores what was polled and decides nothing",
-      "depth": "pass: availability is keyed on receipt, so a snapshot cannot be read before it arrived",
-      "evidence": [
-        "tests/test_book_snapshots.py",
-        "src/store/book_snapshots.py"
-      ]
-    },
-    "store.build_polled": {
-      "learning": "n/a: a builder. Nothing is fitted",
-      "reasoning": "pass: the stream and reader are chosen per venue, so one dataset holds three funding models rather than pushing 'which venue am I holding' onto every consumer",
-      "depth": "pass: a live hour is skipped rather than read, and no rows appends nothing rather than writing an empty dataset over the old one",
-      "evidence": [
-        "tests/test_build_polled.py",
-        "src/store/build_polled.py"
-      ]
-    },
-    "store.quote_currency": {
-      "learning": "n/a: a classification from the venue's own field. Nothing is fitted",
-      "reasoning": "pass: three groups, not two - 'not known to be a dollar' and 'known not to be' are different facts, and folding them would shrink the universe on the day a stablecoin listed",
-      "depth": "pass: never parsed from the symbol string, because BTCU is BTC quoted in U and XRPRLUSD is quoted in RLUSD",
-      "evidence": [
-        "tests/test_quote_currency.py",
-        "src/store/quote_currency.py"
-      ]
-    },
-    "store.correct_bars": {
-      "learning": "n/a: a republish. Nothing is fitted",
-      "reasoning": "n/a: it applies a correction it is given",
-      "depth": "pass: a correction is a new bitemporal row, never a rewrite, so what was believed at the time stays readable",
-      "evidence": [
-        "tests/test_correct_bars.py",
-        "src/store/correct_bars.py"
-      ]
-    },
-    "cost.fee_schedule": {
-      "learning": "n/a: a declared table of what venues charge. Every rate is a disclosed design input, which L1 explicitly permits - what it forbids is a typed number wearing a fitted name",
-      "reasoning": "pass: it carries how much each claim can be trusted, so a rate read from a doc and a rate verified against the venue are not the same object",
-      "depth": "pass: fees are Decimal basis points, never float, because a representation error here prices every trade",
-      "evidence": [
-        "tests/test_fee_schedule.py",
-        "src/cost/fee_schedule.py"
-      ]
-    },
-    "cost.fee_fetcher": {
-      "learning": "n/a: fetches what a venue publishes. Nothing is fitted",
-      "reasoning": "pass: it records that Binance answers 401 without a key while Hyperliquid publishes openly, rather than treating one venue's silence as the other's",
-      "depth": "pass: a stale verification is reported as stale - tiers move with 30-day volume, so an old fetch is a historical fact rather than a current one",
-      "evidence": [
-        "tests/test_fee_fetcher.py",
-        "src/cost/fee_fetcher.py"
-      ]
-    },
-    "cost.round_trip_cost": {
-      "learning": "n/a: arithmetic over declared and measured inputs. Nothing is fitted",
-      "reasoning": "pass: it REFUSES rather than defaulting when an input is missing or stale, and the refusal names what was missing - a quote produced from a default is the flattering answer",
-      "depth": "pass: the master test. It changes what happens when the system does not know something, by declining to price the trade",
-      "evidence": [
-        "tests/test_round_trip_cost.py",
-        "src/cost/round_trip_cost.py"
-      ]
-    },
-    "cost.funding_carry": {
-      "learning": "n/a: charges observed rates at observed settlements. Nothing is fitted",
-      "reasoning": "pass: the rate used at a settlement is the last one KNOWN at that settlement, never the newest - and a settlement with no prior observation raises rather than borrowing",
-      "depth": "pass: funding is charged at actual settlement times rather than smoothed, which is the difference between a carry cost and an average",
-      "evidence": [
-        "tests/test_funding_carry.py",
-        "src/cost/funding_carry.py"
-      ]
-    },
-    "cost.secret_store": {
-      "learning": "n/a: reads credentials. Nothing is fitted",
-      "reasoning": "n/a: it decrypts and returns; no decision is taken",
-      "depth": "pass: into memory only, never to disk, and the watchdog's credential denial depends on the identity file being the single point it reads",
-      "evidence": [
-        "tests/test_secret_store.py",
-        "src/cost/secret_store.py"
-      ]
-    },
-    "cost.cli": {
-      "learning": "n/a: an entry point. Nothing is fitted",
-      "reasoning": "pass: it shows where every number came from rather than only the total, which is what makes a refusal diagnosable",
-      "depth": "pass: a run that cannot price the trade says why, in the same words the engine used",
-      "evidence": [
-        "tests/test_round_trip_cost.py",
-        "src/cost/cli.py"
-      ]
-    },
-    "cost.spread_and_depth": {
-      "learning": "n/a: book arithmetic. Nothing is fitted",
-      "reasoning": "pass: it prices what a book can actually fill rather than quoting the top of it, which is the difference between a spread and a cost",
-      "depth": "fail: cannot change what the system does, because nothing calls it. Reachable from no entry point - the reachability audit lists it as unreachable, and a component that cannot run cannot fail loudly either. Clears when a sizing path uses it",
-      "evidence": [
-        "tests/test_spread_and_depth.py",
-        "src/cost/spread_and_depth.py"
-      ]
-    },
-    "execution.order_intent_wal": {
-      "learning": "n/a: a journal. Nothing is fitted",
-      "reasoning": "pass: the intent is durable BEFORE the request is sent, so an unknown outcome is recoverable rather than invisible - and it never blind-retries",
-      "depth": "pass: it changes what happens after a crash, which is the only moment it exists for",
-      "evidence": [
-        "tests/test_order_intent_wal.py",
-        "src/execution/order_intent_wal.py"
-      ]
-    },
-    "execution.order_lifecycle": {
-      "learning": "n/a: state tracking. Nothing is fitted",
-      "reasoning": "pass: state is remaining quantity rather than a filled flag, because a partial fill is the normal case and a boolean cannot hold it",
-      "depth": "pass: a partially filled order cannot be mistaken for a complete one, which is what stops a double-send",
-      "evidence": [
-        "tests/test_order_lifecycle.py",
-        "src/execution/order_lifecycle.py"
-      ]
-    },
-    "execution.state_recovery": {
-      "learning": "n/a: reconciliation. Nothing is fitted",
-      "reasoning": "pass: it refuses to start on a mismatch rather than adopting it - the prior art adopts or closes, which makes a symptom disappear while the cause keeps running",
-      "depth": "fail: cannot change what the system does, because nothing calls it. It needs venue truth from an authenticated session that does not exist, so the refusal it is built around can never fire. Tracked as RX-005, the last baselined unsupported claim",
-      "evidence": [
-        "tests/test_state_recovery.py",
-        "src/execution/state_recovery.py"
-      ]
-    },
-    "ops.rate_budget": {
-      "learning": "n/a: a token bucket. Capacities are measured from venue headers and disclosed, which is L1's permitted case",
-      "reasoning": "pass: the budget is shared through a locked state file rather than held per process, because two processes each within the limit are together over it",
-      "depth": "pass: it refuses a poll that cannot afford its weight, and a refused poll is cheaper than a per-IP ban that scales to three days",
-      "evidence": [
-        "tests/test_rate_budget.py",
-        "src/ops/rate_budget.py"
-      ]
-    },
-    "ops.venue_halt": {
-      "learning": "n/a: a state machine over health reports. Nothing is fitted",
-      "reasoning": "pass: it halts on corruption alone and REFUSES to halt on silence, with the reason written where the limit is set - the silence count is inflated by thin tail symbols and by a feed the venue withholds, so it cannot tell a sick venue from a wide one",
-      "depth": "pass: a halt persists across restarts, because a halt a restart clears is one an unhealthy venue escapes by killing the watcher; and recovery needs a sustained dwell rather than one clean sample",
-      "evidence": [
-        "tests/test_venue_halt.py",
-        "src/ops/venue_halt.py"
-      ]
-    },
-    "ops.watchdog": {
-      "learning": "n/a: a kill switch. Nothing is fitted",
-      "reasoning": "pass: it reports honestly which mechanisms fired AND which cannot exist on this host - no sudo, no iptables, no nft, so the firewall half is unavailable and says so rather than reporting success",
-      "depth": "pass: the kill file is written first and unconditionally, so even a half-completed trip stops trading; a later trip does not overwrite the first breach's reason",
-      "evidence": [
-        "tests/test_watchdog.py",
-        "src/ops/watchdog.py"
-      ]
-    },
-    "ops.raw_eviction": {
-      "learning": "n/a: a retention policy. Nothing is fitted",
-      "reasoning": "pass: it drops only hours PROVEN to be in the bucket, so the local copy is never the last copy",
-      "depth": "pass: retention lives in a file rather than a constant, so changing it does not require redeploying the thing that enforces it",
-      "evidence": [
-        "tests/test_raw_eviction.py",
-        "src/ops/raw_eviction.py"
-      ]
-    },
-    "paper.fill_model": {
-      "learning": "n/a: a fill rule with a disclosed participation parameter. Not fitted, and not claimed to be",
-      "reasoning": "pass: it keeps optimistic and pessimistic accountings apart rather than averaging them into one number that is true of neither",
-      "depth": "pass: a resting order that never printed does not fill, so an unfilled signal is visible as unfilled rather than as a trade at a hoped price",
-      "evidence": [
-        "tests/test_fill_model.py",
-        "src/paper/fill_model.py"
-      ]
-    },
-    "paper.participation_calibration": {
-      "learning": "n/a: it would estimate participation from prints, and does not run",
-      "reasoning": "pass: the question it asks is the right one - how much of a print a resting order would actually have received, rather than a fixed fraction",
-      "depth": "fail: cannot change what the system does, because nothing calls it. `paper.fill_model` still uses a disclosed constant, so the calibration this module exists to supply is not supplied. Clears when the fill model reads it",
-      "evidence": [
-        "tests/test_participation_calibration.py",
-        "src/paper/participation_calibration.py"
-      ]
-    },
-    "paper.prove_plumbing": {
-      "learning": "n/a: a crude fixed signal, deliberately - it exists to prove wiring, not edge",
-      "reasoning": "pass: it refuses to start while a kill is in force, before anything is journalled, and reports realised P&L only for round trips that closed",
-      "depth": "pass: it drives every layer end to end, which is how the WAL, the fill model and the cost engine were shown to carry a fill at all",
-      "evidence": [
-        "tests/test_kill_switch_gate.py",
-        "src/paper/prove_plumbing.py"
-      ]
-    },
-    "risk.drawdown_distribution": {
-      "learning": "pass: the ladder's levels come from a block bootstrap over observed returns rather than from round numbers or from the single realised maximum (L1)",
-      "reasoning": "pass: it distinguishes the worst that happened from the worst to plan for, and carries both so the gap is visible where the decision is made",
-      "depth": "pass: the block bootstrap preserves the serial dependence that makes drawdowns deep, which an IID resample would destroy and report as safety",
-      "evidence": [
-        "tests/test_drawdown_distribution.py",
-        "src/risk/drawdown_distribution.py"
-      ]
-    },
-    "statuswall.evidence": {
-      "learning": "n/a: probes measure; nothing is fitted",
-      "reasoning": "pass: every probe returns what it found and names where the answer came from, and a feature with no probe is NOT_BUILT by construction rather than by omission",
-      "depth": "pass: one raising probe fails its own tile and leaves the board standing, because a board that renders nothing is useless exactly when something is wrong",
-      "evidence": [
-        "tests/test_statuswall.py",
-        "src/statuswall/evidence.py"
-      ]
-    },
-    "statuswall.wall_page": {
-      "learning": "n/a: a renderer. Nothing is fitted",
-      "reasoning": "n/a: it renders verdicts it is given",
-      "depth": "pass: `STATE_STYLE` has no fallback, so an unhandled state is a crash rather than a green tile - and NOT MEASURED is off the health colour axis so it cannot read as 'nearly OK'",
-      "evidence": [
-        "tests/test_statuswall.py",
-        "src/statuswall/wall_page.py"
-      ]
-    },
-    "statuswall.catalogue": {
-      "learning": "n/a: a parser. Nothing is fitted",
-      "reasoning": "pass: it reads the catalogue rather than restating it, and refuses tables that are not feature tables - a worked Zomma example would otherwise become permanently unmeasurable tiles",
-      "depth": "pass: a probe pointing at a feature the catalogue no longer contains RAISES, because a silently orphaned probe stops reporting a real measurement and nothing looks wrong",
-      "evidence": [
-        "tests/test_statuswall.py",
-        "src/statuswall/catalogue.py"
-      ]
-    },
-    "statuswall.cli": {
-      "learning": "n/a: an entry point. Nothing is fitted",
-      "reasoning": "pass: it refuses to render a board from a catalogue that parsed to nothing, so a parse failure reports itself rather than as every probe orphaned at once",
-      "depth": "pass: the board is rebuilt from live measurement on a cadence; serving a file and refreshing it are different jobs and only one of them used to be anyone's",
-      "evidence": [
-        "tests/test_statuswall.py",
-        "src/statuswall/cli.py"
-      ]
-    },
-    "statuswall.board_server": {
-      "learning": "n/a: a static file server. Nothing is fitted",
-      "reasoning": "n/a: it serves what the generator wrote",
-      "depth": "pass: bound to loopback behind HTTP Basic, so the tunnel is the only exposure and credentials are generated rather than defaulted",
-      "evidence": [
-        "tests/test_board_server.py",
-        "src/statuswall/board_server.py"
-      ]
-    },
-    "validation.trial_registry": {
-      "learning": "pass: N is the count of candidates EVALUATED, counted before evaluation, which is L7's requirement rather than a tally of what was kept",
-      "reasoning": "pass: a trial is claimed and written under one lock, because two search processes reading the same count would both claim it and the ledger would lose a row",
-      "depth": "pass: a candidate that crashes is recorded as abandoned and still counts - a search that could shed trials by failing could shrink its own N at will",
-      "evidence": [
-        "tests/test_trial_registry.py",
-        "src/validation/trial_registry.py"
-      ]
-    },
-    "validation.deflated_sharpe": {
-      "learning": "pass: the hurdle is computed from the observed dispersion of trials rather than a chosen threshold",
-      "reasoning": "pass: it is fed the registry's cumulative N, never the CPCV path count - the donor version was fed the path count and deflated a candidate picked from thousands as though 15 things were tried",
-      "depth": "pass: MinBTL is a hard gate rather than a report, and it rises with N so a wider search demands more history",
-      "evidence": [
-        "tests/test_deflated_sharpe.py",
-        "src/validation/deflated_sharpe.py"
-      ]
-    },
-    "validation.purged_cross_validation": {
-      "learning": "n/a: a splitting scheme. Nothing is fitted",
-      "reasoning": "pass: the purge reaches BOTH ways - the donor's exclusion zone started at the test start and leaked one label horizon of training rows into every block",
-      "depth": "pass: an undeclared family raises rather than defaulting the horizon to zero, which would silently disable the purge entirely",
-      "evidence": [
-        "tests/test_purged_cross_validation.py",
-        "src/validation/purged_cross_validation.py"
-      ]
-    },
-    "validation.backtest_overfitting": {
-      "learning": "n/a: an estimator over supplied return series. Nothing is fitted",
-      "reasoning": "pass: it measures the SELECTION procedure rather than the winner, which is why it needs the whole search's results and not the finalists'",
-      "depth": "pass: it caught a lookahead the deflated Sharpe, MinBTL and purge gates all passed - pure noise at PBO 0.613",
-      "evidence": [
-        "tests/test_backtest_overfitting.py",
-        "src/validation/backtest_overfitting.py"
-      ]
-    },
-    "validation.superior_predictive_ability": {
-      "learning": "n/a: a bootstrap test. Nothing is fitted",
-      "reasoning": "pass: it reports Hansen's consistent p-value beside White's reality check rather than only the one that flatters",
-      "depth": "pass: it refused the pure-noise candidate that the deflated Sharpe passed at N=1, which is the argument for several independent gates rather than a better single one",
-      "evidence": [
-        "tests/test_superior_predictive_ability.py",
-        "src/validation/superior_predictive_ability.py"
-      ]
-    },
-    "validation.holdout_custodian": {
-      "learning": "n/a: a guard. Nothing is fitted",
-      "reasoning": "pass: it refuses a read inside the sealed range and records the refusal, and freezing is distinguished from consuming because a peeked score is indistinguishable from an honest one",
-      "depth": "pass: the refusal IS the feature, and it is enforced at the reader rather than by convention",
-      "evidence": [
-        "tests/test_holdout_custodian.py",
-        "src/validation/holdout_custodian.py"
-      ]
-    },
-    "validation.promotion_gate": {
-      "learning": "pass: every threshold traces to the registry's N or to a measured distribution, not to a chosen number",
-      "reasoning": "pass: the whole CPCV sweep happens inside ONE registry evaluation, which is why the path count can never reach the trial count",
-      "depth": "pass: gates compose with AND, and a candidate is registered before it is scored so a crash cannot shed the trial",
-      "evidence": [
-        "tests/test_promotion_gate.py",
-        "src/validation/promotion_gate.py"
-      ]
-    }
+ "_note": [
+  "\u00a71a.6: no module ships without a learning / reasoning / depth verdict, each",
+  "pass or fail with the evidence named. `n/a` is a first-class answer - a",
+  "Parquet writer does not reason - but it must be stated, not left blank.",
+  "",
+  "A verdict is a judgement and this file is where the judgement is recorded.",
+  "What is CHECKED mechanically by `integrity.axis_verdicts` is that every axis",
+  "is answered, that the answer is one of pass/fail/n/a, and that every named",
+  "artifact is on disk. A verdict citing a test nobody wrote fails the check.",
+  "",
+  "Completed 2026-08-09 for every module in src/. Four carry an explicit FAIL",
+  "and that is the point of the exercise: a standard that produces only passes",
+  "is a standard nobody fails. Three fail DEPTH because nothing calls them - a",
+  "module that cannot run cannot change what the system does when it is wrong,",
+  "which is the master test - and one because no test exercises it at all."
+ ],
+ "modules": {
+  "validation.breadth": {
+   "learning": "pass: no constant in the decision path is typed. The trigger threshold is a percentile of each symbol's OWN history (L1), and the collapse band 5-15 is quoted from \u00a75a.4 rather than chosen here - a gate that picked its own threshold would be grading itself against a number selected to pass",
+   "reasoning": "pass: it distinguishes clustered arrivals from correlated outcomes and says which it found. The first draft read \u00a75a.4's 'cluster AND correlate' as a disjunction and would have reported REDESIGN on data the spec does not call one; the conjunction is now pinned by a test",
+   "depth": "pass: changes behaviour when wrong. REDESIGN is a reachable verdict that stops Phase 4, and INCONCLUSIVE is returned rather than a number whenever the sample cannot support one",
+   "evidence": [
+    "tests/test_breadth_gate.py",
+    "src/validation/breadth.py"
+   ]
+  },
+  "validation.promotion_pipeline": {
+   "learning": "pass: every configuration scored is a Trial Registry entry, and the N that deflates the winner is the registry's cumulative count (L7) - a wider search raises its own bar",
+   "reasoning": "pass: it caught a lookahead in its own candidate. Pure noise scored Sharpe 3.90 and passed three of five gates; the return definition was selecting on information that had not settled. Both the noise case and the real-edge case are tests, because a stack that refuses everything measures nothing",
+   "depth": "pass: the master test. A refusal is the designed outcome, and the gates compose with AND so no single one can be outvoted",
+   "evidence": [
+    "tests/test_promotion_pipeline.py",
+    "src/validation/promotion_pipeline.py"
+   ]
+  },
+  "risk.tail_cap": {
+   "learning": "pass: the operating ladder is derived from a block-bootstrapped drawdown distribution rather than from the single realised maximum (VX-011), and the ceiling is read from a file the user owns rather than fitted at all",
+   "reasoning": "pass: it separates what it may change from what it may not. Every derived rung is clamped to the user's ceiling and the clamping is recorded - \u00a76's line made mechanical rather than checked",
+   "depth": "pass: a missing ceiling FAILS rather than being skipped, and paper breaches are recorded as `would_have_breached` instead of being silently unenforced",
+   "evidence": [
+    "tests/test_tail_cap.py",
+    "src/risk/tail_cap.py"
+   ]
+  },
+  "store.funding_backfill": {
+   "learning": "n/a: it fetches and stores settled numbers. Nothing here is fitted and nothing claims to be",
+   "reasoning": "n/a: no decision is taken from the data it writes",
+   "depth": "pass: the safeguard is mechanical rather than documented. Availability time is the fetch, so every simulated clock in the past sees an empty dataset and no backtest can consume it by accident",
+   "evidence": [
+    "tests/test_funding_backfill.py",
+    "src/store/funding_backfill.py"
+   ]
+  },
+  "integrity.unsupported_claims": {
+   "learning": "n/a: a static analysis. Nothing is fitted",
+   "reasoning": "pass: it distinguishes three states rather than two - running, reachable only by hand, and unreachable - because its first version called nine hand-run modules dead and a check that cries wolf gets switched off",
+   "depth": "pass: it changes what happens when the project is wrong about itself. The ratchet fails in BOTH directions, so fixing a claim without updating the baseline is also an error",
+   "evidence": [
+    "tests/test_unsupported_claims.py",
+    "src/integrity/unsupported_claims.py"
+   ]
+  },
+  "integrity.axis_verdicts": {
+   "learning": "n/a: a coverage check over a record. Nothing is fitted",
+   "reasoning": "pass: it separates what it can measure from what it cannot. The verdict is a judgement; coverage and the existence of named evidence are measured, and the module says which is which",
+   "depth": "pass: modules are enumerated from `src/` rather than from this file, so a module added without a verdict makes the number fall instead of leaving the omission invisible",
+   "evidence": [
+    "tests/test_axis_verdicts.py",
+    "src/integrity/axis_verdicts.py"
+   ]
+  },
+  "ops.venue_health_watch": {
+   "learning": "n/a: it forwards measured health reports to a registry. No parameter is fitted",
+   "reasoning": "pass: a venue whose report cannot be built is named rather than skipped, because a silent skip leaves the registry serving a stale verdict with nothing saying the input stopped",
+   "depth": "pass: it is what makes the halt registry a mechanism rather than a library - `observe()` had zero callers while the wall claimed the auto-halt was armed",
+   "evidence": [
+    "tests/test_venue_health_watch.py",
+    "src/ops/venue_health_watch.py"
+   ]
+  },
+  "capture.venues.bybit": {
+   "learning": "n/a: a venue adapter. Nothing is fitted",
+   "reasoning": "pass: it checks `retCode` before reading a body, because this venue answers HTTP 200 with errors, and it skips dated futures on the venue's own empty `fundingRate` rather than on a naming heuristic",
+   "depth": "pass: `ws_url` raises rather than returning a URL nobody meant to connect, and the venue's clock is merged onto each record so a row can be dated without the envelope it arrived in",
+   "evidence": [
+    "tests/test_bybit_funding.py",
+    "src/capture/venues/bybit.py"
+   ]
+  },
+  "capture.venues.binance_funding": {
+   "learning": "n/a: a venue adapter. Nothing is fitted",
+   "reasoning": "pass: it exists because of a measured comparison - binance-spot survived the hour boundary with more writers, so the burst was the difference rather than the total - and the module records that the threshold was never proven",
+   "depth": "pass: the funding spec is defined once and returned only here, so the recorder cannot start polling it again by accident and the two processes cannot drift on cadence or weight",
+   "evidence": [
+    "tests/test_venues.py",
+    "src/capture/venues/binance_funding.py"
+   ]
+  },
+  "capture.raw_writer": {
+   "learning": "n/a: writes bytes. No parameter is fitted",
+   "reasoning": "pass: refuses an hour it cannot append to rather than guessing `n`, and states in its own docstring what a marker it could not place costs",
+   "depth": "pass: the flush cadence bounds crash loss to the frames since the last zstd boundary, and ordering is load-bearing - raw is fsynced before the index footer so an interrupted close can never leave the index ahead of the data",
+   "evidence": [
+    "tests/test_raw_writer.py",
+    "src/capture/raw_writer.py"
+   ]
+  },
+  "capture.venue_recorder": {
+   "learning": "pass: the silence threshold is a 0.90 quantile over each stream's own recent gaps, not a constant. A high-water mark was tried first and taught the check to ignore the stalls it existed to catch (L1)",
+   "reasoning": "pass: it separates a slow stream from a dead one on repetition rather than on magnitude, because on first sight a 200 s gap on a 200 s stream and a 200 s stall on a 1 s stream are identical",
+   "depth": "pass: a damaged hour is quarantined per (stream, symbol) rather than taking the venue down, and the frames lost are counted rather than dropped",
+   "evidence": [
+    "tests/test_venue_recorder.py",
+    "src/capture/venue_recorder.py"
+   ]
+  },
+  "capture.sequencing": {
+   "learning": "pass: the staleness baseline is learned from each stream's observed cadence, and the learning rule's own failure mode is documented where it is set",
+   "reasoning": "pass: gap detection is per venue by construction - Binance chains depth on U/u/pu and Hyperliquid publishes no sequence at all, so the second gets staleness rather than a chain it does not have",
+   "depth": "pass: a break in the chain is recorded as a corrupting ledger event, which is what stops a reconstructed book being trusted",
+   "evidence": [
+    "tests/test_sequencing.py",
+    "src/capture/sequencing.py"
+   ]
+  },
+  "capture.capture_health": {
+   "learning": "n/a: it counts what the ledger recorded. Nothing is fitted",
+   "reasoning": "pass: it distinguishes a stream that never connected from a market that never traded, and reports an uninitialised capture as its own state rather than as absence",
+   "depth": "pass: a mistyped severity is bucketed rather than raised, so one odd ledger line cannot leave a whole venue-day unreported - which would be indistinguishable from healthy",
+   "evidence": [
+    "tests/test_capture_health.py",
+    "src/capture/capture_health.py"
+   ]
+  },
+  "capture.capture_ledger": {
+   "learning": "n/a: an append-only event log. Nothing is fitted",
+   "reasoning": "n/a: it records what it is told and decides nothing",
+   "depth": "pass: anomalies are first-class queryable events rather than log lines, which is what lets every check above read them",
+   "evidence": [
+    "tests/test_capture_ledger.py",
+    "src/capture/capture_ledger.py"
+   ]
+  },
+  "capture.frame_codec": {
+   "learning": "n/a: byte-exact framing. Nothing is fitted",
+   "reasoning": "n/a: no decision is taken here",
+   "depth": "pass: escaping is reversible and the index entry is encoded before either file is written, so a failure cannot leave raw and index disagreeing",
+   "evidence": [
+    "tests/test_frame_codec.py",
+    "src/capture/frame_codec.py"
+   ]
+  },
+  "capture.repair_archive": {
+   "learning": "n/a: a filesystem repair pass. Nothing is fitted",
+   "reasoning": "pass: it distinguishes an hour a live writer holds from a torn one, and the two scopes are disjoint by construction so the background pass cannot reach an hour a recorder is opening",
+   "depth": "pass: markers are swept at any age and in any venue precisely because a stale one is silent - one blocked an hour from every backup for six days",
+   "evidence": [
+    "tests/test_repair_archive.py",
+    "src/capture/repair_archive.py"
+   ]
+  },
+  "capture.rest_poller": {
+   "learning": "n/a: a polling loop. Nothing is fitted",
+   "reasoning": "pass: it spends the shared rate budget BEFORE asking, so a poll that cannot afford its weight is skipped rather than earning a per-IP ban for every process",
+   "depth": "pass: a failed fetch yields no frame rather than propagating, because letting a 500 out would take that venue's whole capture down with it - and the silence is still visible as a stream producing nothing",
+   "evidence": [
+    "tests/test_rest_poller.py",
+    "src/capture/rest_poller.py"
+   ]
+  },
+  "capture.universe_tracker": {
+   "learning": "n/a: it records membership as observed. Nothing is fitted",
+   "reasoning": "pass: a snapshot that cannot be believed is refused rather than recorded, and a malformed quote map is distinguished from an absent one - the two must not collapse",
+   "depth": "pass: membership is point-in-time, so a symbol listed today cannot be assumed to have existed yesterday",
+   "evidence": [
+    "tests/test_universe_tracker.py",
+    "src/capture/universe_tracker.py"
+   ]
+  },
+  "capture.cli": {
+   "learning": "n/a: an entry point. Nothing is fitted",
+   "reasoning": "pass: it shards subscriptions against a measured URL budget rather than a documented stream cap, because the request line dies before the cap does",
+   "depth": "pass: a dying shard propagates rather than being swallowed - a process capturing three quarters of the universe is worse than one that visibly failed",
+   "evidence": [
+    "tests/test_cli_smoke.py",
+    "src/capture/cli.py"
+   ]
+  },
+  "capture.record_universe_snapshot": {
+   "learning": "n/a: fetches and records. Nothing is fitted",
+   "reasoning": "n/a: it takes no decision from what it records",
+   "depth": "pass: the quote currency is captured WITH membership, point-in-time, because a map fetched later covers a different set of symbols than the day being read",
+   "evidence": [
+    "tests/test_universe_tracker.py",
+    "src/capture/record_universe_snapshot.py"
+   ]
+  },
+  "capture.capture_console": {
+   "learning": "n/a: a display. Nothing is fitted",
+   "reasoning": "pass: it reads freshness from file mtimes rather than the ledger, because a stream silently doing nothing writes no events - the absence is the condition that must be visible, and only the archive carries it. It also reports a quarantined hour from the ledger, which file freshness gets exactly backwards: `reconcile_pair` rewrites the files a refused stream is not writing to, so a repaired hour looks freshly written while the recorder still refuses it",
+   "depth": "pass: cleared 2026-08-09, having failed for having no test at all. Nine tests now drive the FAILING states rather than the happy path - a stopped stream renders STALE in both the text and the HTML, a quarantined hour is surfaced, restarts are surfaced because a recorder restarting every two minutes looks identical to a healthy one in a snapshot of file ages, an empty archive renders rather than raising, and a symbol that is filename-legal but markup-dangerous is escaped. It also needs no server process that could itself die and take the view with it",
+   "evidence": [
+    "tests/test_capture_console.py",
+    "src/capture/capture_console.py"
+   ]
+  },
+  "capture.venues": {
+   "learning": "n/a: a venue adapter - the shared spec types and the URL-budget sharder. Nothing is fitted",
+   "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
+   "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
+   "evidence": [
+    "tests/test_venues.py",
+    "src/capture/venues/__init__.py"
+   ]
+  },
+  "capture.venues.binance": {
+   "learning": "n/a: a venue adapter - the perp adapter. Nothing is fitted",
+   "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
+   "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
+   "evidence": [
+    "tests/test_venues.py",
+    "src/capture/venues/binance.py"
+   ]
+  },
+  "capture.venues.binance_spot": {
+   "learning": "n/a: a venue adapter - the spot adapter. Nothing is fitted",
+   "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
+   "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
+   "evidence": [
+    "tests/test_venues.py",
+    "src/capture/venues/binance_spot.py"
+   ]
+  },
+  "capture.venues.hyperliquid": {
+   "learning": "n/a: a venue adapter - the hyperliquid adapter. Nothing is fitted",
+   "reasoning": "pass: every channel choice here is a measurement rather than a reading of the docs - aggTrade delivers nothing to this host, markPrice delivers nothing over the socket and was moved to a poll, forceOrder is withheld and kept subscribed so recovery would be noticed",
+   "depth": "pass: a stream the venue withholds stays subscribed and its tile stays red, rather than being quietly dropped and reported as healthy",
+   "evidence": [
+    "tests/test_venues.py",
+    "src/capture/venues/hyperliquid.py"
+   ]
+  },
+  "store.clock_gated_reader": {
+   "learning": "n/a: a reader. Nothing is fitted",
+   "reasoning": "pass: it resolves corrections by (symbol, venue, event_time) keeping the last visible version, and the key includes venue because two venues legitimately share a symbol and an event time",
+   "depth": "pass: it is the ONLY door, so a windowing off-by-one cannot differ between backtest and live - and joins key on availability, never event time, with no parameter to change that",
+   "evidence": [
+    "tests/test_clock_gated_reader.py",
+    "src/store/clock_gated_reader.py"
+   ]
+  },
+  "store.temporal_schema": {
+   "learning": "n/a: a schema. Nothing is fitted",
+   "reasoning": "n/a: it asserts invariants and decides nothing",
+   "depth": "pass: a frame missing a required timestamp is refused at write time, which is why no later reader has to defend against it",
+   "evidence": [
+    "tests/test_temporal_schema.py",
+    "src/store/temporal_schema.py"
+   ]
+  },
+  "store.parquet_partition": {
+   "learning": "n/a: a writer. Nothing is fitted",
+   "reasoning": "pass: the snapshot id is content-derived, so a rebuild collides by design and a correction is a new snapshot rather than a rewrite",
+   "depth": "pass: schemas are unified across fragments before reading - without it a column added by a later partition is silently dropped, which cost `funding_interval_hours` on 2026-08-09",
+   "evidence": [
+    "tests/test_parquet_partition.py",
+    "src/store/parquet_partition.py"
+   ]
+  },
+  "store.trade_bars": {
+   "learning": "n/a: an aggregation. Nothing is fitted",
+   "reasoning": "pass: each bar carries when it became knowable rather than when it happened, which is what makes the gate above it meaningful",
+   "depth": "pass: a zero price is refused rather than aggregated - 746 bars ate placeholder frames into `low` via `min()` and every one of them looked normal",
+   "evidence": [
+    "tests/test_trade_bars.py",
+    "src/store/trade_bars.py"
+   ]
+  },
+  "store.cli": {
+   "learning": "n/a: a build entry point. Nothing is fitted",
+   "reasoning": "pass: it builds from EVENT time with a bounded lookahead rather than from the folder a frame landed in, and drops only what is known not to be dollar-quoted - unknown and unlisted are built and named",
+   "depth": "pass: a trade no build will ever read is quarantined and counted rather than dropped, and a live hour is skipped rather than read as an empty market",
+   "evidence": [
+    "tests/test_store_cli.py",
+    "src/store/cli.py"
+   ]
+  },
+  "store.funding_rates": {
+   "learning": "n/a: a projection of archived polls. Nothing is fitted",
+   "reasoning": "pass: it carries which price each venue funds on, because Binance funds on mark and Hyperliquid on oracle and a cross-venue carry number that does not know which is comparing two quantities",
+   "depth": "pass: no observations is an empty frame, never a zero rate - charging zero funding to a carry strategy is the optimistic default, not the conservative one",
+   "evidence": [
+    "tests/test_funding_rates.py",
+    "src/store/funding_rates.py"
+   ]
+  },
+  "store.book_snapshots": {
+   "learning": "n/a: a projection of archived snapshots. Nothing is fitted",
+   "reasoning": "n/a: it stores what was polled and decides nothing",
+   "depth": "pass: availability is keyed on receipt, so a snapshot cannot be read before it arrived",
+   "evidence": [
+    "tests/test_book_snapshots.py",
+    "src/store/book_snapshots.py"
+   ]
+  },
+  "store.build_polled": {
+   "learning": "n/a: a builder. Nothing is fitted",
+   "reasoning": "pass: the stream and reader are chosen per venue, so one dataset holds three funding models rather than pushing 'which venue am I holding' onto every consumer",
+   "depth": "pass: a live hour is skipped rather than read, and no rows appends nothing rather than writing an empty dataset over the old one",
+   "evidence": [
+    "tests/test_build_polled.py",
+    "src/store/build_polled.py"
+   ]
+  },
+  "store.quote_currency": {
+   "learning": "n/a: a classification from the venue's own field. Nothing is fitted",
+   "reasoning": "pass: three groups, not two - 'not known to be a dollar' and 'known not to be' are different facts, and folding them would shrink the universe on the day a stablecoin listed",
+   "depth": "pass: never parsed from the symbol string, because BTCU is BTC quoted in U and XRPRLUSD is quoted in RLUSD",
+   "evidence": [
+    "tests/test_quote_currency.py",
+    "src/store/quote_currency.py"
+   ]
+  },
+  "store.correct_bars": {
+   "learning": "n/a: a republish. Nothing is fitted",
+   "reasoning": "n/a: it applies a correction it is given",
+   "depth": "pass: a correction is a new bitemporal row, never a rewrite, so what was believed at the time stays readable",
+   "evidence": [
+    "tests/test_correct_bars.py",
+    "src/store/correct_bars.py"
+   ]
+  },
+  "cost.fee_schedule": {
+   "learning": "n/a: a declared table of what venues charge. Every rate is a disclosed design input, which L1 explicitly permits - what it forbids is a typed number wearing a fitted name",
+   "reasoning": "pass: it carries how much each claim can be trusted, so a rate read from a doc and a rate verified against the venue are not the same object",
+   "depth": "pass: fees are Decimal basis points, never float, because a representation error here prices every trade",
+   "evidence": [
+    "tests/test_fee_schedule.py",
+    "src/cost/fee_schedule.py"
+   ]
+  },
+  "cost.fee_fetcher": {
+   "learning": "n/a: fetches what a venue publishes. Nothing is fitted",
+   "reasoning": "pass: it records that Binance answers 401 without a key while Hyperliquid publishes openly, rather than treating one venue's silence as the other's",
+   "depth": "pass: a stale verification is reported as stale - tiers move with 30-day volume, so an old fetch is a historical fact rather than a current one",
+   "evidence": [
+    "tests/test_fee_fetcher.py",
+    "src/cost/fee_fetcher.py"
+   ]
+  },
+  "cost.round_trip_cost": {
+   "learning": "n/a: arithmetic over declared and measured inputs. Nothing is fitted",
+   "reasoning": "pass: it REFUSES rather than defaulting when an input is missing or stale, and the refusal names what was missing - a quote produced from a default is the flattering answer",
+   "depth": "pass: the master test. It changes what happens when the system does not know something, by declining to price the trade",
+   "evidence": [
+    "tests/test_round_trip_cost.py",
+    "src/cost/round_trip_cost.py"
+   ]
+  },
+  "cost.funding_carry": {
+   "learning": "n/a: charges observed rates at observed settlements. Nothing is fitted",
+   "reasoning": "pass: the rate used at a settlement is the last one KNOWN at that settlement, never the newest - and a settlement with no prior observation raises rather than borrowing",
+   "depth": "pass: funding is charged at actual settlement times rather than smoothed, which is the difference between a carry cost and an average",
+   "evidence": [
+    "tests/test_funding_carry.py",
+    "src/cost/funding_carry.py"
+   ]
+  },
+  "cost.secret_store": {
+   "learning": "n/a: reads credentials. Nothing is fitted",
+   "reasoning": "n/a: it decrypts and returns; no decision is taken",
+   "depth": "pass: into memory only, never to disk, and the watchdog's credential denial depends on the identity file being the single point it reads",
+   "evidence": [
+    "tests/test_secret_store.py",
+    "src/cost/secret_store.py"
+   ]
+  },
+  "cost.cli": {
+   "learning": "n/a: an entry point. Nothing is fitted",
+   "reasoning": "pass: it shows where every number came from rather than only the total, which is what makes a refusal diagnosable",
+   "depth": "pass: a run that cannot price the trade says why, in the same words the engine used",
+   "evidence": [
+    "tests/test_round_trip_cost.py",
+    "src/cost/cli.py"
+   ]
+  },
+  "cost.spread_and_depth": {
+   "learning": "n/a: book arithmetic. Nothing is fitted",
+   "reasoning": "pass: it prices what a book can actually fill rather than quoting the top of it, which is the difference between a spread and a cost",
+   "depth": "fail: cannot change what the system does, because nothing calls it. Reachable from no entry point - the reachability audit lists it as unreachable, and a component that cannot run cannot fail loudly either. Clears when a sizing path uses it",
+   "evidence": [
+    "tests/test_spread_and_depth.py",
+    "src/cost/spread_and_depth.py"
+   ]
+  },
+  "execution.order_intent_wal": {
+   "learning": "n/a: a journal. Nothing is fitted",
+   "reasoning": "pass: the intent is durable BEFORE the request is sent, so an unknown outcome is recoverable rather than invisible - and it never blind-retries",
+   "depth": "pass: it changes what happens after a crash, which is the only moment it exists for",
+   "evidence": [
+    "tests/test_order_intent_wal.py",
+    "src/execution/order_intent_wal.py"
+   ]
+  },
+  "execution.order_lifecycle": {
+   "learning": "n/a: state tracking. Nothing is fitted",
+   "reasoning": "pass: state is remaining quantity rather than a filled flag, because a partial fill is the normal case and a boolean cannot hold it",
+   "depth": "pass: a partially filled order cannot be mistaken for a complete one, which is what stops a double-send",
+   "evidence": [
+    "tests/test_order_lifecycle.py",
+    "src/execution/order_lifecycle.py"
+   ]
+  },
+  "execution.state_recovery": {
+   "learning": "n/a: reconciliation. Nothing is fitted",
+   "reasoning": "pass: it refuses to start on a mismatch rather than adopting it - the prior art adopts or closes, which makes a symptom disappear while the cause keeps running",
+   "depth": "fail: cannot change what the system does, because nothing calls it. It needs venue truth from an authenticated session that does not exist, so the refusal it is built around can never fire. Tracked as RX-005, the last baselined unsupported claim",
+   "evidence": [
+    "tests/test_state_recovery.py",
+    "src/execution/state_recovery.py"
+   ]
+  },
+  "ops.rate_budget": {
+   "learning": "n/a: a token bucket. Capacities are measured from venue headers and disclosed, which is L1's permitted case",
+   "reasoning": "pass: the budget is shared through a locked state file rather than held per process, because two processes each within the limit are together over it",
+   "depth": "pass: it refuses a poll that cannot afford its weight, and a refused poll is cheaper than a per-IP ban that scales to three days",
+   "evidence": [
+    "tests/test_rate_budget.py",
+    "src/ops/rate_budget.py"
+   ]
+  },
+  "ops.venue_halt": {
+   "learning": "n/a: a state machine over health reports. Nothing is fitted",
+   "reasoning": "pass: it halts on corruption alone and REFUSES to halt on silence, with the reason written where the limit is set - the silence count is inflated by thin tail symbols and by a feed the venue withholds, so it cannot tell a sick venue from a wide one",
+   "depth": "pass: a halt persists across restarts, because a halt a restart clears is one an unhealthy venue escapes by killing the watcher; and recovery needs a sustained dwell rather than one clean sample",
+   "evidence": [
+    "tests/test_venue_halt.py",
+    "src/ops/venue_halt.py"
+   ]
+  },
+  "ops.watchdog": {
+   "learning": "n/a: a kill switch. Nothing is fitted",
+   "reasoning": "pass: it reports honestly which mechanisms fired AND which cannot exist on this host - no sudo, no iptables, no nft, so the firewall half is unavailable and says so rather than reporting success",
+   "depth": "pass: the kill file is written first and unconditionally, so even a half-completed trip stops trading; a later trip does not overwrite the first breach's reason",
+   "evidence": [
+    "tests/test_watchdog.py",
+    "src/ops/watchdog.py"
+   ]
+  },
+  "ops.raw_eviction": {
+   "learning": "n/a: a retention policy. Nothing is fitted",
+   "reasoning": "pass: it drops only hours PROVEN to be in the bucket, so the local copy is never the last copy",
+   "depth": "pass: retention lives in a file rather than a constant, so changing it does not require redeploying the thing that enforces it",
+   "evidence": [
+    "tests/test_raw_eviction.py",
+    "src/ops/raw_eviction.py"
+   ]
+  },
+  "paper.fill_model": {
+   "learning": "n/a: a fill rule with a disclosed participation parameter. Not fitted, and not claimed to be",
+   "reasoning": "pass: it keeps optimistic and pessimistic accountings apart rather than averaging them into one number that is true of neither",
+   "depth": "pass: a resting order that never printed does not fill, so an unfilled signal is visible as unfilled rather than as a trade at a hoped price",
+   "evidence": [
+    "tests/test_fill_model.py",
+    "src/paper/fill_model.py"
+   ]
+  },
+  "paper.participation_calibration": {
+   "learning": "n/a: it would estimate participation from prints, and does not run",
+   "reasoning": "pass: the question it asks is the right one - how much of a print a resting order would actually have received, rather than a fixed fraction",
+   "depth": "fail: cannot change what the system does, because nothing calls it. `paper.fill_model` still uses a disclosed constant, so the calibration this module exists to supply is not supplied. Clears when the fill model reads it",
+   "evidence": [
+    "tests/test_participation_calibration.py",
+    "src/paper/participation_calibration.py"
+   ]
+  },
+  "paper.prove_plumbing": {
+   "learning": "n/a: a crude fixed signal, deliberately - it exists to prove wiring, not edge",
+   "reasoning": "pass: it refuses to start while a kill is in force, before anything is journalled, and reports realised P&L only for round trips that closed",
+   "depth": "pass: it drives every layer end to end, which is how the WAL, the fill model and the cost engine were shown to carry a fill at all",
+   "evidence": [
+    "tests/test_kill_switch_gate.py",
+    "src/paper/prove_plumbing.py"
+   ]
+  },
+  "risk.drawdown_distribution": {
+   "learning": "pass: the ladder's levels come from a block bootstrap over observed returns rather than from round numbers or from the single realised maximum (L1)",
+   "reasoning": "pass: it distinguishes the worst that happened from the worst to plan for, and carries both so the gap is visible where the decision is made",
+   "depth": "pass: the block bootstrap preserves the serial dependence that makes drawdowns deep, which an IID resample would destroy and report as safety",
+   "evidence": [
+    "tests/test_drawdown_distribution.py",
+    "src/risk/drawdown_distribution.py"
+   ]
+  },
+  "statuswall.evidence": {
+   "learning": "n/a: probes measure; nothing is fitted",
+   "reasoning": "pass: every probe returns what it found and names where the answer came from, and a feature with no probe is NOT_BUILT by construction rather than by omission",
+   "depth": "pass: one raising probe fails its own tile and leaves the board standing, because a board that renders nothing is useless exactly when something is wrong",
+   "evidence": [
+    "tests/test_statuswall.py",
+    "src/statuswall/evidence.py"
+   ]
+  },
+  "statuswall.wall_page": {
+   "learning": "n/a: a renderer. Nothing is fitted",
+   "reasoning": "n/a: it renders verdicts it is given",
+   "depth": "pass: `STATE_STYLE` has no fallback, so an unhandled state is a crash rather than a green tile - and NOT MEASURED is off the health colour axis so it cannot read as 'nearly OK'",
+   "evidence": [
+    "tests/test_statuswall.py",
+    "src/statuswall/wall_page.py"
+   ]
+  },
+  "statuswall.catalogue": {
+   "learning": "n/a: a parser. Nothing is fitted",
+   "reasoning": "pass: it reads the catalogue rather than restating it, and refuses tables that are not feature tables - a worked Zomma example would otherwise become permanently unmeasurable tiles",
+   "depth": "pass: a probe pointing at a feature the catalogue no longer contains RAISES, because a silently orphaned probe stops reporting a real measurement and nothing looks wrong",
+   "evidence": [
+    "tests/test_statuswall.py",
+    "src/statuswall/catalogue.py"
+   ]
+  },
+  "statuswall.cli": {
+   "learning": "n/a: an entry point. Nothing is fitted",
+   "reasoning": "pass: it refuses to render a board from a catalogue that parsed to nothing, so a parse failure reports itself rather than as every probe orphaned at once",
+   "depth": "pass: the board is rebuilt from live measurement on a cadence; serving a file and refreshing it are different jobs and only one of them used to be anyone's",
+   "evidence": [
+    "tests/test_statuswall.py",
+    "src/statuswall/cli.py"
+   ]
+  },
+  "statuswall.board_server": {
+   "learning": "n/a: a static file server. Nothing is fitted",
+   "reasoning": "n/a: it serves what the generator wrote",
+   "depth": "pass: bound to loopback behind HTTP Basic, so the tunnel is the only exposure and credentials are generated rather than defaulted",
+   "evidence": [
+    "tests/test_board_server.py",
+    "src/statuswall/board_server.py"
+   ]
+  },
+  "validation.trial_registry": {
+   "learning": "pass: N is the count of candidates EVALUATED, counted before evaluation, which is L7's requirement rather than a tally of what was kept",
+   "reasoning": "pass: a trial is claimed and written under one lock, because two search processes reading the same count would both claim it and the ledger would lose a row",
+   "depth": "pass: a candidate that crashes is recorded as abandoned and still counts - a search that could shed trials by failing could shrink its own N at will",
+   "evidence": [
+    "tests/test_trial_registry.py",
+    "src/validation/trial_registry.py"
+   ]
+  },
+  "validation.deflated_sharpe": {
+   "learning": "pass: the hurdle is computed from the observed dispersion of trials rather than a chosen threshold",
+   "reasoning": "pass: it is fed the registry's cumulative N, never the CPCV path count - the donor version was fed the path count and deflated a candidate picked from thousands as though 15 things were tried",
+   "depth": "pass: MinBTL is a hard gate rather than a report, and it rises with N so a wider search demands more history",
+   "evidence": [
+    "tests/test_deflated_sharpe.py",
+    "src/validation/deflated_sharpe.py"
+   ]
+  },
+  "validation.purged_cross_validation": {
+   "learning": "n/a: a splitting scheme. Nothing is fitted",
+   "reasoning": "pass: the purge reaches BOTH ways - the donor's exclusion zone started at the test start and leaked one label horizon of training rows into every block",
+   "depth": "pass: an undeclared family raises rather than defaulting the horizon to zero, which would silently disable the purge entirely",
+   "evidence": [
+    "tests/test_purged_cross_validation.py",
+    "src/validation/purged_cross_validation.py"
+   ]
+  },
+  "validation.backtest_overfitting": {
+   "learning": "n/a: an estimator over supplied return series. Nothing is fitted",
+   "reasoning": "pass: it measures the SELECTION procedure rather than the winner, which is why it needs the whole search's results and not the finalists'",
+   "depth": "pass: it caught a lookahead the deflated Sharpe, MinBTL and purge gates all passed - pure noise at PBO 0.613",
+   "evidence": [
+    "tests/test_backtest_overfitting.py",
+    "src/validation/backtest_overfitting.py"
+   ]
+  },
+  "validation.superior_predictive_ability": {
+   "learning": "n/a: a bootstrap test. Nothing is fitted",
+   "reasoning": "pass: it reports Hansen's consistent p-value beside White's reality check rather than only the one that flatters",
+   "depth": "pass: it refused the pure-noise candidate that the deflated Sharpe passed at N=1, which is the argument for several independent gates rather than a better single one",
+   "evidence": [
+    "tests/test_superior_predictive_ability.py",
+    "src/validation/superior_predictive_ability.py"
+   ]
+  },
+  "validation.holdout_custodian": {
+   "learning": "n/a: a guard. Nothing is fitted",
+   "reasoning": "pass: it refuses a read inside the sealed range and records the refusal, and freezing is distinguished from consuming because a peeked score is indistinguishable from an honest one",
+   "depth": "pass: the refusal IS the feature, and it is enforced at the reader rather than by convention",
+   "evidence": [
+    "tests/test_holdout_custodian.py",
+    "src/validation/holdout_custodian.py"
+   ]
+  },
+  "validation.promotion_gate": {
+   "learning": "pass: every threshold traces to the registry's N or to a measured distribution, not to a chosen number",
+   "reasoning": "pass: the whole CPCV sweep happens inside ONE registry evaluation, which is why the path count can never reach the trial count",
+   "depth": "pass: gates compose with AND, and a candidate is registered before it is scored so a crash cannot shed the trial",
+   "evidence": [
+    "tests/test_promotion_gate.py",
+    "src/validation/promotion_gate.py"
+   ]
+  },
+  "statuswall.build_progress": {
+   "learning": "n/a: a renderer over measurements made elsewhere. Nothing is fitted",
+   "reasoning": "pass: it reconciles by method, not by trust - the ledger counter mirrors the reference parser's row rules after its first draft counted totals tables as requirement rows and reported 109 against the index's 108; the trap is pinned by a test",
+   "depth": "pass: it changes behaviour when wrong. A FEATURES.md section no phase claims RAISES rather than silently under-counting a phase, an absent ledger renders NOT MEASURED rather than zero, and paper trading renders NOT RUNNING until a journal exists",
+   "evidence": [
+    "tests/test_build_progress.py",
+    "src/statuswall/build_progress.py"
+   ]
   }
+ }
 }
