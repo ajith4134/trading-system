@@ -161,9 +161,38 @@ def test_every_declared_verdict_in_this_repo_is_well_formed():
     assert coverage.orphaned == [], coverage.orphaned
 
 
-def test_the_repo_carries_at_least_the_verdicts_it_claims():
-    """Guards against the file being emptied and the tile going quietly green
-    on a denominator of zero."""
+def test_every_module_in_this_repo_is_judged():
+    """§1a.6 admits no partial answer: NO module ships without a verdict.
+    Completed 2026-08-09. A module added later without one drops this below
+    100% and fails here, which is the ratchet."""
     coverage = assess(REPO_ROOT)
-    assert coverage.total > 50
-    assert len(coverage.verdicted) >= 9
+
+    assert coverage.total > 50, "denominator collapsed; the tile would go green on nothing"
+    assert coverage.unverdicted == [], coverage.unverdicted
+    assert coverage.share == 1.0
+
+
+def test_the_record_admits_failures():
+    """A standard that produces only passes is a standard nobody fails. Three
+    modules fail DEPTH because nothing calls them - a module that cannot run
+    cannot change what the system does when it is wrong, which is the master
+    test - and one because no test exercises it at all."""
+    coverage = assess(REPO_ROOT)
+    assert coverage.failing, "every verdict passed, which is not a judgement"
+    assert all(axes == ["depth"] for axes in coverage.failing.values()), coverage.failing
+
+
+def test_the_depth_failures_are_exactly_the_unreachable_modules_plus_the_untested_one():
+    """The two checks agree, and neither is allowed to drift from the other: a
+    module the reachability audit calls unreachable cannot honestly pass a depth
+    test whose question is whether it changes behaviour under error."""
+    from integrity.unsupported_claims import (
+        UNREACHABLE, classify_modules, invoked_modules, read_source_tree)
+
+    verdict = classify_modules(read_source_tree(REPO_ROOT / "src"),
+                               invoked_modules(REPO_ROOT))
+    unreachable = {m for m, state in verdict.items() if state == UNREACHABLE}
+    failing = set(assess(REPO_ROOT).failing)
+
+    assert unreachable <= failing, (
+        f"unreachable but not failing depth: {sorted(unreachable - failing)}")
