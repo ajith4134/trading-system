@@ -918,6 +918,56 @@ def probe_axis_verdicts(facts: SystemFacts) -> ProbeResult:
                   if coverage.unverdicted else "; every module judged"), proof)
 
 
+def probe_promotion_readiness(facts: SystemFacts) -> ProbeResult:
+    """How far the observed record is from being able to support a promotion.
+
+    The decision of 2026-08-09 was to wait for observed history rather than
+    build Phase 5. A wait with no measured end is indefinite by construction, so
+    this is the end, measured: days accumulated against the days MinBTL will
+    demand at the current trial count.
+
+    Two things about the number will surprise a reader who does not know them,
+    so the tile says both. It RECEDES as the Trial Registry grows, because N only
+    rises and MinBTL rises with it. And it will DROP sharply around day 30, when
+    the observed window first supports an effective-breadth estimate and the gate
+    stops failing closed to calendar days - the projection before then is the
+    conservative one, not the expected one.
+    """
+    proof = "validation.promotion_pipeline.readiness over the observed funding dataset"
+    from store.clock_gated_reader import ClockGatedReader
+    from validation.promotion_pipeline import (
+        MIN_DAYS_FOR_BREADTH, OBSERVED_FUNDING, readiness)
+    from validation.trial_registry import TrialRegistry
+
+    store_root = Path(facts.capture_root) / "store"
+    if not (store_root / OBSERVED_FUNDING).is_dir():
+        return ProbeResult(NOT_MEASURED, "no observed funding dataset to measure", proof)
+
+    frame = ClockGatedReader(store_root, OBSERVED_FUNDING).read_as_of(2**62)
+    if frame.empty:
+        return ProbeResult(NOT_MEASURED, "observed funding dataset is empty", proof)
+
+    state = readiness(frame, TrialRegistry(Path(facts.capture_root) / "trials"))
+    census = (f"{state['days_observed']} observed day(s) of "
+              f"{state['days_required']:.0f} required for a "
+              f"Sharpe-{state['target_sharpe']:.1f} claim at N={state['n_trials']}")
+
+    if state["ready"]:
+        return ProbeResult(OK, f"{census} - the record can support a promotion", proof)
+    if state["days_observed"] < MIN_DAYS_FOR_BREADTH:
+        # The conservative projection, and it must not read as the expectation.
+        return ProbeResult(
+            PARTIAL,
+            f"{census}. Under {MIN_DAYS_FOR_BREADTH} days the effective-breadth "
+            f"estimate fails closed to calendar days, so this figure is the "
+            f"CONSERVATIVE bound and will fall sharply once breadth is "
+            f"measurable", proof)
+    return ProbeResult(
+        PARTIAL,
+        f"{census}; {state['days_remaining']:.0f} to go at effective breadth "
+        f"{state['effective_breadth']:.0f}. Recedes as N grows", proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -949,6 +999,7 @@ PROBES = {
     "bounded writer descriptor pool": probe_writer_descriptor_pool,
     "reachability audit of every built claim": probe_unsupported_claims,
     "learning reasoning depth verdict per module": probe_axis_verdicts,
+    "observed history sufficient for a promotion": probe_promotion_readiness,
 }
 
 

@@ -320,3 +320,55 @@ def test_the_gate_defaults_to_calendar_days_when_nobody_passes_a_multiplier(tmp_
 
     minbtl = next(g for g in verdict.gates if g.name == "min_backtest_length")
     assert "x 1.0 effective breadth" in minbtl.detail
+
+
+def test_readiness_reports_the_conservative_bound_before_breadth_is_measurable(tmp_path):
+    """Under 30 days the multiplier fails closed to 1.0, so the projection is
+    the conservative bound rather than the expectation - and a reader who does
+    not know that will misread a fall from 2,220 days to 46 as a bug."""
+    from validation.promotion_pipeline import readiness
+    from validation.trial_registry import TrialSpec
+
+    # A search has to have happened for MinBTL to demand anything: at N=1,
+    # 2*ln(1)/SR^2 is zero and one look at the data needs no history to justify.
+    registry = TrialRegistry(tmp_path)
+    for i in range(20):
+        registry.pre_register(TrialSpec(f"scan {i}", "carry", {}))
+
+    state = readiness(_frame(days=2, symbols=900), registry)
+
+    assert state["effective_breadth"] == 1.0, "breadth was estimated from 2 days"
+    assert state["days_observed"] == 2
+    assert state["ready"] is False
+    assert state["days_required"] > 1000, state["days_required"]
+
+
+def test_readiness_shortens_once_breadth_can_be_measured(tmp_path):
+    """The same trial count, the same target - only a window long enough to
+    measure the cross-section, and the requirement collapses."""
+    from validation.promotion_pipeline import readiness
+
+    registry = TrialRegistry(tmp_path)
+    short = readiness(_frame(days=20, symbols=40, seed=4), registry)
+    long_enough = readiness(_frame(days=300, symbols=40, seed=4), registry)
+
+    assert short["effective_breadth"] == 1.0
+    assert long_enough["effective_breadth"] > 1.0
+    assert long_enough["days_required"] < short["days_required"]
+
+
+def test_readiness_recedes_as_the_trial_count_grows(tmp_path):
+    """N only rises and MinBTL rises with it, so the finish line moves away with
+    every scan. Honest, and worth being able to watch."""
+    from validation.promotion_pipeline import readiness
+    from validation.trial_registry import TrialSpec
+
+    registry = TrialRegistry(tmp_path)
+    frame = _frame(days=300, symbols=40, seed=4)
+    before = readiness(frame, registry)
+    for i in range(30):
+        registry.pre_register(TrialSpec(f"scan {i}", "carry", {}))
+    after = readiness(frame, registry)
+
+    assert after["n_trials"] > before["n_trials"]
+    assert after["days_required"] > before["days_required"]

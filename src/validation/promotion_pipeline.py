@@ -226,6 +226,46 @@ def fold_returns(series: pd.Series, fold) -> list[float]:
     return out
 
 
+def readiness(frame: pd.DataFrame, registry, candidate: CarryCandidate | None = None,
+              target_sharpe: float = 1.0) -> dict:
+    """How much observed history exists, against how much MinBTL will demand.
+
+    The wait decided on 2026-08-09 needs an end someone can see. Without this,
+    "wait for observed history" is indefinite by construction: the pipeline
+    refuses, the refusal names a number, and nobody knows whether that number is
+    a week away or six years.
+
+    Every field is measured. `days_required` moves with the Trial Registry - N
+    only ever rises, so the finish line recedes slightly with every scan, which
+    is the honest behaviour and worth being able to watch.
+
+    `target_sharpe` is an assumption and is returned so it cannot be mistaken for
+    one: MinBTL asks how long a claim of a given size needs, and until a
+    candidate has been scored on real data there is no measured Sharpe to ask
+    about.
+    """
+    from validation.deflated_sharpe import min_backtest_length_years
+
+    matrix = daily_carry(frame)
+    days_observed = int(matrix.shape[0])
+    candidate = candidate or CarryCandidate()
+    multiplier = effective_sample_multiplier(matrix, candidate)
+    n_trials = registry.cumulative_count()
+    required_years = min_backtest_length_years(max(n_trials, 1), target_sharpe=target_sharpe)
+    days_required = required_years * PERIODS_PER_YEAR / multiplier
+
+    return {
+        "days_observed": days_observed,
+        "symbols": int(matrix.shape[1]),
+        "effective_breadth": multiplier,
+        "n_trials": n_trials,
+        "target_sharpe": target_sharpe,
+        "days_required": days_required,
+        "days_remaining": max(0.0, days_required - days_observed),
+        "ready": days_observed >= days_required,
+    }
+
+
 def effective_sample_multiplier(matrix: pd.DataFrame,
                                 candidate: CarryCandidate) -> float:
     """How many independent bets a day of this setup is worth. 1.0 when unknown.
