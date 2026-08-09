@@ -253,3 +253,70 @@ def test_an_empty_frame_refuses_rather_than_raising(tmp_path):
     result = run(pd.DataFrame(), TrialRegistry(tmp_path), _grid())
     assert result.promoted is False
     assert result.refusals == ["no funding rows to score"]
+
+
+# --------------------------------------------------------------------------
+# §5a.5's second axis: effective sample size
+#
+# "Every scan counts in the Trial Registry - corrected on both axes, trial count
+# AND effective sample size." Counting calendar days demanded ~6.1 years of
+# history for a Sharpe-1.0 claim at N=21; the independent bets to support it
+# arrive far faster than one a day. This multiplier only ever makes promotion
+# EASIER, which is the direction every defect this project has found failed in,
+# so what it may not do is the part worth testing.
+# --------------------------------------------------------------------------
+
+def test_a_short_window_falls_back_to_counting_days(tmp_path):
+    """A correlation matrix over a handful of rows reports whatever it likes.
+    The uncertain case takes the conservative side."""
+    from validation.promotion_pipeline import (
+        MIN_DAYS_FOR_BREADTH, daily_carry, effective_sample_multiplier)
+
+    matrix = daily_carry(_frame(days=MIN_DAYS_FOR_BREADTH - 1, symbols=40))
+    assert effective_sample_multiplier(matrix, CarryCandidate(10, 0.9)) == 1.0
+
+
+def test_a_wide_independent_cross_section_is_worth_more_than_one_a_day(tmp_path):
+    from validation.promotion_pipeline import daily_carry, effective_sample_multiplier
+
+    matrix = daily_carry(_frame(days=300, symbols=40, seed=5))
+    multiplier = effective_sample_multiplier(matrix, CarryCandidate(20, 0.9))
+
+    assert multiplier > 1.0
+    assert multiplier <= 40, "more independent bets than symbols"
+
+
+def test_the_multiplier_can_never_exceed_the_symbol_count(tmp_path):
+    """Whatever the arithmetic says. 850 correlated streams are not 850 samples,
+    and they are certainly not more than 850."""
+    from validation.promotion_pipeline import daily_carry, effective_sample_multiplier
+
+    matrix = daily_carry(_frame(days=300, symbols=5, seed=2))
+    assert effective_sample_multiplier(matrix, CarryCandidate(20, 0.9)) <= 5
+
+
+def test_the_multiplier_is_named_in_the_verdict_not_folded_into_a_year_count(tmp_path):
+    """It makes promotion easier, so it has to be readable in the gate's own
+    words rather than showing up as a year count nobody can reproduce."""
+    result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
+                 TrialRegistry(tmp_path), _grid(), cap=_cap())
+
+    minbtl = next(g for g in result.gates if g["name"] == "min_backtest_length")
+    assert "effective breadth" in minbtl["detail"]
+
+
+def test_the_gate_defaults_to_calendar_days_when_nobody_passes_a_multiplier(tmp_path):
+    """`evaluate_for_promotion` is callable directly. Its default must be the
+    conservative basis, not the permissive one."""
+    from validation.promotion_gate import evaluate_for_promotion
+    from validation.trial_registry import TrialSpec
+
+    rng = np.random.default_rng(3)
+    series = pd.Series(rng.normal(0.001, 0.01, 400))
+    verdict = evaluate_for_promotion(
+        TrialRegistry(tmp_path), TrialSpec("t", "carry", {}),
+        backtest_fold=lambda fold: fold_returns(series, fold),
+        n_rows=len(series), periods_per_year=365)
+
+    minbtl = next(g for g in verdict.gates if g.name == "min_backtest_length")
+    assert "x 1.0 effective breadth" in minbtl.detail

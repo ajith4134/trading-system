@@ -75,6 +75,12 @@ MAX_PBO = 0.50
 # that before it is worth comparing with anything cleverer.
 SPA_ALPHA = 0.05
 
+# Below this many days, an effective-breadth estimate is noise and the gate falls
+# back to counting calendar days. A correlation matrix over a handful of rows
+# reports whatever it likes, and this multiplier only ever makes promotion
+# easier - so the short-window case fails closed to the conservative basis.
+MIN_DAYS_FOR_BREADTH = 30
+
 
 def tail_cap_gate(series: pd.Series, cap) -> dict:
     """Would this candidate have lived inside the user's ceiling?
@@ -220,6 +226,38 @@ def fold_returns(series: pd.Series, fold) -> list[float]:
     return out
 
 
+def effective_sample_multiplier(matrix: pd.DataFrame,
+                                candidate: CarryCandidate) -> float:
+    """How many independent bets a day of this setup is worth. 1.0 when unknown.
+
+    §5a.5 corrects on two axes, and this is the second: *trial count AND
+    effective sample size*. A day in which the setup fired across a wide
+    cross-section carries more evidence than a single portfolio return implies -
+    but not 850 times more, because crypto cross-sectional correlation is severe
+    and correlated streams are not independent samples.
+
+    So the multiplier is the participation ratio of the per-symbol return
+    streams' correlation matrix - the same measure the §5a.4 breadth gate uses -
+    computed on the data being scored rather than inherited from that gate's run
+    over reconstructed history.
+
+    **Fails closed.** Below `MIN_DAYS_FOR_BREADTH` the estimate is noise and this
+    returns 1.0, the calendar-days basis. A correlation matrix over a handful of
+    rows reports whatever it likes, and this number only ever makes promotion
+    easier - so the uncertain case takes the conservative side.
+    """
+    from validation.breadth import carry_returns, effective_breadth, percentile_triggers
+
+    if len(matrix) < MIN_DAYS_FOR_BREADTH:
+        return 1.0
+    triggers = percentile_triggers(matrix, candidate.lookback_days, candidate.percentile)
+    breadth, _ = effective_breadth(carry_returns(matrix, triggers))
+    if not np.isfinite(breadth) or breadth < 1.0:
+        return 1.0
+    # Never more independent bets than symbols, whatever the arithmetic says.
+    return float(min(breadth, matrix.shape[1]))
+
+
 def run(frame: pd.DataFrame, registry: TrialRegistry,
         candidates: list[CarryCandidate] | None = None,
         min_deflated_sharpe: float = 0.95, cap=None) -> PipelineResult:
@@ -259,6 +297,13 @@ def run(frame: pd.DataFrame, registry: TrialRegistry,
     best = next(c for c in candidates if c.name == best_name)
     series = scored[best_name]
 
+    # §5a.5's second axis: effective sample size, measured on THIS data rather
+    # than carried over from the breadth gate's run on reconstructed history.
+    # One observation per day understates a setup firing across a cross-section;
+    # 850 correlated symbols overstate it just as badly. Effective breadth is the
+    # number between them, and it is measured here at gate time.
+    multiplier = effective_sample_multiplier(matrix, best)
+
     spec = TrialSpec(name=best.name, family="carry", params=best.params())
     verdict = evaluate_for_promotion(
         registry, spec,
@@ -266,6 +311,7 @@ def run(frame: pd.DataFrame, registry: TrialRegistry,
         n_rows=len(series),
         min_deflated_sharpe=min_deflated_sharpe,
         periods_per_year=PERIODS_PER_YEAR,
+        effective_sample_multiplier=multiplier,
     )
 
     gates = [asdict(g) for g in verdict.gates]

@@ -94,6 +94,7 @@ def evaluate_for_promotion(
     min_deflated_sharpe: float = 0.95,
     min_train_retention: float = 0.25,
     periods_per_year: int = _TRADING_DAYS_PER_YEAR,
+    effective_sample_multiplier: float = 1.0,
 ) -> PromotionVerdict:
     """Run one candidate through every gate and return the composed verdict.
 
@@ -156,7 +157,22 @@ def evaluate_for_promotion(
 
     required_years = min_backtest_length_years(
         n_trials, target_sharpe=max(observed, 1e-9))
-    available_years = len(pooled) / periods_per_year
+    # §5a.5: *every scan counts in the Trial Registry - corrected on both axes,
+    # trial count AND effective sample size*. A cross-sectional setup fired on
+    # 850 symbols produces far more than one observation per day, and pooling
+    # them into a single portfolio series and then counting calendar days throws
+    # that away - it would demand ~6.1 years of history for a Sharpe-1.0 claim
+    # at N=21 when the independent bets to support it arrive far faster.
+    #
+    # The multiplier is EFFECTIVE breadth, never the symbol count. Crypto
+    # cross-sectional correlation is severe and 850 correlated streams are not
+    # 850 samples; the caller measures it and passes it, and the default of 1.0
+    # is the conservative calendar-days basis for anyone who does not.
+    #
+    # This makes promotion easier, which is the direction every defect found in
+    # this project has failed in - so the number is named in the gate detail
+    # below rather than folded silently into a year count.
+    available_years = len(pooled) * effective_sample_multiplier / periods_per_year
     retention = mean(f.train_fraction_retained for f in folds) if folds else 0.0
 
     gates = (
@@ -173,7 +189,9 @@ def evaluate_for_promotion(
             measured=available_years, threshold=required_years,
             detail=(f"{available_years:.2f} years of out-of-sample data vs MinBTL "
                     f"{required_years:.2f} years for a Sharpe-{observed:.2f} claim "
-                    f"at N={n_trials} (2*ln(N)/SR^2)"),
+                    f"at N={n_trials} (2*ln(N)/SR^2); {len(pooled)} pooled "
+                    f"observations x {effective_sample_multiplier:.1f} effective "
+                    f"breadth"),
         ),
         GateResult(
             name="purge_retention", passed=retention >= min_train_retention,
