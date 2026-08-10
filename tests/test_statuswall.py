@@ -415,6 +415,13 @@ def test_a_polled_feed_answers_its_tile_while_the_withheld_stream_stays_silent()
     feed was recovered by polling `premiumIndex`. Both names satisfy the same
     feature, so the tile has to read from the route that is working - while
     still refusing to count a route that is merely leaving old bytes behind.
+
+    The assertion is on the capture half rather than on the whole tile because
+    that tile gained a second half on 2026-08-10: the catalogue row names
+    reconciliation as well as capture, and this fixture has no store to
+    reconcile from, so the composed result is correctly PARTIAL. What is being
+    defended here is unchanged - the polled route answers where the withheld
+    stream is silent, and a silent `markPrice` does not fail the feature.
     """
     facts = _facts(
         capture_running=True,
@@ -423,7 +430,8 @@ def test_a_polled_feed_answers_its_tile_while_the_withheld_stream_stays_silent()
                              "raw_bytes_by_stream": {"premiumIndex_BTCUSDT": 4096}}},
     )
     result = PROBES["mark price vs index vs oracle price per venue"](facts)
-    assert result.state == OK, result.detail
+    assert result.state not in (FAILING, NOT_BUILT), result.detail
+    assert "streaming" in result.detail
 
 
 def test_a_dead_stream_that_left_bytes_behind_still_reads_failing():

@@ -681,6 +681,15 @@
     "tests/test_term_structure.py",
     "src/features/term_structure.py"
    ]
+  },
+  "features.price_divergence": {
+   "learning": "n/a: nothing is fitted. The scale is a median absolute deviation recomputed from each symbol's own recent window on every call - descriptive statistics over stored prices, not a model with parameters that carry forward",
+   "reasoning": "pass: the threshold is not in the file. The same 40 bps is a broken feed on an instrument that never leaves its index and an ordinary session on one that swings 20 either way, so each symbol is judged against its own history the way peg_monitor judges a peg against its own level rather than against 1.0. The current observation is excluded from the scale it is measured against, because a single excursion included in its own window drags the median and the dispersion toward itself and partly hides what it is",
+   "depth": "pass: three states exist that are not verdicts about the market and none of them defaults to healthy - STALE_MARK for a mark frozen while its reference moves (a dead feed reads as a smooth trend to anything watching only the number), UNJUDGED_TOO_FEW, and UNJUDGED_NO_DISPERSION for a gap that never varied, which on the live store 2026-08-10 was 212 of 1,854 instruments publishing the index back as the mark. It has a consumer the day it lands: the mark/index/oracle tile runs it and goes DEGRADED on what it flags",
+   "evidence": [
+    "tests/test_price_divergence.py",
+    "src/features/price_divergence.py"
+   ]
   }
  }
 }

@@ -452,17 +452,53 @@ def probe_open_interest(facts: SystemFacts) -> ProbeResult:
 
 
 def probe_mark_price(facts: SystemFacts) -> ProbeResult:
-    # `premiumIndex` is the REST poll that replaced the withheld `markPrice`
-    # websocket stream on 2026-08-03; it carries binance's mark and index in
-    # one body. `markPrice` stays listed so an archive written before that
-    # date still answers this tile. The other carriers, verified on stored
+    # The catalogue row names two things - capturing the three prices, and
+    # RECONCILING them - so this tile runs both and reports the weaker.
+    #
+    # Capture: `premiumIndex` is the REST poll that replaced the withheld
+    # `markPrice` websocket stream on 2026-08-03; it carries binance's mark and
+    # index in one body. `markPrice` stays listed so an archive written before
+    # that date still answers this tile. The other carriers, verified on stored
     # frames 2026-08-09: bybit's `linearTickers` (markPrice, indexPrice) and
     # hyperliquid's `assetCtx` (markPx, oraclePx, midPx) - the oracle-vs-mark
     # distinction the catalogue flags as commonly missed is exactly the
     # difference between those two bodies, and both are on disk per minute.
-    return _silent_stream_probe(
+    captured = _silent_stream_probe(
         facts, ("premiumIndex", "markPrice", "linearTickers", "assetCtx"),
         "mark/index/oracle price")
+    if captured.state in (NOT_BUILT, FAILING):
+        return captured
+
+    try:
+        from features.price_divergence import reconcile_prices
+        table = reconcile_prices(facts.capture_root / "store",
+                                 int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(PARTIAL,
+                           f"{captured.detail} Reconciliation failed: {error}",
+                           "features/price_divergence.py")
+    if table.rows.empty:
+        return ProbeResult(PARTIAL,
+                           f"{captured.detail} Reconciliation ran and had "
+                           f"nothing in its window to judge",
+                           "features/price_divergence.py")
+
+    counts = table.by_verdict()
+    judged = sum(v for k, v in counts.items() if not k.startswith("UNJUDGED"))
+    flagged = counts.get("EXTREME", 0) + counts.get("STALE_MARK", 0)
+    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+    detail = (f"{captured.detail} Reconciled {len(table.rows)} instrument(s) "
+              f"over {table.window_ns // 3_600_000_000_000}h: {summary}")
+    if not judged:
+        # Every instrument unjudged is not a clean bill of health - it is the
+        # window holding too little to measure a scale from, and it renders as
+        # its own state rather than as green.
+        return ProbeResult(PARTIAL, f"{detail} - nothing judged",
+                           "features/price_divergence.py")
+    if flagged:
+        return ProbeResult(DEGRADED, detail, "features/price_divergence.py")
+    return ProbeResult(captured.state, detail,
+                       "features/price_divergence.py + capture/store/funding")
 
 
 def probe_gap_detection(facts: SystemFacts) -> ProbeResult:
