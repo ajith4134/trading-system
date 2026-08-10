@@ -11,6 +11,7 @@ it. A status whose provenance cannot be named is not a status.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import shutil
 import subprocess
 import time
@@ -1380,6 +1381,150 @@ def probe_promotion_readiness(facts: SystemFacts) -> ProbeResult:
         f"{state['effective_breadth']:.0f}. Recedes as N grows", proof)
 
 
+@functools.lru_cache(maxsize=4)
+def _module_references(repo_root: Path) -> dict[str, frozenset[str]]:
+    """Every module's referenced names, read once per wall build.
+
+    Cached because six phase-B tiles ask the same question of the same tree, and
+    parsing `src/` once per tile would make the board's cost scale with how many
+    features it reports on.
+    """
+    from integrity.unsupported_claims import read_source_tree
+    return {name: facts.references
+            for name, facts in read_source_tree(Path(repo_root) / "src").items()}
+
+
+def _consumers_of(repo_root: Path, module: str, entry_point: str) -> list[str]:
+    """Which modules besides its own reach this feature's entry point.
+
+    MEASURED, not declared. Every phase-B feature shipped with an axis verdict
+    of `depth: fail` reasoning that nothing reads it - but a verdict is a
+    sentence somebody wrote, and it goes stale silently the day a consumer
+    appears. This asks the source tree instead, so the tile changes on the day
+    the code does rather than on the day someone remembers this file.
+
+    **`statuswall` is not a consumer, and excluding it is the whole point.** The
+    probe below has to call the feature in order to measure it, so its own call
+    lands in the source tree as a reference - and on the first run, five of six
+    features reported "read by statuswall.evidence" and graded OK. A board that
+    measures a thing and counts its own measurement as the thing being used is
+    a tile that certifies itself, which is the failure Rule 8 exists to prevent
+    wearing the costume of the fix for it.
+    """
+    return sorted(name for name, references in _module_references(repo_root).items()
+                  if name != module
+                  and not name.startswith("statuswall.")
+                  and entry_point in references)
+
+
+def _probe_computed_feature(facts: SystemFacts, *, module: str, entry_point: str,
+                            compute, unit: str) -> ProbeResult:
+    """Run one phase-B feature against the live store and report what it did.
+
+    Shared by six tiles rather than copied into each. `what_makes_code_deep.md`'s
+    D4 names many near-identical shallow modules as the failure pattern
+    generated code falls into, and six probes differing only in which function
+    they call would be exactly that.
+
+    The grading, and why it is not simply "did it return rows":
+
+    * **Rows, and something reads them** -> OK. The only green here.
+    * **Rows, and nothing reads them** -> PARTIAL. A value computed for no
+      consumer cannot change what the system does when it is wrong, which is
+      §1a.5's master test, so it is not finished merely because it runs. Same
+      posture the `stablecoin peg monitor` tile already takes.
+    * **No rows, but counted refusals** -> DEGRADED, naming the biggest reason.
+      This is the state that matters most: the module is working exactly as
+      designed and there is nothing for it to work on. `realized_volatility`
+      refusing every window because bars are hours stale must not look like a
+      module that was never built, and must not look healthy either.
+    * **No rows and no refusals** -> NOT_MEASURED. Nothing reached it at all.
+    * **Raised** -> NOT_MEASURED, carrying the error. A tile that swallowed the
+      exception would render a broken feature as merely quiet.
+    """
+    proof = f"{module}.{entry_point} run against the live store"
+    try:
+        table = compute(facts.capture_root / "store", int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"{entry_point} raised: {error}", proof)
+
+    rows = len(table.rows)
+    refused = {reason: count for reason, count in table.refused.items() if count}
+    refusal_note = (", ".join(f"{reason} {count}" for reason, count in
+                              sorted(refused.items(), key=lambda kv: -kv[1])))
+
+    if rows == 0 and not refused:
+        return ProbeResult(NOT_MEASURED,
+                           f"no input reached {module} at this clock", proof)
+    if rows == 0:
+        biggest = max(refused.items(), key=lambda kv: kv[1])
+        return ProbeResult(
+            DEGRADED,
+            f"computed nothing: every candidate refused ({refusal_note}). "
+            f"Dominant reason {biggest[0]} on {biggest[1]} - the module is "
+            f"working and its inputs are not", proof)
+
+    consumers = _consumers_of(facts.repo_root, module, entry_point)
+    detail = f"{rows} {unit}"
+    if refused:
+        detail += f"; refused {refusal_note}"
+    if not consumers:
+        return ProbeResult(
+            PARTIAL,
+            f"{detail}. Nothing consumes it - no module outside {module} calls "
+            f"{entry_point}, so it cannot yet change what the system does when "
+            f"it is wrong", proof)
+    return ProbeResult(OK, f"{detail}; read by {', '.join(consumers)}", proof)
+
+
+def probe_realized_volatility(facts: SystemFacts) -> ProbeResult:
+    from features.realized_volatility import compute_realized_volatility
+    return _probe_computed_feature(
+        facts, module="features.realized_volatility",
+        entry_point="compute_realized_volatility",
+        compute=compute_realized_volatility,
+        unit="(venue, symbol, horizon) volatilities")
+
+
+def probe_microprice(facts: SystemFacts) -> ProbeResult:
+    from features.microprice import compute_microprice
+    return _probe_computed_feature(
+        facts, module="features.microprice", entry_point="compute_microprice",
+        compute=compute_microprice, unit="depth-weighted microprices")
+
+
+def probe_order_flow_imbalance(facts: SystemFacts) -> ProbeResult:
+    from features.order_flow_imbalance import compute_order_flow_imbalance
+    return _probe_computed_feature(
+        facts, module="features.order_flow_imbalance",
+        entry_point="compute_order_flow_imbalance",
+        compute=compute_order_flow_imbalance,
+        unit="depth-weighted book imbalances")
+
+
+def probe_absorption(facts: SystemFacts) -> ProbeResult:
+    from features.absorption import compute_absorption
+    return _probe_computed_feature(
+        facts, module="features.absorption", entry_point="compute_absorption",
+        compute=compute_absorption, unit="bars judged for absorption")
+
+
+def probe_kyle_lambda(facts: SystemFacts) -> ProbeResult:
+    from features.kyle_lambda import compute_kyle_lambda
+    return _probe_computed_feature(
+        facts, module="features.kyle_lambda", entry_point="compute_kyle_lambda",
+        compute=compute_kyle_lambda, unit="fitted price-impact slopes")
+
+
+def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
+    from features.fractional_differentiation import compute_fractional_differentiation
+    return _probe_computed_feature(
+        facts, module="features.fractional_differentiation",
+        entry_point="compute_fractional_differentiation",
+        compute=compute_fractional_differentiation,
+        unit="series differenced at a searched d")
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -1420,6 +1565,15 @@ PROBES = {
     "reachability audit of every built claim": probe_unsupported_claims,
     "learning reasoning depth verdict per module": probe_axis_verdicts,
     "observed history sufficient for a promotion": probe_promotion_readiness,
+    # Phase B. Each runs its feature against the live store; none of them is
+    # green today, because nothing reads what they compute - see
+    # `_probe_computed_feature` for why that is PARTIAL rather than OK.
+    "realized volatility multi horizon": probe_realized_volatility,
+    "microprice": probe_microprice,
+    "depth weighted order flow imbalance": probe_order_flow_imbalance,
+    "absorption detection delta vs price hold": probe_absorption,
+    "kyle s lambda": probe_kyle_lambda,
+    "fractional differentiation": probe_fractional_differentiation,
 }
 
 

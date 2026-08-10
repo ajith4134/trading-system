@@ -1010,3 +1010,97 @@ def test_every_venues_word_for_depth_reaches_the_depth_tile():
     result = PROBES["l2 order book depth 20 50 levels"](facts)
 
     assert "6 depth streams" in result.detail, result.detail
+
+
+# --------------------------------------------------------------------------
+# Phase B feature tiles - and the guard against a tile certifying itself
+# --------------------------------------------------------------------------
+
+def _fake_facts(tmp_path):
+    """Only the two fields `_probe_computed_feature` reads."""
+    from types import SimpleNamespace
+    return SimpleNamespace(capture_root=tmp_path, repo_root=Path.cwd())
+
+
+class _Table:
+    def __init__(self, rows, refused):
+        import pandas as pd
+        self.rows = pd.DataFrame({"v": list(range(rows))})
+        self.refused = refused
+
+
+def test_the_board_measuring_a_feature_does_not_count_as_consuming_it(tmp_path):
+    """The probe has to call the feature, and that call is in the source tree.
+
+    On the first run of these tiles, five of six graded OK with the detail "read
+    by statuswall.evidence" - the board had found its own probe call and read it
+    as a consumer. A tile that counts its own measurement as the thing being
+    used certifies itself, which is Rule 8's failure wearing the costume of the
+    fix for it.
+    """
+    from statuswall.evidence import _consumers_of
+
+    consumers = _consumers_of(Path.cwd(), "features.microprice", "compute_microprice")
+    assert not any(name.startswith("statuswall.") for name in consumers), (
+        "the board is an observer of a feature, never a consumer of it")
+
+
+def test_a_feature_nothing_reads_is_partial_rather_than_ok(tmp_path):
+    """§1a.5: a value no one consumes cannot change what the system does when it
+    is wrong, so producing rows is not the same as being finished."""
+    from statuswall.evidence import PARTIAL, _probe_computed_feature
+
+    result = _probe_computed_feature(
+        _fake_facts(tmp_path), module="features.nothing_reads_this",
+        entry_point="compute_nothing_reads_this",
+        compute=lambda root, now: _Table(rows=5, refused={}), unit="values")
+
+    assert result.state == PARTIAL
+    assert "Nothing consumes it" in result.detail
+
+
+def test_a_feature_that_refuses_everything_is_degraded_not_unbuilt(tmp_path):
+    """The state that matters most, and the one a naive tile gets wrong twice.
+
+    `realized_volatility` refuses every window while bars are hours stale. That
+    must not render as NOT BUILT - the module exists and is behaving exactly as
+    designed - and must not render healthy either, because nothing was measured.
+    """
+    from statuswall.evidence import DEGRADED, _probe_computed_feature
+
+    result = _probe_computed_feature(
+        _fake_facts(tmp_path), module="features.refuses_everything",
+        entry_point="compute_refuses_everything",
+        compute=lambda root, now: _Table(rows=0, refused={"too_few_observations": 10600}),
+        unit="values")
+
+    assert result.state == DEGRADED
+    assert "too_few_observations" in result.detail
+    assert "10600" in result.detail
+
+
+def test_a_feature_that_raises_is_reported_not_swallowed(tmp_path):
+    """A tile that caught the exception would render a broken feature as quiet."""
+    from statuswall.evidence import NOT_MEASURED, _probe_computed_feature
+
+    def explode(root, now):
+        raise ValueError("store is gone")
+
+    result = _probe_computed_feature(
+        _fake_facts(tmp_path), module="features.explodes",
+        entry_point="compute_explodes", compute=explode, unit="values")
+
+    assert result.state == NOT_MEASURED
+    assert "store is gone" in result.detail
+
+
+def test_every_phase_b_module_built_so_far_has_a_tile():
+    """A feature module with no probe is invisible: the board reports NOT BUILT
+    for code that exists, which is how six modules landed and moved nothing."""
+    from statuswall.evidence import PROBES
+
+    for catalogue_key in ("realized volatility multi horizon", "microprice",
+                          "depth weighted order flow imbalance",
+                          "absorption detection delta vs price hold",
+                          "kyle s lambda", "fractional differentiation"):
+        assert catalogue_key in PROBES, f"{catalogue_key} has no probe"
