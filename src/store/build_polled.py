@@ -10,7 +10,7 @@ around a much simpler fact.
 
 What *is* shared, and is not negotiable: a live hour is never read. `RawWriter`
 marks an hour it holds with a sibling `.writing`, and reading one gets a zstd
-frame mid-write - `read_pair` refuses it, correctly, but skipping it up front
+frame mid-write - `iter_pair` refuses it, correctly, but skipping it up front
 means a build is not counted as failed for meeting a file that is simply still
 open.
 
@@ -26,7 +26,7 @@ from typing import Callable, Sequence
 
 import re
 
-from capture.raw_writer import RAW_SUFFIX, read_pair
+from capture.raw_writer import RAW_SUFFIX, iter_pair
 from store.book_snapshots import (
     build_book_frame, extract_book_snapshot, extract_coinbase_book,
 )
@@ -179,7 +179,7 @@ def build_for_day(capture_root: Path, store_root: Path, venue: str, date: str,
             if not idx_path.exists():
                 continue
             files_read += 1
-            for payload, entry in read_pair(raw_path, idx_path):
+            for payload, entry in iter_pair(raw_path, idx_path):
                 frames += 1
                 observations.extend(extract(payload, entry, venue, symbol))
 

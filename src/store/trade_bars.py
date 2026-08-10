@@ -225,16 +225,18 @@ class BarAccumulator:
     2. **The list of `Trade` objects.** That is this class. Measured: the same
        build COMPLETES, exit 0, peaking at 4.09 GB against 12.0 GB killed - and
        26 million trades reduce to 856 bars.
-    3. **`capture.raw_writer.read_pair`, which returns `list[tuple[str,
+    3. **`capture.raw_writer.read_pair`, which returned `list[tuple[str,
        IndexEntry]]` - a whole hour file, every payload string and an object per
-       frame, materialised before one trade is examined.** That is what the
-       remaining 4.1 GB is, and it is not fixed here. Peak is set by the largest
-       HOUR FILE in a batch, so a symbol's whole day no longer has to fit but
-       one of its hours still does.
+       frame, materialised before one trade is examined.** That was the remaining
+       4.1 GB, and it was named here rather than left to be rediscovered from an
+       OOM log. **Fixed 2026-08-10** by `iter_pair`, which streams the same pair
+       with the same verdicts: the same TUTUSDT hour, 5,634,232 frames, peaked at
+       3.98 GB read whole against **0.14 GB** streamed, and read faster doing it
+       (37.7 s against 48.6 s).
 
-    So this bounds memory by the busiest hour rather than by the busiest day. It
-    is an improvement with a number behind it, not a cure, and the next bound is
-    named above rather than left for someone to rediscover from an OOM log.
+    So memory is now bounded by neither the busiest day nor the busiest hour.
+    What is left is this class: bars in flight, one per symbol-minute, which is
+    what an accumulator is for.
 
     ## The ordering this has to reproduce exactly
 

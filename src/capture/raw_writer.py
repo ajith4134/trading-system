@@ -62,15 +62,30 @@ class TruncatedFrameFile(RawCaptureError):
     `recovered_lines` carries the complete lines decoded before the damage, so an
     operator (or `reconcile_pair`) can salvage the intact prefix deliberately
     rather than by accident.
+
+    `iter_lines` streams and therefore does not retain that prefix - it has
+    already handed each line to its caller. It passes `recovered_count` instead,
+    so the message still says how much of the file was whole, and
+    `recovered_lines` is empty because nothing is being held, never because
+    nothing survived. `recovered_prefix_retained` is how the two are told apart
+    without inferring it from an empty list.
     """
 
-    def __init__(self, path: Path, reason: str, recovered_lines: list[str]) -> None:
+    def __init__(self, path: Path, reason: str, recovered_lines: list[str],
+                 recovered_count: int | None = None) -> None:
         self.path = path
         self.reason = reason
         self.recovered_lines = recovered_lines
+        self.recovered_count = (
+            len(recovered_lines) if recovered_count is None else recovered_count)
+        self.recovered_prefix_retained = recovered_count is None
+        salvage = (
+            "" if self.recovered_prefix_retained
+            else " (streamed, not retained - re-read to salvage them)")
         super().__init__(
             f"{path} is truncated ({reason}); "
-            f"{len(recovered_lines)} complete lines recovered before the damage."
+            f"{self.recovered_count} complete lines recovered before the damage"
+            f"{salvage}."
         )
 
 
@@ -900,6 +915,11 @@ def read_pair(raw_path: Path, idx_path: Path) -> list[tuple[str, IndexEntry]]:
     from the raw line alone, so the payload is returned as stored and may still
     be in escaped form. This is why kind="recovered" exists - so downstream can
     exclude these entries explicitly and handle them as needed.
+
+    This holds the whole hour in memory - both files' lines and the result list
+    at once. `iter_pair` is the same reader without that cost, and is what a
+    build over the universe uses; this one stays for the repair path, which needs
+    the salvageable prefix a stream has already given away.
     """
     raw_lines = _read_lines(raw_path)
     idx_lines = _read_lines(idx_path)
@@ -923,6 +943,162 @@ def read_pair(raw_path: Path, idx_path: Path) -> list[tuple[str, IndexEntry]]:
             payload = unescape_payload(raw_line) if entry.esc else raw_line
         result.append((payload, entry))
     return result
+
+
+DECOMPRESS_CHUNK_BYTES = 1 << 20
+"""How much compressed input `iter_lines` reads at a time.
+
+The bound on a stream read is this chunk plus whatever one line expands to, so
+the number is the memory ceiling rather than a tuning knob. A megabyte of zstd
+input is a few megabytes of frames.
+"""
+
+
+def iter_lines(path: Path):
+    """Yield each complete line, holding one chunk instead of the whole file.
+
+    Same splitting contract as `_read_lines` - strictly on newline, never
+    `str.splitlines()`, and a final line without its newline is a partial frame
+    and is refused. Same zstd contract too: each open appended a new frame, so
+    the file is a run of concatenated frames, and a frame that never reaches
+    `eof` is a torn tail rather than the end of the data.
+
+    What it cannot do is carry the intact prefix on `TruncatedFrameFile`: those
+    lines were handed to the caller as they were decoded and are not held
+    anywhere. It reports the count instead, and `read_pair` remains the reader
+    for the repair path that needs the lines themselves.
+
+    Decoding is deferred to whole lines on purpose. A chunk boundary can fall
+    inside a multi-byte UTF-8 sequence; a newline byte cannot, because 0x0A never
+    appears inside one. So splitting on bytes and decoding the pieces is safe
+    where decoding the chunk would not be.
+    """
+    path = Path(path)
+    decompressor = zstandard.ZstdDecompressor()
+    frame_reader = None
+    pending = b""
+    yielded = 0
+
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(DECOMPRESS_CHUNK_BYTES)
+            if not chunk:
+                break
+            data = chunk
+            while data:
+                if frame_reader is None:
+                    frame_reader = decompressor.decompressobj()
+                try:
+                    pending += frame_reader.decompress(data)
+                except zstandard.ZstdError as exc:
+                    raise TruncatedFrameFile(
+                        path, f"zstd frame is unreadable: {exc}", [],
+                        recovered_count=yielded) from exc
+                if not frame_reader.eof:
+                    break
+                # A finished frame leaves the next one's bytes behind it. Making
+                # no progress here would spin forever on a frame that consumes
+                # nothing, which is the shape `_read_lines` guards with its
+                # `consumed <= 0` check.
+                unused = frame_reader.unused_data
+                if len(unused) >= len(data):
+                    raise TruncatedFrameFile(
+                        path, "zstd frame consumed no input", [],
+                        recovered_count=yielded)
+                data = unused
+                frame_reader = None
+
+            if b"\n" in pending:
+                *lines, pending = pending.split(b"\n")
+                for line in lines:
+                    yielded += 1
+                    yield line.decode("utf-8")
+
+    if frame_reader is not None and not frame_reader.eof:
+        raise TruncatedFrameFile(
+            path, "zstd frame is incomplete", [], recovered_count=yielded)
+    if pending:
+        raise TruncatedFrameFile(
+            path, "final line has no terminating newline", [],
+            recovered_count=yielded)
+
+
+class _CountingLines:
+    """A line stream that remembers how many lines it has produced.
+
+    `PairLengthMismatch` reports both counts, and a stream only knows the count
+    of the side that ran out. The other side is drained to be counted - reading
+    its remaining lines and dropping them - so the exception carries the same two
+    numbers the buffered reader gives, at no memory cost.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.count = 0
+        self._lines = iter_lines(path)
+
+    def next_line(self) -> str | None:
+        """The next line, or None once the file is exhausted."""
+        for line in self._lines:
+            self.count += 1
+            return line
+        return None
+
+    def drain(self) -> int:
+        """Consume what is left, counting it. Returns the total line count."""
+        for _ in self._lines:
+            self.count += 1
+        return self.count
+
+
+def iter_pair(raw_path: Path, idx_path: Path):
+    """Stream a raw/index pair as (payload, entry) tuples.
+
+    Same verdicts as `read_pair` - `PairLengthMismatch`, `IndexPositionMismatch`
+    and `TruncatedFrameFile`, raised in the same precedence - without holding the
+    hour. That precedence is deliberate: a pair that is both mis-paired and
+    unequal in length is a partial write, and `PairLengthMismatch` is the one
+    that names `reconcile_pair`. The buffered reader gets that ordering for free
+    by counting both files up front; here it costs a drain of both streams, paid
+    only on the failing path.
+
+    The difference a caller must plan for is WHEN the refusal arrives: frames
+    before the damage have already been yielded and consumed. Every build that
+    reads this way appends to the store after its loop, never inside it, so a
+    refusal mid-file abandons the whole build rather than committing its prefix.
+    Anything that writes as it reads must not use this reader.
+    """
+    raw_lines = _CountingLines(Path(raw_path))
+    idx_lines = _CountingLines(Path(idx_path))
+
+    def length_mismatch() -> PairLengthMismatch:
+        return PairLengthMismatch(
+            Path(raw_path), Path(idx_path), raw_lines.drain(), idx_lines.drain())
+
+    position = 0
+    while True:
+        raw_line = raw_lines.next_line()
+        idx_line = idx_lines.next_line()
+        if raw_line is None or idx_line is None:
+            if raw_line is None and idx_line is None:
+                return
+            raise length_mismatch()
+
+        entry = decode_index_entry(idx_line)
+        if entry.n != position:
+            # Length first, as the buffered reader orders it: an entry missing
+            # from the middle of the index shows up here as a bad `n`, and the
+            # useful thing to tell an operator is that the pair needs repair.
+            if raw_lines.drain() != idx_lines.drain():
+                raise length_mismatch()
+            raise IndexPositionMismatch(
+                Path(raw_path), Path(idx_path), position, entry.n)
+
+        if entry.kind == "recovered":
+            payload = raw_line
+        else:
+            payload = unescape_payload(raw_line) if entry.esc else raw_line
+        yield payload, entry
+        position += 1
 
 
 @dataclass(frozen=True)

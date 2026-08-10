@@ -144,7 +144,7 @@ def test_building_twice_from_identical_input_is_refused(tmp_path, monkeypatch):
     )
     entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
                        seq=None, kind="data", esc=False)
-    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [(frame, entry)])
+    monkeypatch.setattr(store_cli, "iter_pair", lambda raw, idx: [(frame, entry)])
 
     build = lambda: store_cli.build_bars_for_day(
         capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
@@ -183,7 +183,7 @@ def test_a_rebuild_is_refused_before_a_single_frame_is_parsed(tmp_path, monkeypa
     )
     entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
                        seq=None, kind="data", esc=False)
-    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [(frame, entry)])
+    monkeypatch.setattr(store_cli, "iter_pair", lambda raw, idx: [(frame, entry)])
 
     build = lambda: store_cli.build_bars_for_day(
         capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
@@ -194,7 +194,7 @@ def test_a_rebuild_is_refused_before_a_single_frame_is_parsed(tmp_path, monkeypa
     def refuse_to_read(raw, idx):
         raise AssertionError(f"parsed {raw} on a day already built")
 
-    monkeypatch.setattr(store_cli, "read_pair", refuse_to_read)
+    monkeypatch.setattr(store_cli, "iter_pair", refuse_to_read)
     with pytest.raises(PartitionExistsError):
         build()
 
@@ -226,7 +226,7 @@ def test_a_batched_run_builds_every_symbol_without_holding_them_all(tmp_path, mo
         return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
                  f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
 
-    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    monkeypatch.setattr(store_cli, "iter_pair", one_trade_per_file)
     largest_batch = []
     real_build = store_cli.build_bars_for_day
     monkeypatch.setattr(store_cli, "build_bars_for_day",
@@ -278,7 +278,7 @@ def _two_symbol_capture(tmp_path, monkeypatch):
         return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
                  f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
 
-    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    monkeypatch.setattr(store_cli, "iter_pair", one_trade_per_file)
     return store_cli
 
 
@@ -418,7 +418,7 @@ def test_per_symbol_breakdown_distinguishes_a_symbol_that_contributes_nothing(
             return [(trade_frame, entry)]
         return [(non_trade_frame, entry)]
 
-    monkeypatch.setattr(store_cli, "read_pair", fake_read_pair)
+    monkeypatch.setattr(store_cli, "iter_pair", fake_read_pair)
 
     summary = store_cli.build_bars_for_day(
         capture_root=tmp_path, store_root=tmp_path / "store", venue="binance",
@@ -816,7 +816,7 @@ def test_spot_is_a_venue_the_builder_can_read(tmp_path, monkeypatch):
              '"T":1785685177439,"m":true,"M":true}}')
     entry = IndexEntry(n=0, t_recv_ns=1785685177508349176, t_exch_ms=1785685177439,
                        seq=None, kind="data", esc=False)
-    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [(frame, entry)])
+    monkeypatch.setattr(store_cli, "iter_pair", lambda raw, idx: [(frame, entry)])
 
     summary = store_cli.build_bars_for_day(
         capture_root=tmp_path, store_root=tmp_path / "store", venue="binance-spot",
@@ -1067,7 +1067,7 @@ def _mixed_currency_capture(tmp_path, monkeypatch, symbols, quote_assets):
         return [('{"stream":"x@trade","data":{"e":"trade","T":1785685177439,'
                  f'"s":"{symbol}","p":"100.0","q":"1.0"}}}}', entry)]
 
-    monkeypatch.setattr(store_cli, "read_pair", one_trade_per_file)
+    monkeypatch.setattr(store_cli, "iter_pair", one_trade_per_file)
     return store_cli
 
 
@@ -1150,7 +1150,7 @@ def test_the_build_refuses_when_no_snapshot_says_what_anything_is_priced_in(tmp_
     source.mkdir(parents=True)
     (source / "trade_BTCUSDT_2026-08-02T00.ndjson.zst").write_bytes(b"x")
     (source / "trade_BTCUSDT_2026-08-02T00.idx.zst").write_bytes(b"x")
-    monkeypatch.setattr(store_cli, "read_pair", lambda raw, idx: [])
+    monkeypatch.setattr(store_cli, "iter_pair", lambda raw, idx: [])
 
     with pytest.raises(SystemExit) as refusal:
         store_cli.main([

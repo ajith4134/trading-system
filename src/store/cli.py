@@ -1,10 +1,16 @@
 # src/store/cli.py
 """Builds the bitemporal store from the raw archive.
 
-Reads through `capture.raw_writer.read_pair`, which refuses a torn file rather
+Reads through `capture.raw_writer.iter_pair`, which refuses a torn file rather
 than returning its readable prefix. That refusal is load-bearing here: silently
 building from a truncated hour produces a store that is quietly missing trades,
 and every statistic computed from it is wrong in a way nothing reports.
+
+`iter_pair` streams, and the refusal therefore arrives after the frames ahead of
+the damage have already been counted into the accumulator. That is safe here for
+one structural reason, and it has to stay true: this module appends to the store
+AFTER the read loop, never inside it, so a refusal abandons the whole build
+rather than committing its prefix.
 
 A day is built from EVENT time, never from which folder a frame landed in.
 `RawWriter` rotates hour files on receive time, so a trade timestamped 23:59:59.9
@@ -60,7 +66,7 @@ from pathlib import Path
 from typing import Sequence
 
 from capture.raw_writer import (
-    IDX_SUFFIX, RAW_SUFFIX, _fsync_directory, is_hour_being_written, read_pair,
+    IDX_SUFFIX, RAW_SUFFIX, _fsync_directory, is_hour_being_written, iter_pair,
 )
 from store.parquet_partition import (
     PartitionExistsError, append_partition, compute_snapshot_id,
@@ -430,7 +436,7 @@ def _lookahead_hour_files(capture_root: Path, venue: str, date: str, stream: str
     An hour whose `.writing` marker is live is SKIPPED rather than read. This is
     the module's normal operating configuration - building yesterday's bars while
     capture keeps running - and in it the next day's current hour is open, with an
-    unfinished zstd frame on disk. `read_pair` refuses that file, correctly for a
+    unfinished zstd frame on disk. The reader refuses that file, correctly for a
     CLOSED hour, and the refusal used to abort the build of a day the operator
     did ask for while naming a file they did not; the documented repair,
     `reconcile_pair`, then refuses the same file with `HourStillBeingWritten`, so
@@ -449,7 +455,7 @@ def _lookahead_hour_files(capture_root: Path, venue: str, date: str, stream: str
     later availability time and wins the reader's correction resolution.
 
     Only the LOOKAHEAD is tolerant. A live hour in the day's own folder means the
-    operator is building today, and `read_pair`'s refusal is the correct and
+    operator is building today, and the reader's refusal is the correct and
     informative failure for that.
     """
     if lookahead_hours <= 0:
@@ -688,7 +694,7 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
         own_files = symbol_files[symbol]
         for raw_path in own_files + lookahead_by_symbol[symbol]:
             idx_path = _index_path_for(raw_path)
-            for payload, entry in read_pair(raw_path, idx_path):
+            for payload, entry in iter_pair(raw_path, idx_path):
                 frames += 1
                 symbol_frames += 1
                 for trade in extract_trades(payload, entry, venue, symbol):
@@ -812,9 +818,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Batches bound how much work one collision throws away, and how much a
     # killed run loses. They are NOT the memory bound, whatever the numbers here
-    # used to claim: a batch's peak is set by the largest hour file inside it,
-    # because `read_pair` returns a whole hour at once. Five symbols of ordinary
-    # tape and five symbols including TUTUSDT are two different builds.
+    # used to claim - and since 2026-08-10 nothing else is either. The reader
+    # streams (`iter_pair`) and bars are folded as trades arrive, so a batch's
+    # peak no longer tracks the largest hour file inside it: one hour of TUTUSDT
+    # measured 3.98 GB read whole against 0.14 GB streamed. What is left in a
+    # batch's peak is the bars it is accumulating, which is per symbol-minute
+    # rather than per trade.
     #
     # Each batch reads its own set of files and therefore earns its own snapshot
     # id. That is correct rather than merely tolerable: partitions are per symbol,
