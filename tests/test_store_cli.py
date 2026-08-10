@@ -1240,3 +1240,26 @@ def test_the_kept_names_are_the_archive_names_not_the_decoded_ones(tmp_path):
 
     kept = _dollar_quoted_only([encoded], tmp_path, "binance-spot", "2026-08-02")
     assert kept == [encoded]
+
+
+def test_every_venue_with_a_trade_extractor_can_actually_be_built():
+    """A registered extractor the builder cannot reach is captured, unbuildable
+    tape - and nothing reports it.
+
+    This has happened twice. binance-spot was absent from `_TRADE_STREAMS` while
+    1,363 of its symbols were being captured, and every one was unreadable until
+    somebody noticed. Coinbase repeated it on 2026-08-10: `trade_bars` had a
+    tested `_extract_coinbase`, `bars_supervisor.sh` asked for the venue hourly,
+    and `store.cli` answered `invalid choice: 'coinbase'` while 5,208 `matches`
+    files piled up that day. Raw is evicted after seven days, so the window to
+    notice is finite and silent.
+
+    Comparing the two maps by eye is what failed both times, so it is asserted.
+    """
+    from store.cli import _TRADE_STREAMS
+    from store.trade_bars import _EXTRACTORS
+
+    unbuildable = sorted(set(_EXTRACTORS) - set(_TRADE_STREAMS))
+    assert unbuildable == [], (
+        f"{unbuildable} have a trade extractor but no stream in _TRADE_STREAMS, "
+        f"so their captured tape can never become bars")

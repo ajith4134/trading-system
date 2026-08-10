@@ -79,7 +79,20 @@ from store.trade_bars import BarAccumulator, Trade, extract_trades
 # builder could not read, while the paper-engine design called tier 1 "2,123
 # symbols". Nothing reported the gap, because a venue that is never asked for
 # never refuses.
-_TRADE_STREAMS = {"binance": "trade", "binance-spot": "trade", "hyperliquid": "trades"}
+# Every venue whose trade tape can become bars, and the stream its trades arrive
+# on. A venue missing here is captured and unbuildable, and nothing says so - the
+# archive fills, the builder never looks, and the raw is evicted after seven
+# days. That has now happened twice. binance-spot cost 1,363 symbols before it
+# was noticed; coinbase was added 2026-08-10 with a working, tested extractor
+# already registered in `trade_bars._EXTRACTORS` and no entry here, so
+# `bars_supervisor.sh` asked for it every hour and got
+# `invalid choice: 'coinbase'` while 5,208 `matches` files accumulated that day.
+#
+# The lesson both times is that the extractor existing is not the same as the
+# builder reaching it, so `tests/test_store_cli.py` now asserts these two maps
+# agree rather than leaving them to be compared by eye.
+_TRADE_STREAMS = {"binance": "trade", "binance-spot": "trade",
+                  "hyperliquid": "trades", "coinbase": "matches"}
 DEFAULT_INTERVAL_NS = 60_000_000_000
 DEFAULT_LOOKAHEAD_HOURS = 2
 
