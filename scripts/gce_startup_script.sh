@@ -110,6 +110,12 @@ start_as_user "capture_supervisor.sh bybit-liq" \
 # venue's own name for the market), broad tail on trades alone.
 start_as_user "capture_supervisor.sh coinbase" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh coinbase BTC-USD,ETH-USD,SOL-USD ALL"
+# Bars, in their own process since 2026-08-10. They were inside store_supervisor
+# and a universe-wide build takes hours, so the polled datasets beside them
+# refreshed once per full pass instead of once an hour - and every feature in
+# the system was quietly reading three-hour-old funding as a current number.
+start_as_user "bars_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/bars_supervisor.sh"
 # Last, and after the capture supervisors on purpose: it reports on what they
 # produce, and starting it first would have it observe an empty archive and
 # record "nothing captured" as this boot's first verdict.
