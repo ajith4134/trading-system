@@ -103,6 +103,14 @@ while true; do
     done
   done
 
+  # Exchange reserves and netflow. Not a day-keyed build: it is a live poll of a
+  # third-party aggregate with no history endpoint, so a reading not taken now
+  # cannot be taken later at all - the same argument the raw archive rests on.
+  # Once per pass, whatever the day loop did.
+  reserves=$(PYTHONPATH="$REPO/src" "$REPO/.venv/bin/python" \
+    -m store.exchange_reserves --store-root "$STORE_ROOT" 2>>"$LOG")
+  printf '{"ts":"%s","result":%s}\n' "$started" "${reserves:-null}" >> "$RUNS"
+
   # Recorded whether or not it succeeded. Bars went five days stale while the
   # polled datasets kept writing a line every pass, and nothing in the run log
   # said bars had been attempted at all - because they never had been. Every

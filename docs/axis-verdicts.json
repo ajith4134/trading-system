@@ -690,6 +690,24 @@
     "tests/test_price_divergence.py",
     "src/features/price_divergence.py"
    ]
+  },
+  "store.bar_backfill": {
+   "learning": "n/a: a fetch and a projection. Nothing is fitted",
+   "reasoning": "pass: the guard is mechanical rather than a rule. Availability time is the FETCH, not the bar close, so read_as_of at any past clock returns an empty frame and a backtest cannot consume a reconstructed bar even if whoever wrote it never heard of this module - where a comment saying 'do not backtest on this' is a rule someone can forget. The still-open kline is dropped because binance serves the current minute like any other and its partial volume would disagree with the finished version of itself, low, which flatters realised volume",
+   "depth": "pass: it does not claim what a reconstructed bar is worth, it measures it. compare_reconstructed_to_observed reports the distance from the observed bar where both exist - first live run over the 2026-08-09T19:51Z capture outage: 220 overlapping bars, 217 closes identical, median 0.0000 bps, p99 0.0124 bps, volume ratio 1.0. It also COUNTS the rows carrying the reconstructed label inside the observed dataset rather than asserting there are none, and the tile fails outright if that count is ever non-zero",
+   "evidence": [
+    "tests/test_bar_backfill.py",
+    "src/store/bar_backfill.py"
+   ]
+  },
+  "store.exchange_reserves": {
+   "learning": "n/a: a poll and a projection. Nothing is fitted",
+   "reasoning": "pass: the prior art this row pointed at was read rather than trusted, and it returned circulating_supply * 0.15 as `total_reserve` with a hardcoded 0 as the 24h change whenever its paid source was unavailable - a fabricated headline number whose only tell was a `source` field nobody had to read. Here an exchange listed with nothing measured is REFUSED and counted (13 of 91 on the first live poll, Coinbase among them, which publishes no wallet set), because a zero reserve for an exchange holding billions is the most dangerous number this module could produce. Event time is the fetch as well as availability: the source publishes no timestamp of its own, and claiming one we were not given is the same error as stamping a backfill at bar close",
+   "depth": "pass: both reserve figures are kept, not just the headline, because the gap between total and clean assets is collateral the exchange printed and pricing it at market is the arithmetic that ended FTX - measured 2026-08-10 at 15.0% of Binance's $139.7bn and 8.9% of Bybit's $13.1bn, both venues this system trades on. The netflow sign convention is stated on the dataclass rather than left to a reader. The tile refuses to go OK on a 78-exchange reading that does not include the venues we trade on, and calls a poll older than 36h stale rather than showing it as live",
+   "evidence": [
+    "tests/test_exchange_reserves.py",
+    "src/store/exchange_reserves.py"
+   ]
   }
  }
 }

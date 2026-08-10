@@ -502,15 +502,57 @@ def probe_mark_price(facts: SystemFacts) -> ProbeResult:
 
 
 def probe_gap_detection(facts: SystemFacts) -> ProbeResult:
+    # The catalogue row is "gap detection + provenance-flagged backfill", so
+    # both halves are measured. The backfill half is measured by reading the
+    # dataset rather than by checking the module exists: a labelling scheme
+    # with nothing behind it is the thing this row was written about.
     observed = sum(r.get("gaps", {}).get("observation_loss", 0) for r in facts.reports.values())
     corrupting = sum(r.get("gaps", {}).get("corrupting", 0) for r in facts.reports.values())
     if not facts.reports:
         return ProbeResult(NOT_BUILT, "no capture to detect gaps in", "capture/ledger")
+    detection = (f"detection live: {observed} observation-loss and "
+                 f"{corrupting} corrupting gaps recorded")
+
+    try:
+        from store.bar_backfill import compare_reconstructed_to_observed
+        agreement = compare_reconstructed_to_observed(
+            facts.capture_root / "store", int(time.time() * 1e9))
+    except Exception as error:
+        return ProbeResult(PARTIAL, f"{detection}. Backfill audit failed: {error}",
+                           "src/store/bar_backfill.py")
+    if not agreement["reconstructed_bars"]:
+        return ProbeResult(
+            PARTIAL,
+            f"{detection}. Backfill labelling built and nothing backfilled yet - "
+            f"0 reconstructed bars stored",
+            "src/capture/sequencing.py + store/bars_reconstructed")
+
+    leaked = agreement["reconstructed_rows_in_observed"]
+    if leaked:
+        # The one thing this design is supposed to make impossible. Counted
+        # rather than trusted, and it fails the tile outright.
+        return ProbeResult(
+            FAILING,
+            f"{detection}. {leaked} reconstructed row(s) found INSIDE the "
+            f"observed bars dataset - the two are blended",
+            "src/store/bar_backfill.py")
+
+    overlapping = agreement["overlapping"]
+    provenance = (f"{agreement['reconstructed_bars']} reconstructed bar(s), every "
+                  f"one labelled, 0 of them inside the observed dataset")
+    if not overlapping:
+        # Never compared is not agreement, and it is the state this reports
+        # rather than a clean bill of health.
+        return ProbeResult(PARTIAL, f"{detection}. {provenance}; never compared "
+                                    f"against an observed bar",
+                           "src/store/bar_backfill.py")
     return ProbeResult(
-        PARTIAL,
-        f"detection live: {observed} observation-loss and {corrupting} corrupting gaps recorded. "
-        f"Provenance-flagged backfill not implemented",
-        "capture_health gaps + src/capture/sequencing.py",
+        OK,
+        f"{detection}. {provenance}. Against {overlapping} overlapping observed "
+        f"bar(s): {agreement['close_identical']} closes identical, median "
+        f"{agreement['close_agreement_bps_median']:.4f} bps apart, p99 "
+        f"{agreement['close_agreement_bps_p99']:.4f} bps",
+        "src/store/bar_backfill.py + capture_health gaps",
     )
 
 
@@ -1152,6 +1194,61 @@ def probe_axis_verdicts(facts: SystemFacts) -> ProbeResult:
                   if coverage.unverdicted else "; every module judged"), proof)
 
 
+def probe_exchange_reserves(facts: SystemFacts) -> ProbeResult:
+    """What the venues we trade on are holding, and how much of it they printed.
+
+    Reads the stored polls rather than fetching: a tile that made a network
+    call would report the source's health, not this system's.
+
+    OK requires the venues this system actually trades on to be in the reading.
+    A dataset covering 78 exchanges while missing binance would be a full board
+    about somebody else's risk.
+    """
+    proof = "store/exchange_reserves (defillama CEX transparency)"
+    import pandas as pd
+
+    from store.clock_gated_reader import ClockGatedReader
+    from store.exchange_reserves import DATASET
+    from store.temporal_schema import AVAILABILITY_TIME
+
+    store_root = Path(facts.capture_root) / "store"
+    if not (store_root / DATASET).is_dir():
+        return ProbeResult(NOT_BUILT, "no exchange-reserve poll stored", proof)
+
+    frame = ClockGatedReader(store_root, DATASET).read_as_of(int(time.time() * 1e9))
+    if frame.empty:
+        return ProbeResult(NOT_BUILT, "reserve dataset exists and is empty", proof)
+
+    newest_ns = int(frame[AVAILABILITY_TIME].max())
+    latest = frame[frame[AVAILABILITY_TIME] == newest_ns]
+    age_hours = (time.time() * 1e9 - newest_ns) / 3_600_000_000_000
+
+    traded_here = latest[latest["exchange"].isin(["Binance", "Bybit"])]
+    if traded_here.empty:
+        return ProbeResult(
+            PARTIAL,
+            f"{len(latest)} exchange(s) measured but none of the venues this "
+            f"system trades on",
+            proof)
+
+    lines = []
+    for row in traded_here.sort_values("exchange").itertuples(index=False):
+        share = getattr(row, "own_token_share")
+        share_text = ("own-token share unmeasured" if share is None or pd.isna(share)
+                      else f"{share:.1%} of it its own token")
+        lines.append(f"{row.exchange} ${row.total_reserve_usd / 1e9:.1f}bn, "
+                     f"{share_text}, 24h netflow "
+                     f"${row.netflow_24h_usd / 1e6:+.1f}m")
+    detail = (f"{len(latest)} exchange(s) in the newest poll, "
+              f"{age_hours:.1f}h old. " + "; ".join(lines))
+
+    # A reading nobody refreshed is a snapshot presented as live. The source
+    # updates daily, so a day and a half without one is stale rather than slow.
+    if age_hours > 36:
+        return ProbeResult(DEGRADED, f"{detail} - STALE, no poll in over 36h", proof)
+    return ProbeResult(OK, detail, proof)
+
+
 def probe_promotion_readiness(facts: SystemFacts) -> ProbeResult:
     """How far the observed record is from being able to support a promotion.
 
@@ -1215,6 +1312,7 @@ def probe_status_wall(facts: SystemFacts) -> ProbeResult:
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "exchange reserve netflow": probe_exchange_reserves,
     "spot ohlcv trade tape multi venue": probe_trade_tape,
     "l2 order book depth 20 50 levels": probe_l2_depth,
     "liquidation feed": probe_liquidation_feed,
