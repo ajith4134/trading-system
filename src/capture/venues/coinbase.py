@@ -107,6 +107,25 @@ def _venue_time_ms(value) -> int | None:
 class CoinbaseVenue:
     name = "coinbase"
 
+    # This venue subscribes under one name and archives under another, and the
+    # recorder judges silence on the subscribed name while liveness is recorded
+    # on the archived one. `level2_batch` is the only channel where they differ:
+    # its frames arrive typed `snapshot` and `l2update`, which `_TYPE_TO_STREAM`
+    # files as `level2Snapshot` and `level2`, so the channel's own name never
+    # appears on a frame and reads as a stream that has never spoken.
+    #
+    # Measured 2026-08-10 before this existed: coinbase/level2 scored 0.000
+    # delivery with 3 of 3 symbols silent, while the feed was writing 565 KB an
+    # hour and its newest file had been touched two seconds earlier.
+    #
+    # Only channels whose archive name differs belong here. `matches` and
+    # `heartbeat` archive under their own names and need no alias - listing them
+    # would be a mapping that says nothing, and the next reader would have to
+    # check each one to discover that.
+    silence_stream_aliases = {
+        "level2_batch": ("level2", "level2Snapshot"),
+    }
+
     def _specs(self, symbols: list[str], channels: list[str]) -> list[StreamSpec]:
         return [
             StreamSpec(self.name, channel, symbol, channel)

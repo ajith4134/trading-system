@@ -271,6 +271,33 @@ class VenueRecorder:
                 (spec.stream, self._silence_symbol(spec.stream, spec.symbol))
             for spec in specs
         }
+        # A venue may SUBSCRIBE under one name and ARCHIVE under another, and
+        # when it does, silence accounting reads a stream that can never speak.
+        # Coinbase asks for the channel `level2_batch` and files what comes back
+        # as `level2` and `level2Snapshot`, because the archive stream name comes
+        # from the venue's own message `type` field. Liveness is recorded under
+        # the name `consume` is handed - the archive one - so the subscribed name
+        # shows zero frames forever and is recorded silent every day.
+        #
+        # Measured on 2026-08-10: coinbase/level2 scored 0.000 delivery, 3 of 3
+        # symbols "silent", while writing 565 KB an hour with its newest file
+        # touched two seconds earlier. The recovery rule could not clear it
+        # either - that compares the silence event against file mtimes keyed on
+        # the ARCHIVE name, so it looked up `level2_batch_BTC-USD`, found
+        # nothing, and read the default 0 as "no write has ever postdated this".
+        # False silence that no amount of data can heal.
+        #
+        # The alias is declared by the adapter rather than inferred here: only
+        # the adapter knows which archive streams its subscription answers with,
+        # and one channel may answer with several.
+        aliases = getattr(venue, "silence_stream_aliases", None) or {}
+        self._silence_alias_keys: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {}
+        for spec in specs:
+            archived_as = aliases.get(spec.stream)
+            if not archived_as:
+                continue
+            self._silence_alias_keys[self._silence_key(spec.stream, spec.symbol)] = tuple(
+                self._silence_key(name, spec.symbol) for name in archived_as)
         self._session_start_ns = clock_ns()
         self._silence_grace_ns = int(silence_grace_seconds * 1e9)
         # A polled spec's cadence is a declared fact about how often it can
@@ -656,6 +683,14 @@ class VenueRecorder:
             if (key, day) in self._recorded_silent_days:
                 continue
             last_ns = self._last_frame_ns.get(key, self._session_start_ns)
+            # A frame that arrived under the archive name this subscription
+            # answers with is this subscription speaking. Without the max, a
+            # venue whose channel name differs from its archive stream name is
+            # silent by construction - see `_silence_alias_keys`.
+            for alias_key in self._silence_alias_keys.get(key, ()):
+                alias_last_ns = self._last_frame_ns.get(alias_key)
+                if alias_last_ns is not None:
+                    last_ns = max(last_ns, alias_last_ns)
             quiet_ns = now_ns - last_ns
             # The threshold is never below the grace, so a stream well inside it
             # is settled without sorting its window - this runs on every frame.

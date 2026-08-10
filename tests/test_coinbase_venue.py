@@ -256,3 +256,64 @@ def test_coinbase_trades_build_bars_keyed_to_their_own_venue():
     assert bars.iloc[0]["venue"] == "coinbase"
     assert bars.iloc[0]["symbol"] == "ETH-USD"
     assert bars.iloc[0]["close"] == 1925.31
+
+
+@pytest.mark.asyncio
+async def test_a_channel_archived_under_another_name_is_not_recorded_silent(tmp_path):
+    """`level2_batch` is subscribed; its frames arrive filed as `level2`.
+
+    The recorder judges silence on the name it SUBSCRIBED and records liveness
+    on the name a frame ARRIVES under, and for this channel those differ - the
+    archive stream comes from the venue's own `type` field, so the string
+    `level2_batch` never appears on a frame. Before `silence_stream_aliases`,
+    that made the channel silent by construction: measured 2026-08-10,
+    coinbase/level2 scored 0.000 delivery with 3 of 3 symbols silent while the
+    feed was writing 565 KB an hour and its newest file had been touched two
+    seconds earlier.
+
+    Worse than a wrong tile, it could not heal. `capture_health`'s recovery rule
+    clears a silence event that a later write postdates, but it looks the write
+    up by the archive name - so it searched for `level2_batch_BTC-USD`, found
+    nothing, and read the default 0 as "no write has ever postdated this".
+    """
+    from capture.capture_ledger import read_all
+    from capture.venue_recorder import VenueRecorder
+
+    def clock_advancing_by(start_ns: int, step_ns: int):
+        state = {"now": start_ns}
+
+        def clock_ns() -> int:
+            now = state["now"]
+            state["now"] = now + step_ns
+            return now
+        return clock_ns
+
+    async def frames(items):
+        for item in items:
+            yield item
+
+    venue = CoinbaseVenue()
+    # One second per clock read, against a five-second grace. The step has to be
+    # small enough that no stream outruns the grace before the first frame is
+    # processed: silence is recorded once per stream per UTC day and is never
+    # revised, so a coarse clock records every stream silent during startup and
+    # the run afterwards can no longer say anything. That is a property of the
+    # test harness, not of the recorder - with a 40-second step this test
+    # reported the defect it was written to prove absent.
+    recorder = VenueRecorder(venue, venue.core_specs(["BTC-USD"]), tmp_path,
+                             silence_grace_seconds=5,
+                             clock_ns=clock_advancing_by(1785648600_000_000_000,
+                                                         1_000_000_000))
+
+    await recorder.consume(frames([json.dumps(L2UPDATE) for _ in range(5)]))
+    recorder.close()
+
+    silent = {event.stream for event in read_all(tmp_path, "coinbase", "2026-08-02")
+              if event.kind == "silent_stream"}
+
+    assert "level2_batch" not in silent, (
+        "the channel spoke - its frames were archived as level2 - so recording "
+        "it silent is the false-silence defect this alias exists to prevent")
+    # Not a vacuous assertion: the two channels that genuinely received nothing
+    # ARE recorded, which is what makes the absence above meaningful.
+    assert silent == {"matches", "heartbeat"}

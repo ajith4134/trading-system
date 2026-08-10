@@ -137,6 +137,28 @@ def _has_captured_anything(root: Path) -> bool:
     return next(raw_root.rglob(f"*{RAW_SUFFIX}"), None) is not None
 
 
+def _silence_stream_aliases_for(venue: str) -> dict[str, tuple[str, ...]]:
+    """What each subscribed channel is archived as, for this venue's adapters.
+
+    Read off the adapter CLASSES rather than instances - the declaration is a
+    class attribute and instantiating a venue here would be a side effect this
+    function has no business causing. Several registry keys can share one
+    archive name (`binance` and `binance-funding` both file as "binance"), so
+    every adapter writing into this venue's folder contributes its aliases.
+
+    Imported inside the function: `capture.cli` reaches back into this module,
+    and a module-level import would close that loop at import time.
+    """
+    from capture.cli import _VENUES
+
+    aliases: dict[str, tuple[str, ...]] = {}
+    for factory in _VENUES.values():
+        if getattr(factory, "name", None) != venue:
+            continue
+        aliases.update(getattr(factory, "silence_stream_aliases", None) or {})
+    return aliases
+
+
 def _measure_raw_newest_mtime_by_stream(folder: Path) -> dict[str, int]:
     """Newest file mtime (ns) per stream-symbol, for the recovery rule below.
 
@@ -251,6 +273,7 @@ def build_report(root: Path, venue: str, date: str,
     silent_streams = 0
     silent_stream_names: set[str] = set()
     silent_symbol_ts: dict[str, int] = {}
+    silent_symbol_parts: dict[str, tuple[str, str]] = {}
     # Gap and corruption counts PER STREAM, not only per venue-day. The
     # venue-wide totals cannot tell one feed from another: on 2026-08-09 every
     # binance feed scored an identical 0.049 continuity, because one busy
@@ -294,6 +317,14 @@ def build_report(root: Path, venue: str, date: str,
                     entry = f"{event.stream}_{symbol}"
                     ts = event.ts_ns if isinstance(event.ts_ns, int) else 0
                     silent_symbol_ts[entry] = max(silent_symbol_ts.get(entry, 0), ts)
+                    # Kept unjoined as well. The recovery rule below has to look
+                    # this event up against FILES, which are named for the
+                    # archive stream rather than the subscribed channel, and
+                    # recovering the two halves by splitting the joined string
+                    # is not possible: both halves can contain an underscore
+                    # (`level2_batch` on coinbase, `_b32_...` symbols on
+                    # binance), so no split point is correct for every entry.
+                    silent_symbol_parts[entry] = (event.stream, symbol)
         elif event.kind == "writer_pool":
             # Newest wins rather than last-seen: `read_all` makes no ordering
             # promise across a day's ledger files, and a tile quoting an older
@@ -318,9 +349,28 @@ def build_report(root: Path, venue: str, date: str,
     # stays in the ledger (it happened); only the CURRENT-state report stops
     # repeating it.
     newest_mtime = _measure_raw_newest_mtime_by_stream(day_folder)
+    aliases = _silence_stream_aliases_for(venue)
+
+    def newest_write_ns(entry: str) -> int:
+        """When this subscription last wrote, under whatever name it files as.
+
+        A venue may subscribe one channel and archive under another, and then
+        the file this event should be cleared by does not carry the event's own
+        stream name. Coinbase asks for `level2_batch` and files the answer as
+        `level2` and `level2Snapshot`, so the direct lookup finds nothing and
+        the default 0 reads as "no write has ever postdated this" - a silence
+        no volume of data can clear. Measured 2026-08-10: 0.000 delivery on a
+        feed writing 565 KB an hour.
+        """
+        newest = newest_mtime.get(entry, 0)
+        stream, symbol = silent_symbol_parts.get(entry, (None, None))
+        for archived_as in aliases.get(stream, ()):
+            newest = max(newest, newest_mtime.get(f"{archived_as}_{symbol}", 0))
+        return newest
+
     silent_stream_symbols = sorted(
         entry for entry, event_ts in silent_symbol_ts.items()
-        if newest_mtime.get(entry, 0) <= event_ts)
+        if newest_write_ns(entry) <= event_ts)
     if raw_data_bytes > 0:
         capture_status = STATUS_PRESENT
     elif _has_captured_anything(root):
