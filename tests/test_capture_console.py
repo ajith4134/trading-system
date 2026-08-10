@@ -15,13 +15,21 @@ from pathlib import Path
 import pytest
 
 from capture.capture_console import (
-    STALE_AFTER_SECONDS, collect_capture_status, collect_stream_freshness,
-    find_quarantined_hours, measure_archive_age_seconds, read_recent_restarts,
-    render_status_html, render_status_text, write_console_page,
+    STALE_AFTER_SECONDS, _utc_today, collect_capture_status,
+    collect_stream_freshness, find_quarantined_hours, measure_archive_age_seconds,
+    read_recent_restarts, render_status_html, render_status_text,
+    write_console_page,
 )
 from capture.raw_writer import RAW_SUFFIX
 
-DATE = "2026-08-09"
+# The console only ever looks at the UTC day it is running on, so a fixture
+# written under any other day is invisible to it. This was hardcoded to
+# "2026-08-09" when these tests were written, and four of them passed for
+# exactly one day: on 2026-08-10 the console correctly reported "No files
+# today" about a fixture filed under yesterday, and the tests read that as the
+# renderer being broken. Reading the date off the same clock the console reads
+# is the invariant those tests meant to assert.
+DATE = _utc_today()
 
 
 def _hour_file(root: Path, venue: str, stream: str, symbol: str,
