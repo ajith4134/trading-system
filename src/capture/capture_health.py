@@ -251,6 +251,14 @@ def build_report(root: Path, venue: str, date: str,
     silent_streams = 0
     silent_stream_names: set[str] = set()
     silent_symbol_ts: dict[str, int] = {}
+    # Gap and corruption counts PER STREAM, not only per venue-day. The
+    # venue-wide totals cannot tell one feed from another: on 2026-08-09 every
+    # binance feed scored an identical 0.049 continuity, because one busy
+    # stream's 251,558 observation-loss gaps were being charged to depth,
+    # funding and open interest alike. A component that is the same for every
+    # feed of a venue carries no information about any of them.
+    events_by_stream: dict[str, int] = {}
+    gaps_by_stream: dict[str, dict[str, int]] = {}
     # The newest descriptor-pool report, or None when the recorder never wrote
     # one. None is a distinct answer from a healthy pool and is kept distinct all
     # the way to the tile: a display must not read "nobody measured" as "fine".
@@ -262,8 +270,12 @@ def build_report(root: Path, venue: str, date: str,
         # line from raising and leaving the whole venue-day unreported - which
         # is indistinguishable from healthy to anything downstream.
         severity = event.severity if isinstance(event.severity, str) else "unknown"
+        stream_name = event.stream if isinstance(event.stream, str) else "unknown"
+        events_by_stream[stream_name] = events_by_stream.get(stream_name, 0) + 1
         if event.kind == "gap":
             gaps[severity] = gaps.get(severity, 0) + 1
+            per_stream = gaps_by_stream.setdefault(stream_name, {})
+            per_stream[severity] = per_stream.get(severity, 0) + 1
         elif event.kind == "silent_stream":
             silent_streams += 1
             if isinstance(event.stream, str):
@@ -332,6 +344,16 @@ def build_report(root: Path, venue: str, date: str,
         "silent_streams": silent_streams,
         "silent_stream_names": sorted(silent_stream_names),
         "silent_stream_symbols": silent_stream_symbols,
+        # Newest write time per stream-symbol, already measured above for the
+        # recovery rule. Exposed because a reader cannot otherwise tell a
+        # stream that stopped an hour ago from one still writing - the byte
+        # count is identical either way.
+        "newest_mtime_ns_by_stream": dict(sorted(newest_mtime.items())),
+        # Per stream, so a feed's continuity is its own rather than its
+        # busiest sibling's. See the note where these are counted.
+        "events_by_stream": dict(sorted(events_by_stream.items())),
+        "gaps_by_stream": {k: dict(sorted(v.items()))
+                           for k, v in sorted(gaps_by_stream.items())},
         # None when the recorder never reported its descriptor pool - a fresh
         # install, or a version predating the report. Never defaulted to a
         # healthy-looking zero.

@@ -563,13 +563,25 @@ def probe_venue_health(facts: SystemFacts) -> ProbeResult:
 
 
 def probe_data_quality_score(facts: SystemFacts) -> ProbeResult:
+    """The composite score, computed from the same pass every other tile uses."""
     if not facts.reports:
         return ProbeResult(NOT_BUILT, "no feeds measured", "capture_health")
+    from features.feed_quality import score_feeds
+
+    scores = score_feeds(facts.reports)
+    if not scores:
+        return ProbeResult(NOT_BUILT, "no feed has any captured data to score",
+                           "capture_health raw_bytes_by_stream")
+    worst = min(scores, key=lambda s: s.score)
+    healthy = sum(1 for s in scores if s.score >= 0.99)
+    state = OK if worst.score >= 0.99 else DEGRADED
     return ProbeResult(
-        PARTIAL,
-        f"per-stream byte volume and silence tracked for {len(facts.reports)} venues; "
-        f"no composite quality score computed",
-        "capture_health raw_bytes_by_stream, silent_stream_names",
+        state,
+        f"{len(scores)} feeds scored, {healthy} at 0.99+; worst "
+        f"{worst.venue}/{worst.stream} at {worst.score:.3f} on {worst.worst_component}. "
+        f"Score is the MINIMUM of delivery, integrity, continuity and freshness, "
+        f"never their mean",
+        "features/feed_quality.py over capture_health reports",
     )
 
 

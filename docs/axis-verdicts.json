@@ -654,6 +654,15 @@
     "tests/test_volume_quality.py",
     "src/features/volume_quality.py"
    ]
+  },
+  "features.feed_quality": {
+   "learning": "n/a: an aggregation over measured health facts. Nothing is fitted, and there is deliberately no threshold - it reports scores and lets the board rank them, because what counts as too low differs between a liquidation feed that is legitimately quiet and a depth stream that must never stop",
+   "reasoning": "pass: the score is the MINIMUM of its four components, never the mean, because a mean of 1, 1, 1 and 0 reads as a healthy feed with a rounding error. Control channels are excluded on the archive's own evidence rather than a name list - the recorder files control frames under the symbol `unknown`, so a stream with only that symbol is a control channel. Two defects were caught by running it live: a freshness component that could only ever return 1.0, and venue-wide gap attribution that gave all five binance feeds an identical 0.049",
+   "depth": "pass: it changes what the board says, and it has a consumer today - the wall reads it, unlike the sizing-dependent features. worst_component names which of the four dragged the score down, so a bad feed produces a next step rather than a shrug, and an unmeasured freshness reads 0 rather than defaulting to healthy",
+   "evidence": [
+    "tests/test_feed_quality.py",
+    "src/features/feed_quality.py"
+   ]
   }
  }
 }
