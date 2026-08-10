@@ -66,7 +66,7 @@ from store.parquet_partition import (
     PartitionExistsError, append_partition, compute_snapshot_id,
 )
 from store.temporal_schema import EVENT_TIME
-from store.trade_bars import Trade, build_bars, extract_trades
+from store.trade_bars import BarAccumulator, Trade, extract_trades
 
 # The capture stream carrying trades, per venue. A venue absent here cannot be
 # built at all, and until 2026-08-08 spot was absent - 1,363 captured symbols the
@@ -599,7 +599,11 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
         symbol_files[symbol] = readable
 
     start_ns, end_ns = _day_bounds_ns(date)
-    trades: list[Trade] = []
+    # The bars themselves, folded as trades are read, rather than a list of
+    # every trade in the batch. See `BarAccumulator` for the measurements -
+    # including the one that says this is an improvement rather than a cure.
+    bar_accumulator = BarAccumulator(interval_ns)
+    trades_kept = 0
     # Only the day's OWN files, never the lookahead ones - see the snapshot id
     # computation below for why the distinction is load-bearing.
     day_sources: list[Path] = []
@@ -693,7 +697,8 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
                     # which reads it from its own files - unless no build reaches
                     # it at all, which is what the three-way split establishes.
                     if start_ns <= trade.event_time_ns < end_ns:
-                        trades.append(trade)
+                        bar_accumulator.add(trade)
+                        trades_kept += 1
                         symbol_trades += 1
                     elif trade.event_time_ns >= end_ns:
                         trades_deferred_to_next_day += 1
@@ -713,7 +718,7 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
         "day_files_skipped_live": [str(path) for path in day_files_skipped_live],
     }
 
-    bars = build_bars(trades, interval_ns) if trades else None
+    bars = bar_accumulator.to_frame() if trades_kept else None
     if bars is not None:
         stray = bars[(bars[EVENT_TIME] < start_ns) | (bars[EVENT_TIME] >= end_ns)]
         if not stray.empty:
@@ -745,7 +750,7 @@ def build_bars_for_day(capture_root: Path, store_root: Path, venue: str, date: s
     if bars is None:
         return {"frames": frames, "trades": 0, "bars": 0, "snapshot_id": None,
                 "by_symbol": by_symbol, **counts}
-    return {"frames": frames, "trades": len(trades), "bars": len(bars),
+    return {"frames": frames, "trades": trades_kept, "bars": len(bars),
             "snapshot_id": snapshot_id, "by_symbol": by_symbol, **counts}
 
 
@@ -773,7 +778,8 @@ def main(argv: list[str] | None = None) -> int:
                              "whose event time still belongs to this day")
     parser.add_argument("--batch-size", type=int, default=0,
                         help="build this many symbols per pass (0 = all at once). "
-                             "Peak memory follows the batch, not the request")
+                             "Bounds how much work one collision throws away, not "
+                             "peak memory - see BarAccumulator for that")
     args = parser.parse_args(argv)
 
     if args.batch_size < 0:
@@ -804,12 +810,11 @@ def main(argv: list[str] | None = None) -> int:
         if not symbols:
             parser.error("--symbols must name at least one symbol")
 
-    # One build per batch, because `build_bars_for_day` accumulates every trade of
-    # every requested symbol into a single list before building bars from it.
-    # Measured 2026-08-08: peak RSS per symbol rose 30 -> 35 -> 44 MB across
-    # 50/100/150 symbols, so the 569-symbol universe in one call extrapolates to
-    # ~25 GB for five hours of tape - infeasible - against 2.7 GB in batches of
-    # five, for 14% more wall time.
+    # Batches bound how much work one collision throws away, and how much a
+    # killed run loses. They are NOT the memory bound, whatever the numbers here
+    # used to claim: a batch's peak is set by the largest hour file inside it,
+    # because `read_pair` returns a whole hour at once. Five symbols of ordinary
+    # tape and five symbols including TUTUSDT are two different builds.
     #
     # Each batch reads its own set of files and therefore earns its own snapshot
     # id. That is correct rather than merely tolerable: partitions are per symbol,

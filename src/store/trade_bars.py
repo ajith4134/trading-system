@@ -204,45 +204,138 @@ def extract_trades(payload: str, entry: IndexEntry, venue: str, symbol: str) -> 
             if is_tradeable(trade)]
 
 
+class BarAccumulator:
+    """Folds trades into their bars as they arrive, holding no tape.
+
+    `build_bars_for_day` accumulated every trade of a batch into one Python list
+    and aggregated at the end. On 2026-08-10 the binance build for 2026-08-09
+    was OOM-killed at 20.3 GB on a 29 GB box and left 69 of 569 symbols unbuilt,
+    with nothing saying the day was partial rather than absent.
+
+    ## What was measured, including the part that is still wrong
+
+    Three hypotheses, in the order they were tried, on the same symbol -
+    TUTUSDT, 226 MB of compressed tape carrying **25,963,564 trades** in one
+    day, which is what the old code was trying to hold as Python objects:
+
+    1. **The per-trade dicts in `build_bars`.** Building the frame column by
+       column instead removed a full copy. Measured: the build still OOM-killed,
+       at 12.0 GB. Removing a copy of the thing that does not fit still does not
+       fit.
+    2. **The list of `Trade` objects.** That is this class. Measured: the same
+       build COMPLETES, exit 0, peaking at 4.09 GB against 12.0 GB killed - and
+       26 million trades reduce to 856 bars.
+    3. **`capture.raw_writer.read_pair`, which returns `list[tuple[str,
+       IndexEntry]]` - a whole hour file, every payload string and an object per
+       frame, materialised before one trade is examined.** That is what the
+       remaining 4.1 GB is, and it is not fixed here. Peak is set by the largest
+       HOUR FILE in a batch, so a symbol's whole day no longer has to fit but
+       one of its hours still does.
+
+    So this bounds memory by the busiest hour rather than by the busiest day. It
+    is an improvement with a number behind it, not a cure, and the next bound is
+    named above rather than left for someone to rediscover from an OOM log.
+
+    ## The ordering this has to reproduce exactly
+
+    The frame version sorted by event time with a STABLE sort and took `first`
+    and `last` per group, so:
+
+    * open is the price of the earliest event time, and among ties the trade
+      seen first;
+    * close is the price of the latest event time, and among ties the trade seen
+      last.
+
+    That is not pedantry. Venue frames arrive out of event order - hyperliquid
+    reconnect backfill was measured carrying trades spanning 32.4 seconds of
+    venue time in one frame - so "the last trade added" and "the last trade of
+    the minute" are different rows, and taking the wrong one puts a stale price
+    in the close that every return is computed from. Hence the strict `<` for
+    open and the `>=` for close below: they are what a stable sort does.
+    """
+
+    __slots__ = ("_interval_ns", "_bars")
+
+    def __init__(self, interval_ns: int) -> None:
+        self._interval_ns = int(interval_ns)
+        # (symbol, venue, bar_open_ns) -> mutable bucket. A plain list rather
+        # than a dataclass: there is one per bar and they are written on every
+        # trade, so the attribute lookup and the object header both matter.
+        # Layout: [open, open_event, high, low, close, close_event, volume,
+        #          count, latest_ingestion]
+        self._bars: dict[tuple[str, str, int], list] = {}
+
+    def add(self, trade: Trade) -> None:
+        bar_open = (trade.event_time_ns // self._interval_ns) * self._interval_ns
+        key = (trade.symbol, trade.venue, bar_open)
+        bucket = self._bars.get(key)
+        if bucket is None:
+            self._bars[key] = [trade.price, trade.event_time_ns, trade.price,
+                               trade.price, trade.price, trade.event_time_ns,
+                               trade.size, 1, trade.ingestion_time_ns]
+            return
+        price = trade.price
+        if trade.event_time_ns < bucket[1]:
+            bucket[0], bucket[1] = price, trade.event_time_ns
+        if price > bucket[2]:
+            bucket[2] = price
+        if price < bucket[3]:
+            bucket[3] = price
+        if trade.event_time_ns >= bucket[5]:
+            bucket[4], bucket[5] = price, trade.event_time_ns
+        bucket[6] += trade.size
+        bucket[7] += 1
+        if trade.ingestion_time_ns > bucket[8]:
+            bucket[8] = trade.ingestion_time_ns
+
+    def extend(self, trades: Iterable[Trade]) -> None:
+        add = self.add
+        for trade in trades:
+            add(trade)
+
+    def __len__(self) -> int:
+        return len(self._bars)
+
+    def to_frame(self) -> pd.DataFrame:
+        """The bars, ordered as the grouped-and-sorted frame version ordered them."""
+        if not self._bars:
+            # No trades is not a flat bar. Zero-filling would invent liquidity
+            # that a backtest would then assume it could trade against.
+            return pd.DataFrame()
+
+        keys = sorted(self._bars)
+        buckets = [self._bars[key] for key in keys]
+        frame = pd.DataFrame.from_dict({
+            SYMBOL: [key[0] for key in keys],
+            VENUE: [key[1] for key in keys],
+            "open": [b[0] for b in buckets],
+            "high": [b[2] for b in buckets],
+            "low": [b[3] for b in buckets],
+            "close": [b[4] for b in buckets],
+            "volume": [b[6] for b in buckets],
+            "trades": [b[7] for b in buckets],
+            EVENT_TIME: [key[2] for key in keys],
+            INGESTION_TIME: [b[8] for b in buckets],
+        })
+        bar_close = (frame[EVENT_TIME] + self._interval_ns).astype("int64")
+        # The whole point of this module: a bar is not available at its close if
+        # a trade composing it arrived later than that. np.maximum on two int64
+        # arrays is an unambiguous element-wise max - no reduction axis to get
+        # backwards, unlike a DataFrame.max(axis=...) which silently answers the
+        # wrong question if the axis argument is ever transposed.
+        frame[AVAILABILITY_TIME] = np.maximum(
+            bar_close.to_numpy(), frame[INGESTION_TIME].to_numpy()).astype("int64")
+        return frame
+
+
 def build_bars(trades: Iterable[Trade], interval_ns: int) -> pd.DataFrame:
-    """OHLCV per (symbol, venue, interval), stamped with when each bar became knowable."""
-    rows = list(trades)
-    if not rows:
-        # No trades is not a flat bar. Zero-filling would invent liquidity that
-        # a backtest would then assume it could trade against.
-        return pd.DataFrame()
+    """OHLCV per (symbol, venue, interval), stamped with when each bar became knowable.
 
-    frame = pd.DataFrame([{
-        SYMBOL: t.symbol, VENUE: t.venue, "price": t.price, "size": t.size,
-        EVENT_TIME: t.event_time_ns, INGESTION_TIME: t.ingestion_time_ns,
-    } for t in rows])
-    frame["bar_open_ns"] = (frame[EVENT_TIME] // interval_ns) * interval_ns
-
-    # Sorted by event time so open and close follow the venue's clock rather than
-    # the order frames happened to arrive in.
-    frame = frame.sort_values(EVENT_TIME, kind="mergesort")
-
-    grouped = frame.groupby([SYMBOL, VENUE, "bar_open_ns"], sort=True)
-    bars = grouped.agg(
-        open=("price", "first"),
-        high=("price", "max"),
-        low=("price", "min"),
-        close=("price", "last"),
-        volume=("size", "sum"),
-        trades=("price", "size"),
-        latest_ingestion=(INGESTION_TIME, "max"),
-    ).reset_index()
-
-    bar_close = (bars["bar_open_ns"] + interval_ns).astype("int64")
-    bars[EVENT_TIME] = bars["bar_open_ns"].astype("int64")
-    bars[INGESTION_TIME] = bars["latest_ingestion"].astype("int64")
-    # The whole point of this module: a bar is not available at its close if a
-    # trade composing it arrived later than that. np.maximum on two int64 arrays
-    # is an unambiguous element-wise max - no reduction axis to get backwards,
-    # unlike a DataFrame.max(axis=...) which silently answers the wrong question
-    # if the axis argument is ever transposed.
-    bars[AVAILABILITY_TIME] = np.maximum(
-        bar_close.to_numpy(), bars["latest_ingestion"].to_numpy()
-    ).astype("int64")
-
-    return bars.drop(columns=["bar_open_ns", "latest_ingestion"]).reset_index(drop=True)
+    Kept as the one-shot form for callers that already hold their trades - the
+    tests, and anything with a list small enough not to matter. A caller reading
+    a day off disk should feed a `BarAccumulator` instead and never build the
+    list at all.
+    """
+    accumulator = BarAccumulator(interval_ns)
+    accumulator.extend(trades)
+    return accumulator.to_frame()

@@ -217,3 +217,88 @@ def test_a_zero_price_frame_cannot_reach_the_low_of_a_bar():
     assert float(bars.iloc[0]["low"]) == 63880.10
     assert float(bars.iloc[0]["open"]) == 63884.20
     assert int(bars.iloc[0]["trades"]) == 2, "the placeholder must not be counted as a trade"
+
+
+# --- streaming aggregation, added with BarAccumulator 2026-08-10 ----------
+
+def test_open_and_close_follow_the_venue_clock_not_the_arrival_order():
+    """The semantics the frame version got from a stable sort, and the reason
+    this is not pedantry.
+
+    Venue frames arrive out of event order - hyperliquid reconnect backfill was
+    measured carrying trades spanning 32.4 seconds of venue time in one frame -
+    so "the last trade added" and "the last trade of the minute" are different
+    rows. Taking the wrong one puts a stale price in the close that every return
+    is computed from.
+    """
+    from store.trade_bars import BarAccumulator
+
+    minute = 60_000_000_000
+    accumulator = BarAccumulator(minute)
+    # Added middle, then last, then FIRST - the shape a reconnect produces.
+    for price, event_ns in ((101.0, 30 * 10**9), (102.0, 50 * 10**9),
+                            (100.0, 1 * 10**9)):
+        accumulator.add(Trade(symbol="BTCUSDT", venue="binance", price=price,
+                              size=1.0, event_time_ns=event_ns,
+                              ingestion_time_ns=event_ns))
+
+    bar = accumulator.to_frame().iloc[0]
+
+    assert bar["open"] == 100.0, "open must be the earliest event, not the first seen"
+    assert bar["close"] == 102.0, "close must be the latest event, not the last seen"
+    assert bar["high"] == 102.0 and bar["low"] == 100.0
+
+
+def test_trades_sharing_an_event_time_keep_the_order_they_arrived_in():
+    """What a STABLE sort did: among ties, open takes the first row seen and
+    close takes the last. Reproduced here by a strict `<` for open and a `>=`
+    for close."""
+    from store.trade_bars import BarAccumulator
+
+    accumulator = BarAccumulator(60_000_000_000)
+    for price in (10.0, 20.0, 30.0):
+        accumulator.add(Trade(symbol="BTCUSDT", venue="binance", price=price,
+                              size=1.0, event_time_ns=5 * 10**9,
+                              ingestion_time_ns=5 * 10**9))
+
+    bar = accumulator.to_frame().iloc[0]
+
+    assert bar["open"] == 10.0
+    assert bar["close"] == 30.0
+
+
+def test_the_accumulator_holds_one_bucket_per_bar_not_one_per_trade():
+    """The whole point: peak follows the number of BARS. Ten thousand trades in
+    two minutes is two buckets."""
+    from store.trade_bars import BarAccumulator
+
+    minute = 60_000_000_000
+    accumulator = BarAccumulator(minute)
+    for i in range(10_000):
+        accumulator.add(Trade(symbol="BTCUSDT", venue="binance", price=100.0 + i,
+                              size=1.0, event_time_ns=i * 12_000_000,
+                              ingestion_time_ns=i * 12_000_000))
+
+    assert len(accumulator) == 2
+    assert accumulator.to_frame()["trades"].sum() == 10_000
+
+
+def test_the_streaming_and_one_shot_forms_agree():
+    """`build_bars` is the same accumulator with the list fed in, so a caller
+    that already holds its trades cannot get a different answer from one that
+    streams them."""
+    from store.trade_bars import BarAccumulator
+
+    minute = 60_000_000_000
+    trades = [
+        Trade(symbol="BTCUSDT", venue="binance", price=100.0 + (i % 7),
+              size=0.5, event_time_ns=i * 7_000_000_000,
+              ingestion_time_ns=i * 7_000_000_000 + 1_000_000)
+        for i in range(50)
+    ]
+
+    streamed = BarAccumulator(minute)
+    for trade in trades:
+        streamed.add(trade)
+
+    pd.testing.assert_frame_equal(streamed.to_frame(), build_bars(trades, minute))
