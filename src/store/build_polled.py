@@ -28,6 +28,9 @@ import re
 
 from capture.raw_writer import RAW_SUFFIX, read_pair
 from store.book_snapshots import build_book_frame, extract_book_snapshot
+from store.dated_futures import (
+    build_dated_futures_frame, extract_bybit_dated_future,
+)
 from store.funding_rates import (
     build_funding_frame, extract_bybit_funding, extract_funding,
     extract_hyperliquid_funding,
@@ -44,6 +47,14 @@ def _availability_watermark_ns(store_root: Path, dataset: str,
     Read from the dataset because the dataset is the only authority on what it
     holds; any sidecar record of "built up to" could survive a part that was
     deleted or predate one that was hand-added.
+
+    **A backfill has to run oldest day first.** This is a high-water mark, not a
+    per-day record, so once today is in the dataset an older day appends
+    nothing - it reports `rows: 0, appended: false` and exits 0, which is the
+    same line a day with no data prints. Caught while backfilling
+    `dated_futures` on 2026-08-10: 541,765 frames of 08-09 were read and
+    discarded in silence because 08-10 had been built first. The supervisor
+    never meets this - it walks yesterday then today, in that order, every pass.
     """
     existing = read_dataset(store_root, dataset)
     if existing.empty or VENUE not in existing.columns:
@@ -59,6 +70,12 @@ def _availability_watermark_ns(store_root: Path, dataset: str,
 DATASETS: dict[str, tuple[str, Callable, Callable]] = {
     "funding": ("premiumIndex", extract_funding, build_funding_frame),
     "book": ("depthSnapshot", extract_book_snapshot, build_book_frame),
+    # The expiring half of the same bybit poll `funding` reads. One archived
+    # stream, two datasets, and each extractor refuses the other's rows on the
+    # venue's own evidence - a blank `fundingRate` with a delivery date is a
+    # calendar contract, a rate is a perpetual.
+    "dated_futures": ("linearTickers", extract_bybit_dated_future,
+                      build_dated_futures_frame),
 }
 
 # Where a venue's raw stream is named differently from the dataset's default, or

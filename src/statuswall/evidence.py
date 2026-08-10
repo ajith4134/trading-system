@@ -384,16 +384,15 @@ def probe_peg_monitor(facts: SystemFacts) -> ProbeResult:
 
 
 def probe_spot_perp_basis(facts: SystemFacts) -> ProbeResult:
-    # Computes the actual number rather than checking that files exist: the
-    # basis is a derivation, and the only proof a derivation works is running
-    # it. Never OK - the catalogue row also names the term structure, which is
-    # not built (bybit's 40 dated futures are captured raw, no curve dataset
-    # reads them), so the honest ceiling is PARTIAL until it is.
+    # Computes both actual numbers rather than checking that files exist: a
+    # basis and a curve are derivations, and the only proof a derivation works
+    # is running it. The catalogue row names two things - the perpetual basis
+    # and the term structure - so this tile stays PARTIAL while either half is
+    # empty, however healthy the other one looks.
+    now_ns = int(time.time() * 1e9)
     try:
         from features.spot_perp_basis import compute_spot_perp_basis
-        table = compute_spot_perp_basis(
-            facts.capture_root / "store",
-            int(time.time() * 1e9))
+        table = compute_spot_perp_basis(facts.capture_root / "store", now_ns)
     except Exception as error:
         return ProbeResult(NOT_MEASURED, f"basis computation failed: {error}",
                            "features/spot_perp_basis.py")
@@ -402,11 +401,32 @@ def probe_spot_perp_basis(facts: SystemFacts) -> ProbeResult:
                            "capture/store/funding")
     venues = sorted(table.rows["venue"].unique())
     refused = sum(table.refused.values())
+    basis_line = (f"basis computed live: {len(table.rows)} (venue, symbol) pairs "
+                  f"across {', '.join(venues)}, {refused} refused")
+
+    try:
+        from features.term_structure import compute_term_structure, summarise_curves
+        curve = compute_term_structure(facts.capture_root / "store", now_ns)
+    except Exception as error:
+        return ProbeResult(PARTIAL, f"{basis_line}; term structure failed: {error}",
+                           "features/term_structure.py")
+    if curve.rows.empty:
+        return ProbeResult(
+            PARTIAL,
+            f"{basis_line}; term structure built but empty - "
+            f"refused {curve.refused}",
+            "features/term_structure.py + capture/store/dated_futures")
+
+    curves = summarise_curves(curve)
+    multi = int((curves["tenors"] >= 2).sum())
+    unannualisable = curve.refused["too_near_expiry_to_annualise"]
     return ProbeResult(
-        PARTIAL,
-        f"basis computed live: {len(table.rows)} (venue, symbol) pairs across "
-        f"{', '.join(venues)}, {refused} refused; term structure not built",
-        "features/spot_perp_basis.py + capture/store/funding")
+        OK,
+        f"{basis_line}. Term structure: {len(curve.rows)} dated contract(s) on "
+        f"{len(curves)} underlying(s), {multi} carrying two or more tenors; "
+        f"{unannualisable} too near expiry to annualise",
+        "features/spot_perp_basis.py + features/term_structure.py "
+        "+ capture/store/{funding,dated_futures}")
 
 
 def probe_funding_rates(facts: SystemFacts) -> ProbeResult:

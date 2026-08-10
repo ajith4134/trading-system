@@ -37,7 +37,13 @@ _BPS = Decimal(10_000)
 # venue arriving with `funds_on=oracle` is priced correctly without an edit
 # here, and a venue declaring something unrecognised is refused rather than
 # guessed at.
-_REFERENCE_COLUMN_BY_FUNDS_ON = {
+#
+# Public because `features.price_divergence` judges the same gap this module
+# measures, and two copies of this mapping would drift: the day a venue's
+# declaration changed, one module would price it and the other would refuse it,
+# and the two would disagree about the same instrument without either being
+# obviously wrong.
+REFERENCE_COLUMN_BY_FUNDS_ON = {
     "mark": "index_price",
     "oracle": "oracle_price",
 }
@@ -82,7 +88,7 @@ def compute_spot_perp_basis(store_root: Path, as_of_ns: int,
     out = {"venue": [], "symbol": [], "event_time_ns": [],
            "basis_bps": [], "reference": []}
     for row in frame.itertuples(index=False):
-        reference_column = _REFERENCE_COLUMN_BY_FUNDS_ON.get(row.funds_on)
+        reference_column = REFERENCE_COLUMN_BY_FUNDS_ON.get(row.funds_on)
         if reference_column is None:
             refused["unrecognised_funds_on"] += 1
             continue

@@ -25,15 +25,19 @@ RUNS="$STATE_DIR/runs.ndjson"
 # The symbols carrying depth. Only the core has it: the broad tail subscribes
 # trades alone, and there is no all-market form of a depth snapshot.
 CORE="BTCUSDT,ETHUSDT,SOLUSDT"
-# Funding is no longer core-only and is no longer named here. Since 2026-08-09
-# both venues poll it for the whole market - 863 instruments on binance, 232 on
-# hyperliquid - and `build_polled --symbols ALL` reads the list off the archive.
+# The polled datasets are no longer core-only and their symbols are no longer
+# named here. Since 2026-08-09 the venues poll for the whole market - 863
+# instruments on binance, 232 on hyperliquid, 805 on bybit - and
+# `build_polled --symbols ALL` reads the list off the archive.
 #
 # A hand-kept list is exactly what cost the trade tape 99.6% of itself: capture
 # subscribed 2,098 symbols while this supervisor asked for 9, and raw is evicted
 # after seven days so those days could not be recovered by fixing the list
-# later. Funding is not going to repeat it.
-FUNDING_SYMBOLS="ALL"
+# later. No polled dataset is going to repeat it.
+#
+# Named for what it means rather than for the one dataset that first needed it:
+# `dated_futures` reads the same universe and is not funding.
+UNIVERSE_FROM_ARCHIVE="ALL"
 # No hyperliquid core list any more: it existed only for the bars loop, which now
 # reads its symbols off the archive. An unused constant naming three symbols is
 # how the next reader concludes the build is still core-only.
@@ -83,10 +87,16 @@ while true; do
   yesterday=$(date -u -d 'yesterday' +%F)
 
   for day in "$yesterday" "$today"; do
-    for spec in "funding binance" "funding hyperliquid" "funding bybit" "book binance" "book binance-spot"; do
+    for spec in "funding binance" "funding hyperliquid" "funding bybit" \
+                "dated_futures bybit" "book binance" "book binance-spot"; do
       set -- $spec
-      # Funding reads its universe off the archive; depth is core-only.
-      if [ "$1" = "funding" ]; then symbols="$FUNDING_SYMBOLS"; else symbols="$CORE"; fi
+      # Funding and the dated contracts read their universe off the archive -
+      # they come out of the same bybit poll and neither list is ours to keep.
+      # Depth is core-only: only the core subscribes it.
+      case "$1" in
+        funding|dated_futures) symbols="$UNIVERSE_FROM_ARCHIVE" ;;
+        *) symbols="$CORE" ;;
+      esac
       result=$(build "$1" "$2" "$day" "$symbols")
       printf '{"ts":"%s","day":"%s","result":%s}\n' \
         "$started" "$day" "${result:-null}" >> "$RUNS"

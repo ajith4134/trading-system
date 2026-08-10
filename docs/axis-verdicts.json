@@ -663,6 +663,24 @@
     "tests/test_feed_quality.py",
     "src/features/feed_quality.py"
    ]
+  },
+  "store.dated_futures": {
+   "learning": "n/a: a projection of archived polls. Nothing is fitted",
+   "reasoning": "pass: a perpetual and an expiring contract arrive in the same response on the same stream, and they are told apart on the venue's own evidence - a blank fundingRate WITH a non-zero deliveryTime - rather than by the -14AUG26 suffix, which is a naming convention that would fail silently the day it changed. Both conditions are required, so a perpetual with a momentarily blank rate cannot become a curve point delivering in 1970",
+   "depth": "pass: it has a consumer the day it lands - features.term_structure reads it, and the wall tile reads that. An empty optional price stays absent rather than becoming zero, because a zero price on a curve point prices the contract at a 100% discount to index, which is the most attractive carry the arithmetic can produce",
+   "evidence": [
+    "tests/test_dated_futures.py",
+    "src/store/dated_futures.py"
+   ]
+  },
+  "features.term_structure": {
+   "learning": "n/a: an arithmetic over stored prices. Nothing is fitted, and no threshold is learned - the one arbitrary constant, the annualisation floor, is named and tested rather than tuned",
+   "reasoning": "pass: three refusals, each against a number that would look reasonable. An annualised rate inside a day of expiry is 730x leverage on noise and is refused while the raw basis is kept; a delivered contract is refused rather than annualised with the sign flipped; and the underlying is a CANDIDATE from the symbol split that is kept only when the venue is publishing funding for that name at the same clock - so the perp anchor is both the near end of the curve and the proof the name means what it looks like",
+   "depth": "pass: the venue publishes its own basis, basisRate and basisRateYear, and they reconcile neither with each other nor with the prices in the same frame (measured 2026-08-10: basis -22.71 against a lastPrice-indexPrice of -22.70). Ours is computed from mark against index and the venue's figure rides alongside with its disagreement stated, so divergence is visible instead of inherited. The slope is stated per curve and never averaged across underlyings, because a market in contango on BTC and backwardation on DOGE has no meaningful mean",
+   "evidence": [
+    "tests/test_term_structure.py",
+    "src/features/term_structure.py"
+   ]
   }
  }
 }
