@@ -129,3 +129,28 @@ def test_an_empty_store_returns_nothing_and_claims_nothing(tmp_path):
     table = consolidate_prices(tmp_path, as_of_ns=10**18)
     assert len(table.rows) == 0
     assert sum(table.excluded.values()) == 0
+
+
+# --- the third venue, added 2026-08-10 ------------------------------------
+
+def test_coinbase_contributes_to_the_reference_price_it_exists_for(tmp_path):
+    """`ARCHITECTURE.md` §3b keeps coinbase as a reference-price venue rather
+    than an execution one, and this is the function that reference feeds. The
+    venue was captured from 2026-08-10; without a book extractor for its frame
+    shape it would have been archived and never priced.
+
+    Its symbols are its own - BTC-USD, not BTCUSDT - so it contributes to a
+    different symbol than the binance venues rather than being merged into
+    theirs. Merging them would average two instruments with different
+    quote currencies and call the result a price.
+    """
+    rows = (_series("coinbase", "BTC-USD", 65_230.00, 65_230.01, 5.0)
+            + _series("binance-spot", "BTCUSDT", 65_231.00, 65_231.10, 5.0))
+    store = _write(tmp_path, rows)
+
+    prices = consolidate_prices(store, _as_of(rows))
+
+    by_symbol = {row.symbol: row for row in prices.rows.itertuples(index=False)}
+    assert set(by_symbol) == {"BTC-USD", "BTCUSDT"}
+    assert by_symbol["BTC-USD"].venues == "coinbase"
+    assert 65_230.0 <= by_symbol["BTC-USD"].price <= 65_230.01

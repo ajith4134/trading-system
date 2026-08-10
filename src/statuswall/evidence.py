@@ -196,7 +196,12 @@ def _capture_liveness(facts: SystemFacts) -> tuple[str, str]:
 
 
 def probe_trade_tape(facts: SystemFacts) -> ProbeResult:
-    sizes = _stream_bytes(facts, ("trade", "trades"))
+    # `matches` is coinbase's word for the trade tape, added 2026-08-10. The
+    # match here is exact on the stream name rather than a substring, so a venue
+    # whose name for a feed is not in this tuple is invisible to the tile that
+    # exists to count that feed - it reads "captured on 3 venues" while four are
+    # writing, and nothing says which one was dropped.
+    sizes = _stream_bytes(facts, ("trade", "trades", "matches"))
     if not sizes:
         return ProbeResult(NOT_BUILT, "no trade streams on disk", "capture/raw")
     state, why = _capture_liveness(facts)
@@ -208,13 +213,28 @@ def probe_trade_tape(facts: SystemFacts) -> ProbeResult:
         # true after the store held bars and the adjacent tile measured them. An
         # asserted claim cannot go stale loudly, which is the whole reason Rule 8
         # allows a tile to show nothing but measured state.
-        f"trade tape captured on {len(facts.venues)} venues ({total_mb:.0f} MB). {why}",
+        # Counted from the streams that carry a trade, not from the archive
+        # directories. `facts.venues` is every venue with a folder, and two of
+        # them have no tape at all - bybit is polled for funding and bybit-liq
+        # records liquidations - so this read "captured on 6 venues" while four
+        # were writing trades. A tile that overstates its own coverage is the
+        # failure Rule 8 is about, and it was overstating before coinbase
+        # existed to notice it.
+        f"trade tape captured on {len({key.split('/', 1)[0] for key in sizes})} "
+        f"venues ({total_mb:.0f} MB). {why}",
         f"raw_bytes_by_stream over {len(sizes)} trade streams",
     )
 
 
 def probe_l2_depth(facts: SystemFacts) -> ProbeResult:
-    sizes = _stream_bytes(facts, ("depth", "l2Book"))
+    # Four names for one feed across four venues: binance pushes `depth`,
+    # hyperliquid `l2Book`, coinbase `level2` with a `level2Snapshot` at
+    # subscribe, and the periodic REST book lands as `depthSnapshot` on both
+    # binance-spot and coinbase. The snapshot streams were missing from this
+    # tuple before 2026-08-10 and so were absent from the tile - the polled book
+    # is the one this dataset is actually built from.
+    sizes = _stream_bytes(facts, ("depth", "l2Book", "level2", "level2Snapshot",
+                                  "depthSnapshot"))
     if not sizes:
         return ProbeResult(NOT_BUILT, "no depth streams on disk", "capture/raw")
     state, why = _capture_liveness(facts)

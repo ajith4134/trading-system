@@ -708,6 +708,15 @@
     "tests/test_exchange_reserves.py",
     "src/store/exchange_reserves.py"
    ]
+  },
+  "capture.venues.coinbase": {
+   "learning": "n/a: an adapter. Nothing is fitted",
+   "reasoning": "pass: every fact in it was measured from this host rather than inherited. The build plan carried this venue as BLOCKED on a missing API key, and the market data needs none - only the private API does, so the row was blocked on the wrong premise and nobody would have re-examined it. Trades carry a sequence and l2updates do not, so depth here is staleness-only and `depth_is_binance_chained` is deliberately absent rather than copied from the venue next door. `heartbeat` is subscribed because without it a product that has not traded and a product whose feed died are the same silence",
+   "depth": "pass: it is running and its tape becomes bars - the extractor in store.trade_bars landed with it, so this is not another feed archived and never read. An unreadable venue timestamp is left absent rather than approximated from receipt, because a fabricated clock would silently reorder this tape against the other three. Two live defects were found by running it: the book snapshot is 1,209,067 bytes against the websockets 1 MiB default, which closed the connection with 1009 and looked exactly like a quiet market, and the instrument listing is refused with HTTP 403 unless a User-Agent is sent - caught only because --tail-symbols ALL refuses rather than shrinking to the core",
+   "evidence": [
+    "tests/test_coinbase_venue.py",
+    "src/capture/venues/coinbase.py"
+   ]
   }
  }
 }

@@ -28,7 +28,7 @@ Two prior mischaracterisations this plan must not repeat:
 |---|---|---|
 | binance | WORKING | signed `GET /fapi/v1/commissionRate` succeeded, tier `account` |
 | bybit | PRESENT, unexercised | key in sops store; no signed fetcher built yet |
-| coinbase | INCOMPLETE | entry lacks `api_key` or `api_secret` — blocked on user |
+| coinbase | INCOMPLETE, and it does not matter | entry lacks `api_key`/`api_secret`, and **no key is needed**: probed 2026-08-10, market data is keyless (`/products` HTTP 200, `matches`/`level2_batch`/`heartbeat` all deliver). `ARCHITECTURE.md` §3b already settled coinbase as **reference-price only** — execution is Binance + Hyperliquid — so the missing key blocks nothing this venue is for. Captured since 2026-08-10 |
 | hyperliquid | n/a | public endpoints |
 
 Keys unblock what §13 called impossible: `execution.state_recovery` against venue truth,

@@ -22,9 +22,14 @@ STATE_DIR="$CAPTURE_ROOT/store-builds"
 LOG="$STATE_DIR/build.log"
 RUNS="$STATE_DIR/runs.ndjson"
 
-# The symbols carrying depth. Only the core has it: the broad tail subscribes
-# trades alone, and there is no all-market form of a depth snapshot.
-CORE="BTCUSDT,ETHUSDT,SOLUSDT"
+# No depth symbol list either, as of 2026-08-10. It was BTCUSDT,ETHUSDT,SOLUSDT
+# - correct for the two binance venues and wrong for coinbase, which names the
+# same markets BTC-USD, ETH-USD and SOL-USD. One list cannot spell three venues,
+# and a book build asking binance names of coinbase would have found nothing and
+# said "0 rows" like a quiet day.
+#
+# `--symbols ALL` reads the polled symbols off the archive, which resolves to
+# exactly the symbols that were subscribed for depth. Same answer, no list.
 # The polled datasets are no longer core-only and their symbols are no longer
 # named here. Since 2026-08-09 the venues poll for the whole market - 863
 # instruments on binance, 232 on hyperliquid, 805 on bybit - and
@@ -88,16 +93,14 @@ while true; do
 
   for day in "$yesterday" "$today"; do
     for spec in "funding binance" "funding hyperliquid" "funding bybit" \
-                "dated_futures bybit" "book binance" "book binance-spot"; do
+                "dated_futures bybit" "book binance" "book binance-spot" \
+                "book coinbase"; do
       set -- $spec
-      # Funding and the dated contracts read their universe off the archive -
-      # they come out of the same bybit poll and neither list is ours to keep.
-      # Depth is core-only: only the core subscribes it.
-      case "$1" in
-        funding|dated_futures) symbols="$UNIVERSE_FROM_ARCHIVE" ;;
-        *) symbols="$CORE" ;;
-      esac
-      result=$(build "$1" "$2" "$day" "$symbols")
+      # Every polled dataset reads its universe off the archive now, depth
+      # included. Depth is still core-only in FACT - only the core subscribes a
+      # snapshot - but that is a property of what was captured rather than a
+      # list this script has to keep spelled correctly for three venues.
+      result=$(build "$1" "$2" "$day" "$UNIVERSE_FROM_ARCHIVE")
       printf '{"ts":"%s","day":"%s","result":%s}\n' \
         "$started" "$day" "${result:-null}" >> "$RUNS"
     done
@@ -115,7 +118,10 @@ while true; do
   # polled datasets kept writing a line every pass, and nothing in the run log
   # said bars had been attempted at all - because they never had been. Every
   # pass now leaves a line naming the venue-day and whether it built.
-  for venue in binance binance-spot hyperliquid; do
+  # coinbase joined 2026-08-10. It is the only spot tape here that is not
+  # binance, so a venue-wide binance outage no longer takes every spot bar with
+  # it - and the consolidated price gets a third independent opinion.
+  for venue in binance binance-spot hyperliquid coinbase; do
     # Three states, not two. The partition writer refuses a rewrite, so every
     # pass after the first exits non-zero on a day it already built - and
     # recording that as "failed" would bury a genuine failure in an hourly

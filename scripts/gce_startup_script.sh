@@ -104,6 +104,12 @@ start_as_user "capture_supervisor.sh bybit" \
 # (DM-020). Its own process so a websocket cut cannot stall the funding poll.
 start_as_user "capture_supervisor.sh bybit-liq" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh bybit-liq BTCUSDT ALL"
+# Coinbase spot, keyless. The build plan carried this venue as blocked on a
+# missing API key; probed 2026-08-10, only the private API needs one and the
+# market data never did. Core three by product id (BTC-USD, not BTCUSDT - the
+# venue's own name for the market), broad tail on trades alone.
+start_as_user "capture_supervisor.sh coinbase" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh coinbase BTC-USD,ETH-USD,SOL-USD ALL"
 # Last, and after the capture supervisors on purpose: it reports on what they
 # produce, and starting it first would have it observe an empty archive and
 # record "nothing captured" as this boot's first verdict.

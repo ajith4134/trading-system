@@ -960,3 +960,53 @@ def test_the_reachability_tile_is_ok_when_every_claim_is_reachable(tmp_path):
 
     assert result.state == OK
     assert "0 unreachable module(s) of 1" in result.detail
+
+
+def test_the_trade_tape_counts_venues_that_have_a_tape_not_venues_with_a_folder():
+    """It read `len(facts.venues)` until 2026-08-10 - every venue with an
+    archive directory, including two that carry no trades at all: bybit is
+    polled for funding and bybit-liq records liquidations. The tile therefore
+    claimed wider coverage than it had, and it was doing so before coinbase
+    existed to make the gap visible.
+
+    `matches` is in the count because that is coinbase's name for the tape. An
+    exact stream-name match means a venue whose word for a feed is missing from
+    the tuple is silently absent from the tile that exists to count it.
+    """
+    facts = _facts(
+        capture_running=True,
+        venues=["binance", "coinbase", "bybit", "bybit-liq"],
+        reports={
+            "binance": {"raw_bytes_by_stream": {"trade_BTCUSDT": 4096}},
+            "coinbase": {"raw_bytes_by_stream": {"matches_BTC-USD": 2048}},
+            "bybit": {"raw_bytes_by_stream": {"linearTickers_ALL": 9999}},
+            "bybit-liq": {"raw_bytes_by_stream": {"allLiquidation_ALL": 9999}},
+        },
+    )
+
+    result = PROBES["spot ohlcv trade tape multi venue"](facts)
+
+    assert "captured on 2 venues" in result.detail, result.detail
+
+
+def test_every_venues_word_for_depth_reaches_the_depth_tile():
+    """Four names for one feed: binance `depth`, hyperliquid `l2Book`,
+    coinbase `level2`, and the periodic REST book as `depthSnapshot` on both
+    binance-spot and coinbase. The snapshot streams were absent from this tile
+    before 2026-08-10, which is the stream the book dataset is built from."""
+    facts = _facts(
+        capture_running=True,
+        venues=["binance", "hyperliquid", "coinbase"],
+        reports={
+            "binance": {"raw_bytes_by_stream": {"depth_BTCUSDT": 1,
+                                                "depthSnapshot_BTCUSDT": 1}},
+            "hyperliquid": {"raw_bytes_by_stream": {"l2Book_BTC": 1}},
+            "coinbase": {"raw_bytes_by_stream": {"level2_BTC-USD": 1,
+                                                 "level2Snapshot_BTC-USD": 1,
+                                                 "depthSnapshot_BTC-USD": 1}},
+        },
+    )
+
+    result = PROBES["l2 order book depth 20 50 levels"](facts)
+
+    assert "6 depth streams" in result.detail, result.detail
