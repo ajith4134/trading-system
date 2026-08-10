@@ -30,6 +30,7 @@ from capture.venues.binance_funding import BinanceFundingVenue
 from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.bybit import BybitVenue
 from capture.venues.bybit_liquidation import BybitLiquidationVenue
+from capture.venues.coinbase import CoinbaseVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 _VENUES = {
@@ -50,6 +51,11 @@ _VENUES = {
     # Binance withholds from this host (DM-020). Captured, not traded; its own
     # process so a websocket cut cannot take the funding poll down with it.
     "bybit-liq": BybitLiquidationVenue,
+    # Spot, keyless. The build plan carried this venue as blocked on a missing
+    # API key; probed from this host 2026-08-10, the market data needs none and
+    # only the private API does. A third spot tape, and the only one of the
+    # three that is not binance.
+    "coinbase": CoinbaseVenue,
 }
 
 def archive_name_for(venue_key: str) -> str:
@@ -88,6 +94,17 @@ _OPEN_TIMEOUT_SECONDS = 20
 # The interval is unchanged, so a dead socket is still probed just as often.
 _PING_INTERVAL_SECONDS = 20
 _PING_TIMEOUT_SECONDS = 90
+# The largest frame a venue may send us. `websockets` defaults to 1 MiB and
+# closes the connection with 1009 on anything larger - which produces no frames,
+# no error anyone sees, and an archive indistinguishable from a quiet market.
+#
+# Not a hypothetical: coinbase's `level2_batch` book snapshot measured 1,209,067
+# bytes on BTC-USD alone (2026-08-10), so the venue was unusable at the default
+# and the failure looked like silence. 8 MiB leaves room for a deeper book on a
+# busier product while still bounding what one frame can make this process
+# allocate - `None` would remove the bound entirely and hand a venue the ability
+# to exhaust this box's memory with one message.
+_MAX_FRAME_BYTES = 8 * 1024 * 1024
 _UNIVERSE_TIMEOUT_SECONDS = 20
 _INTERRUPTED_EXIT_CODE = 130       # 128 + SIGINT, the shell convention
 
@@ -118,7 +135,8 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
     async with websockets.connect(venue.ws_url(specs),
                                   open_timeout=_OPEN_TIMEOUT_SECONDS,
                                   ping_interval=_PING_INTERVAL_SECONDS,
-                                  ping_timeout=_PING_TIMEOUT_SECONDS) as socket:
+                                  ping_timeout=_PING_TIMEOUT_SECONDS,
+                                  max_size=_MAX_FRAME_BYTES) as socket:
         for message in venue.subscribe_messages(specs):
             await socket.send(json.dumps(message))
         deadline = loop.time() + duration_seconds
@@ -135,6 +153,14 @@ async def _stream_frames(venue, specs, duration_seconds: float) -> AsyncIterator
 
 
 TAIL_ALL = "ALL"
+
+# Sent on the instrument-listing request. Not politeness: urllib's default
+# `Python-urllib/3.12` is rejected outright by coinbase - measured 2026-08-10,
+# HTTP 403 with no header and HTTP 200 with one, same URL, seconds apart. The
+# failure surfaced correctly, because `--tail-symbols ALL` refuses rather than
+# shrinking to the core, but a venue whose universe cannot be read is a venue
+# that cannot be captured broadly at all.
+_USER_AGENT = "trading-system/1.0"
 
 
 def fetch_instruments(venue) -> dict:
@@ -158,9 +184,11 @@ def fetch_instruments(venue) -> dict:
 
     method, url, payload = venue.instruments_request()
     body = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(
-        url, data=body, method=method,
-        headers={"Content-Type": "application/json"} if body else {})
+    headers = {"User-Agent": _USER_AGENT}
+    if body:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, method=method,
+                                     headers=headers)
     with urllib.request.urlopen(request, timeout=_UNIVERSE_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode())
 

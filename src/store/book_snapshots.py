@@ -20,6 +20,7 @@ nothing will walk.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass
 from decimal import Decimal
@@ -114,6 +115,61 @@ def extract_book_snapshot(payload: str, entry, venue: str,
         event_time_ns=event_ns,
         ingestion_time_ns=received,
     )]
+
+
+def extract_coinbase_book(payload: str, entry, venue: str,
+                          symbol: str) -> list[BookSnapshot]:
+    """The same dataset, from a venue that shares no field with binance.
+
+    Coinbase answers `/products/{id}/book?level=2` with `bids`, `asks`,
+    `sequence` and an ISO8601 `time` - no `lastUpdateId`, and each level is a
+    THREE-element array: price, size, and the number of orders resting there.
+    Feeding those to the binance parser unpacks three values into two and
+    raises, so the third is dropped here rather than the parser being loosened
+    for everybody.
+
+    `sequence` stands in for `last_update_id`. It is the venue's own monotonic
+    counter over the same product, which is what that column is for - naming
+    the field after binance's word for it, and filling it with coinbase's, is
+    better than a null that every consumer then has to handle.
+
+    A one-sided book is refused, as it is for binance: it has no mid.
+    """
+    try:
+        body = json.loads(payload)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(body, dict) or "sequence" not in body:
+        return []
+    bids_raw, asks_raw = body.get("bids"), body.get("asks")
+    if not isinstance(bids_raw, list) or not isinstance(asks_raw, list):
+        return []
+    if not bids_raw or not asks_raw:
+        return []
+
+    received = int(entry.t_recv_ns)
+    return [BookSnapshot(
+        symbol=symbol, venue=venue,
+        bids=_levels([level[:2] for level in bids_raw], reverse=True),
+        asks=_levels([level[:2] for level in asks_raw], reverse=False),
+        last_update_id=int(body["sequence"]),
+        # The venue stamps this one, unlike its websocket book. Falls back to
+        # receipt when the stamp is unreadable rather than inventing a clock.
+        event_time_ns=_iso_to_ns(body.get("time")) or received,
+        ingestion_time_ns=received,
+    )]
+
+
+def _iso_to_ns(value) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return int(stamp.timestamp() * 1_000_000_000)
 
 
 def build_book_frame(snapshots: Iterable[BookSnapshot]) -> pd.DataFrame:

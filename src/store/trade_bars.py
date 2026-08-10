@@ -19,6 +19,7 @@ quiet market.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass
 from typing import Iterable
@@ -92,6 +93,50 @@ def _extract_hyperliquid(body: dict, entry: IndexEntry, symbol: str, venue: str)
     return trades
 
 
+def _extract_coinbase(body: dict, entry: IndexEntry, symbol: str, venue: str) -> list[Trade]:
+    """One `match` frame, one trade.
+
+    Two shapes carry a trade here and both are taken: `match` is the live tape,
+    and `last_match` is the one frame the venue sends at subscribe carrying the
+    most recent trade. Dropping `last_match` would discard the only trade some
+    quiet products publish in an hour - and a product with no bar at all reads
+    downstream as a product nobody captured.
+
+    The timestamp is an ISO8601 string rather than a number, and it is parsed
+    rather than approximated from receipt: this venue's clock is what orders its
+    trades against the other three.
+    """
+    if body.get("type") not in ("match", "last_match"):
+        return []
+    price, size = body.get("price"), body.get("size")
+    event_ms = _coinbase_event_ms(body.get("time"))
+    if price is None or size is None or event_ms is None:
+        # A trade missing its price, size or clock is not a trade. Refused
+        # rather than defaulted - a zero-price fill would price everything that
+        # reads the bar it landed in.
+        return []
+    return [Trade(
+        symbol=body.get("product_id", symbol),
+        venue=venue,
+        price=float(price),
+        size=float(size),
+        event_time_ns=event_ms * _MS_TO_NS,
+        ingestion_time_ns=entry.t_recv_ns,
+    )]
+
+
+def _coinbase_event_ms(value) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return int(stamp.timestamp() * 1000)
+
+
 _EXTRACTORS = {
     "binance": _extract_binance,
     # Spot shares the futures frame shape exactly for the fields read above:
@@ -107,6 +152,10 @@ _EXTRACTORS = {
     # normalised away.
     "binance-spot": _extract_binance,
     "hyperliquid": _extract_hyperliquid,
+    # Spot, and the only tape here that is not binance. Its frame shape shares
+    # nothing with either: `type`, `product_id`, `price`, `size` and an ISO8601
+    # `time`, against binance's single-letter keys and millisecond integers.
+    "coinbase": _extract_coinbase,
 }
 
 

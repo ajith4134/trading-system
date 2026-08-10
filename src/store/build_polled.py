@@ -27,7 +27,9 @@ from typing import Callable, Sequence
 import re
 
 from capture.raw_writer import RAW_SUFFIX, read_pair
-from store.book_snapshots import build_book_frame, extract_book_snapshot
+from store.book_snapshots import (
+    build_book_frame, extract_book_snapshot, extract_coinbase_book,
+)
 from store.dated_futures import (
     build_dated_futures_frame, extract_bybit_dated_future,
 )
@@ -88,6 +90,10 @@ DATASETS: dict[str, tuple[str, Callable, Callable]] = {
 VENUE_OVERRIDES: dict[tuple[str, str], tuple[str, Callable]] = {
     ("funding", "hyperliquid"): ("assetCtx", extract_hyperliquid_funding),
     ("funding", "bybit"): ("linearTickers", extract_bybit_funding),
+    # Same dataset, same stream name, a frame that shares no field with
+    # binance's: `sequence` instead of `lastUpdateId`, an ISO8601 `time`, and
+    # three-element levels carrying an order count binance does not publish.
+    ("book", "coinbase"): ("depthSnapshot", extract_coinbase_book),
 }
 
 

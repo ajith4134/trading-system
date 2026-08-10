@@ -469,10 +469,15 @@ def test_main_exits_on_interrupt_without_a_traceback(tmp_path: Path, monkeypatch
 
 
 def test_main_refuses_an_unknown_venue(tmp_path: Path, monkeypatch):
+    """The placeholder here was `coinbase` until 2026-08-10, when coinbase
+    became a real venue and this test started asserting that a supported venue
+    is rejected. A name no exchange will ever take is the only stable stand-in
+    for "unsupported"."""
     record_run_capture_calls(monkeypatch)
 
     with pytest.raises(SystemExit) as exit_info:
-        main(["--venue", "coinbase", "--symbols", "BTCUSDT", "--root", str(tmp_path)])
+        main(["--venue", "no-such-venue", "--symbols", "BTCUSDT",
+              "--root", str(tmp_path)])
 
     assert exit_info.value.code == 2
 
