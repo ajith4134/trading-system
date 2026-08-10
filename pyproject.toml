@@ -8,6 +8,15 @@ dependencies = [
     "aiohttp>=3.10",
     "pandas>=3.0.5",
     "pyarrow>=25.0.0",
+    # features.fractional_differentiation needs a real ADF stationarity test
+    # to search for the minimum d (see that module's docstring for the
+    # dependency decision - `fracdiff` was declined in favour of a ~40-line
+    # hand-checked weight recursion, but the ADF test itself is not
+    # reimplementable in that budget). Already present in this venv
+    # transitively via `arch`, which is declared "verification only, never
+    # imported by src/" below - so it is promoted here to a declared main
+    # dependency rather than left as an unlisted transitive import.
+    "statsmodels>=0.14",
 ]
 
 [dependency-groups]
