@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from features.staleness import measure_staleness, stamp
 from store.clock_gated_reader import ClockGatedReader
 
 _DATED_DATASET = "dated_futures"
@@ -90,7 +91,8 @@ class TermStructure:
 
 
 def _empty_rows() -> pd.DataFrame:
-    return pd.DataFrame({column: [] for column in _COLUMNS})
+    return stamp(pd.DataFrame({column: [] for column in _COLUMNS}), {},
+                 ["venue", "symbol"])
 
 
 def _decimal_or_none(value) -> Decimal | None:
@@ -216,7 +218,17 @@ def compute_term_structure(store_root: Path, as_of_ns: int,
     if not rows.empty:
         rows = rows.sort_values(["underlying", "delivery_time_ns"],
                                 ignore_index=True)
-    return TermStructure(rows=rows, refused=refused)
+    # FE-001. A curve is a statement about now, and its tenors are measured
+    # from the as-of clock - so a contract priced off a poll that stopped
+    # arriving keeps producing a confident annualised carry while the days to
+    # delivery tick down around a frozen price.
+    ages = {
+        (venue, symbol): measure_staleness(group["event_time_ns"].astype("int64"),
+                                           as_of_ns)
+        for (venue, symbol), group in frame.groupby(["venue", "symbol"], sort=False)
+    }
+    return TermStructure(rows=stamp(rows, ages, ["venue", "symbol"]),
+                         refused=refused)
 
 
 def summarise_curves(structure: TermStructure) -> pd.DataFrame:

@@ -717,6 +717,15 @@
     "tests/test_coinbase_venue.py",
     "src/capture/venues/coinbase.py"
    ]
+  },
+  "features.staleness": {
+   "learning": "n/a: a measurement over timestamps. Nothing is fitted - the cadence is recomputed from each series' own recent window on every call rather than carried forward",
+   "reasoning": "pass: the bound is the series' own median gap, not a constant, because a five-minute feed and a one-minute feed are both healthy at four minutes old and one shared limit calls exactly one of them wrong. Three states rather than two: a series with one observation, or with every observation under one timestamp, has demonstrated no cadence, and folding that into FRESH asserts something nobody measured. An empty series raises rather than stamping a zero age - a feature value with no input is absent, not fresh, and zero is the most flattering answer available",
+   "depth": "pass: it is the mechanical form of the failure the goal spec names as the one the whole intelligence standard is designed against - confident staleness. It replaced a private copy of the same rule in consolidated_price rather than becoming a second number answering one question, it stamps spot_perp_basis and term_structure, and the tile measures the contract by RUNNING each feature and reading its columns rather than by checking the module exists. Its first live run reported 1,894 of 1,894 values STALE, which was true and which nothing had said before",
+   "evidence": [
+    "tests/test_staleness.py",
+    "src/features/staleness.py"
+   ]
   }
  }
 }

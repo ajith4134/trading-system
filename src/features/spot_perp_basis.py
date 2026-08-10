@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from features.staleness import measure_staleness, stamp
 from store.clock_gated_reader import ClockGatedReader
 
 _DATASET = "funding"
@@ -80,6 +81,10 @@ def compute_spot_perp_basis(store_root: Path, as_of_ns: int,
     if frame.empty:
         return BasisTable(rows=_empty_rows(), refused=refused)
 
+    # The whole visible history is kept as well as the newest row: the newest
+    # gives the basis, the history gives the cadence that says whether it is
+    # still current.
+    history = frame
     # Newest row per (venue, symbol) at the clock - order by event time and
     # keep the last. The dataset is append-only, so "newest" is well-defined.
     frame = (frame.sort_values("event_time_ns")
@@ -119,9 +124,20 @@ def compute_spot_perp_basis(store_root: Path, as_of_ns: int,
         out["basis_bps"].append((mark - reference) / reference * _BPS)
         out["reference"].append(reference_column)
 
-    return BasisTable(rows=pd.DataFrame(out), refused=refused)
+    # FE-001: every value says how old the funding poll behind it was, judged
+    # against that instrument's own cadence. A basis computed from a mark that
+    # stopped moving eleven hours ago is not a small error - it is a confident
+    # number, in the same column as the good ones.
+    rows = pd.DataFrame(out)
+    ages = {
+        (venue, symbol): measure_staleness(group["event_time_ns"].astype("int64"),
+                                           int(as_of_ns))
+        for (venue, symbol), group in history.groupby(["venue", "symbol"], sort=False)
+    }
+    return BasisTable(rows=stamp(rows, ages, ["venue", "symbol"]), refused=refused)
 
 
 def _empty_rows() -> pd.DataFrame:
-    return pd.DataFrame({"venue": [], "symbol": [], "event_time_ns": [],
-                         "basis_bps": [], "reference": []})
+    empty = pd.DataFrame({"venue": [], "symbol": [], "event_time_ns": [],
+                          "basis_bps": [], "reference": []})
+    return stamp(empty, {}, ["venue", "symbol"])

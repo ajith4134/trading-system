@@ -1214,6 +1214,67 @@ def probe_axis_verdicts(facts: SystemFacts) -> ProbeResult:
                   if coverage.unverdicted else "; every module judged"), proof)
 
 
+def probe_feature_staleness(facts: SystemFacts) -> ProbeResult:
+    """Does every feature value carry the age of what it was computed from?
+
+    Measured by RUNNING each feature and reading its columns, not by checking
+    that `features/staleness.py` exists. A contract nothing was checked against
+    is a docstring, and this tile is the check.
+
+    The freshness verdicts are reported as well as the coverage, because that
+    is the number this exists to surface: a feature computing happily off
+    inputs that stopped arriving hours ago is the "confident staleness" the
+    goal spec names as the failure the whole intelligence standard is designed
+    against.
+    """
+    proof = "features.staleness columns on each feature's live output"
+    from features.staleness import COLUMNS, STALE
+
+    now_ns = int(time.time() * 1e9)
+    store_root = facts.capture_root / "store"
+    features = {}
+    try:
+        from features.spot_perp_basis import compute_spot_perp_basis
+        from features.term_structure import compute_term_structure
+        features["spot_perp_basis"] = compute_spot_perp_basis(store_root, now_ns).rows
+        features["term_structure"] = compute_term_structure(store_root, now_ns).rows
+    except Exception as error:
+        return ProbeResult(NOT_MEASURED, f"a feature failed to compute: {error}",
+                           proof)
+
+    unstamped = sorted(name for name, rows in features.items()
+                       if not set(COLUMNS) <= set(rows.columns))
+    if unstamped:
+        return ProbeResult(
+            FAILING,
+            f"{len(unstamped)} feature(s) emit values with no staleness stamp: "
+            f"{', '.join(unstamped)}",
+            proof)
+
+    counts: dict[str, int] = {}
+    for rows in features.values():
+        if rows.empty:
+            continue
+        for verdict, count in rows["freshness"].value_counts().items():
+            counts[str(verdict)] = counts.get(str(verdict), 0) + int(count)
+    if not counts:
+        return ProbeResult(
+            PARTIAL,
+            f"{len(features)} feature(s) carry the stamp; none produced a value "
+            f"to stamp at this clock",
+            proof)
+
+    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+    stale = counts.get(STALE, 0)
+    total = sum(counts.values())
+    detail = (f"{len(features)} feature(s) stamped, {total} value(s): {summary}")
+    if stale:
+        return ProbeResult(DEGRADED,
+                           f"{detail} - {stale} computed from inputs older than "
+                           f"their own cadence allows", proof)
+    return ProbeResult(OK, detail, proof)
+
+
 def probe_exchange_reserves(facts: SystemFacts) -> ProbeResult:
     """What the venues we trade on are holding, and how much of it they printed.
 
@@ -1333,6 +1394,7 @@ def probe_status_wall(facts: SystemFacts) -> ProbeResult:
 # the probe is what has to defend it.
 PROBES = {
     "exchange reserve netflow": probe_exchange_reserves,
+    "feature staleness timestamp on every value": probe_feature_staleness,
     "spot ohlcv trade tape multi venue": probe_trade_tape,
     "l2 order book depth 20 50 levels": probe_l2_depth,
     "liquidation feed": probe_liquidation_feed,

@@ -54,18 +54,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from features.staleness import STALE, measure_staleness
 from store.clock_gated_reader import ClockGatedReader
 
 _DATASET = "book"
-
-# Reused from `capture.venue_recorder`, where it decides that a stream which
-# has gone three times its own routine gap without speaking is not merely
-# quiet. The same question is being asked here of a book snapshot, so it gets
-# the same answer rather than a second number that could drift from it.
-_STALE_MULTIPLE = 3.0
-# How many recent snapshots measure a venue's own update cadence. Enough to
-# survive one slow tick without calling the venue stale.
-_CADENCE_SAMPLE = 20
 
 
 @dataclass(frozen=True)
@@ -151,21 +143,19 @@ def consolidate_prices(store_root: Path, as_of_ns: int,
 def _is_stale(ordered: pd.DataFrame, as_of_ns: int) -> bool:
     """Is this venue's newest snapshot older than its own cadence allows?
 
-    Measured per venue: binance's depth snapshot cadence and a slower venue's
-    are different facts, and one shared staleness limit would either wave
-    through a frozen fast venue or exclude a healthy slow one.
+    The rule itself now lives in `features.staleness`, which is FE-001 - every
+    feature value carries this measurement, so keeping a second copy here would
+    be two numbers answering one question. This wrapper is what remains: the
+    per-venue judgement, and the decision about the third state.
 
-    A venue with only one snapshot has shown no cadence, so it cannot be
-    called stale on evidence and is not.
+    UNKNOWN_CADENCE is admitted rather than excluded. A venue that has published
+    exactly one book has demonstrated nothing about its cadence, and refusing it
+    would drop a venue for being new. That is a choice this consumer makes
+    knowingly - `measure_staleness` reports the state rather than folding it
+    into "fresh".
     """
-    times = ordered["event_time_ns"].astype("int64").tail(_CADENCE_SAMPLE)
-    if len(times) < 2:
-        return False
-    gaps = times.diff().dropna()
-    routine = float(gaps.median())
-    if routine <= 0:
-        return False
-    return (as_of_ns - int(times.iloc[-1])) > _STALE_MULTIPLE * routine
+    return measure_staleness(
+        ordered["event_time_ns"].astype("int64"), as_of_ns).verdict == STALE
 
 
 def _parse_book(row) -> tuple[list, list] | None:
