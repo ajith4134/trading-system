@@ -1256,3 +1256,31 @@ def test_a_clean_history_reads_ok(tmp_path):
     from statuswall.evidence import OK, probe_outage_detection
     record_liveness(tmp_path / "liveness", now_ns=_time.time_ns())
     assert probe_outage_detection(_facts(capture_root=tmp_path)).state == OK
+
+
+# --------------------------------------------------------------------------
+# MD-001 — the tile exercises the gate rather than asserting it
+# --------------------------------------------------------------------------
+
+def test_the_baseline_tile_is_ok_only_because_the_gate_actually_refused(tmp_path):
+    from statuswall.evidence import OK, probe_naive_baseline_gate
+    result = probe_naive_baseline_gate(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "refuses" in result.detail
+
+
+def test_the_baseline_tile_goes_failing_if_the_gate_ever_starts_passing(tmp_path,
+                                                                       monkeypatch):
+    """The regression that would matter: MD-001's 'mandatory' quietly becoming
+    optional. The wall once rendered 'auto-halt armed' over a registry whose
+    observe() had no caller - a gate is a refusal, not a file."""
+    import validation.promotion_gate as gate_module
+    from statuswall.evidence import FAILING, probe_naive_baseline_gate
+    from validation.promotion_gate import GateResult
+    monkeypatch.setattr(gate_module, "_baseline_gate",
+                        lambda baseline: GateResult(
+                            name="naive_baseline", passed=True, measured=0.0,
+                            threshold=0.05, detail="oops"))
+    result = probe_naive_baseline_gate(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "become optional" in result.detail

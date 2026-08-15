@@ -132,9 +132,20 @@ def test_a_real_edge_is_promoted(tmp_path):
     machinery that rejects noise has to pass a signal, or it is measuring
     nothing."""
     result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
-                 TrialRegistry(tmp_path), _grid(), cap=_cap())
+                 TrialRegistry(tmp_path), _grid(), cap=_cap(),
+                 baseline=_a_passing_baseline())
     assert result.observed_sharpe > 0.5
     assert result.promoted is True, result.refusals
+
+
+def test_the_pipeline_refuses_a_candidate_with_no_baseline_comparison(tmp_path):
+    """The same edge, without MD-001's comparison. The pipeline does not compute
+    one for itself: a gate that manufactured its own evidence is a gate marking
+    its own homework."""
+    result = run(_frame(days=400, symbols=30, seed=7, edge=0.0004),
+                 TrialRegistry(tmp_path), _grid(), cap=_cap())
+    assert result.promoted is False
+    assert any("naive_baseline" in r for r in result.refusals)
 
 
 def test_a_missing_ceiling_refuses_rather_than_disappearing(tmp_path):
@@ -372,3 +383,22 @@ def test_readiness_recedes_as_the_trial_count_grows(tmp_path):
 
     assert after["n_trials"] > before["n_trials"]
     assert after["days_required"] > before["days_required"]
+
+
+def _a_passing_baseline():
+    """A real BaselineVerdict from a model that genuinely beats the random walk.
+
+    Computed rather than hand-constructed, so this fixture cannot drift out of
+    agreement with what `judge_against_naive_baseline` actually returns - a
+    hand-built dataclass would keep passing after the real one started failing.
+    """
+    from models.naive_baseline import judge_against_naive_baseline
+    prices, price = [], 100.0
+    for i in range(240):
+        price += 0.5 if i % 3 else -0.4
+        prices.append(price)
+    actual = prices[1:]
+    skilled = [a + (0.02 if i % 2 else -0.02) for i, a in enumerate(actual)]
+    verdict = judge_against_naive_baseline(actual, skilled)
+    assert verdict.beats_naive, "fixture must actually pass, or it proves nothing"
+    return verdict

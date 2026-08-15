@@ -1644,6 +1644,38 @@ def probe_participation_calibration(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
+def probe_naive_baseline_gate(facts: SystemFacts) -> ProbeResult:
+    """Does the mandatory naive-baseline gate actually refuse?
+
+    This tile EXERCISES the control rather than asserting it exists. The
+    difference is the whole of Rule 8 and this repo has been caught by it before:
+    the wall once rendered "auto-halt armed" over a registry whose `observe()`
+    had no caller. A gate is not a file, it is a refusal, and the only honest way
+    to report one is to ask it to refuse.
+
+    So: hand `_baseline_gate` no comparison and check it says no. If that ever
+    returns a pass, MD-001's "mandatory" has quietly become optional and this
+    tile goes FAILING - loudly, and before a model is promoted on a check nobody
+    ran.
+    """
+    from validation.promotion_gate import _baseline_gate
+
+    absent = _baseline_gate(None)
+    if absent.passed:
+        return ProbeResult(
+            FAILING,
+            "the naive-baseline gate PASSED with no comparison supplied - "
+            "MD-001's mandatory check has become optional, and a model can now "
+            "be promoted on an overfitting check nobody ran",
+            "src/validation/promotion_gate.py:_baseline_gate")
+    return ProbeResult(
+        OK,
+        f"mandatory and armed: with no comparison supplied the gate refuses "
+        f"(measured p={absent.measured}, threshold {absent.threshold}). Exercised "
+        f"on this pass, not inferred from the file existing",
+        "src/models/naive_baseline.py")
+
+
 def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
     """Is the system recording its own liveness, and what gaps has it found?
 
@@ -1701,6 +1733,7 @@ def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "linear naive baseline mandatory": probe_naive_baseline_gate,
     "outage detection the system s record of its own absence":
         probe_outage_detection,
     "paper execution engine forward journal both accountings": probe_paper_engine,

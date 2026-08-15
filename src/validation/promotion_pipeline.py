@@ -51,6 +51,7 @@ import pandas as pd
 
 from store.temporal_schema import EVENT_TIME, SYMBOL
 from validation.backtest_overfitting import probability_of_backtest_overfitting
+from models.naive_baseline import BaselineVerdict
 from validation.promotion_gate import GateResult, evaluate_for_promotion
 from validation.superior_predictive_ability import superior_predictive_ability
 from validation.trial_registry import TrialRegistry, TrialSpec
@@ -300,8 +301,17 @@ def effective_sample_multiplier(matrix: pd.DataFrame,
 
 def run(frame: pd.DataFrame, registry: TrialRegistry,
         candidates: list[CarryCandidate] | None = None,
-        min_deflated_sharpe: float = 0.95, cap=None) -> PipelineResult:
+        min_deflated_sharpe: float = 0.95, cap=None,
+        baseline: BaselineVerdict | None = None) -> PipelineResult:
     """Take the best candidate through every gate, and report what refused it.
+
+    `baseline` is the candidate's measured comparison against a naive benchmark
+    (MD-001), threaded straight through to the gate. It is NOT computed here, and
+    that is deliberate: the naive benchmark for a forecasting model is the random
+    walk, and for a cross-sectional carry rank it is something else entirely -
+    manufacturing one inside the pipeline, to satisfy the pipeline's own gate,
+    would be the gate marking its own homework. A caller that supplies nothing is
+    refused, with the reason named.
 
     Candidates are scored first, then the best is put through the gate - and the
     N that deflates it is the registry's cumulative count, so every configuration
@@ -352,6 +362,7 @@ def run(frame: pd.DataFrame, registry: TrialRegistry,
         min_deflated_sharpe=min_deflated_sharpe,
         periods_per_year=PERIODS_PER_YEAR,
         effective_sample_multiplier=multiplier,
+        baseline=baseline,
     )
 
     gates = [asdict(g) for g in verdict.gates]

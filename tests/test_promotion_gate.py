@@ -100,8 +100,47 @@ def test_the_verdict_reports_every_gate_with_its_measurement(tmp_path):
 def test_a_genuine_edge_is_promoted_when_few_things_were_tried(tmp_path):
     verdict = evaluate_for_promotion(TrialRegistry(tmp_path), a_spec(), constant_edge(),
                                      n_rows=2400, n_groups=6, k_test=2,
-                                     min_deflated_sharpe=0.95)
+                                     min_deflated_sharpe=0.95,
+                                     baseline=a_passing_baseline())
     assert verdict.promoted, f"a real edge was rejected: {verdict.rejection_reasons()}"
+
+
+# --- MD-001: the naive baseline is mandatory --------------------------------
+
+def test_a_candidate_with_no_baseline_comparison_is_not_promoted(tmp_path):
+    """NOT CHECKED is not PASSED. A gate that passed for want of a measurement
+    would be the fifth control in this corpus that reads as present and is not,
+    and it would fail in the flattering direction like the other four."""
+    verdict = evaluate_for_promotion(TrialRegistry(tmp_path), a_spec(), constant_edge(),
+                                     n_rows=2400, min_deflated_sharpe=0.95)
+    assert not verdict.promoted
+    assert any("naive_baseline" in r for r in verdict.rejection_reasons())
+
+
+def test_a_model_that_reproduced_the_lag_one_trap_is_not_promoted(tmp_path):
+    """Even with a real edge in the returns. A model that learned to emit the
+    last price has not forecast anything, whatever the backtest says."""
+    from models.naive_baseline import judge_against_naive_baseline, random_walk_forecast
+    prices, price = [], 100.0
+    for i in range(240):
+        price += 0.5 if i % 3 else -0.4
+        prices.append(price)
+    trapped = judge_against_naive_baseline(prices[1:], random_walk_forecast(prices))
+    assert trapped.reproduced_lag_one_trap
+    verdict = evaluate_for_promotion(TrialRegistry(tmp_path), a_spec(), constant_edge(),
+                                     n_rows=2400, min_deflated_sharpe=0.95,
+                                     baseline=trapped)
+    assert not verdict.promoted
+    assert any("lag-one" in r.lower() for r in verdict.rejection_reasons())
+
+
+def test_the_absent_baseline_reads_as_a_failure_in_the_numbers_alone(tmp_path):
+    """An auditor reading measured/threshold without the prose still sees it
+    fail: p=1.0 is exactly 'no evidence against the null'."""
+    verdict = evaluate_for_promotion(TrialRegistry(tmp_path), a_spec(), constant_edge(),
+                                     n_rows=2400, min_deflated_sharpe=0.95)
+    (gate,) = [g for g in verdict.gates if g.name == "naive_baseline"]
+    assert gate.measured == 1.0 and gate.threshold == 0.05
 
 
 def test_pure_noise_is_not_promoted(tmp_path):
@@ -162,3 +201,22 @@ def test_a_fold_whose_purge_ate_all_the_training_data_is_reported(tmp_path):
     retention = next(g for g in verdict.gates if g.name == "purge_retention")
     assert not retention.passed
     assert not verdict.promoted
+
+
+def a_passing_baseline():
+    """A real BaselineVerdict from a model that genuinely beats the random walk.
+
+    Computed rather than hand-constructed, so this fixture cannot drift out of
+    agreement with what `judge_against_naive_baseline` actually returns - a
+    hand-built dataclass would keep passing after the real one started failing.
+    """
+    from models.naive_baseline import judge_against_naive_baseline
+    prices, price = [], 100.0
+    for i in range(240):
+        price += 0.5 if i % 3 else -0.4
+        prices.append(price)
+    actual = prices[1:]
+    skilled = [a + (0.02 if i % 2 else -0.02) for i, a in enumerate(actual)]
+    verdict = judge_against_naive_baseline(actual, skilled)
+    assert verdict.beats_naive, "fixture must actually pass, or it proves nothing"
+    return verdict

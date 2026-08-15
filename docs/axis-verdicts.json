@@ -845,6 +845,16 @@
     "tests/test_staleness_banner.py",
     "src/statuswall/staleness_banner.py"
    ]
+  },
+  "models.naive_baseline": {
+   "learning": "n/a: it judges learning, it does not do any. The random walk has no parameters, which is the point - a benchmark with knobs is one that can be tuned until the model beats it",
+   "reasoning": "pass: it tests SIGNIFICANCE rather than comparing two MSEs, because on 20,000 observations a 0.2% improvement can be pure sampling noise and reporting it as 'beat the baseline' is how the trap survives the check meant to catch it. It reuses `validation.superior_predictive_ability` rather than implementing a second statistical machinery for the same question. It also separates two failure modes that call for different work - a model that COPIED the benchmark, and one that is genuinely its own and no better",
+   "depth": "pass: it changes what the system does when something is wrong. `validation.promotion_gate` now refuses to promote any candidate with no baseline comparison at all, and refuses one that reproduced the lag-one trap even when its backtest Sharpe passes every other gate. Too few observations raises rather than passing",
+   "evidence": [
+    "tests/test_naive_baseline.py",
+    "src/models/naive_baseline.py",
+    "src/validation/promotion_gate.py"
+   ]
   }
  }
 }

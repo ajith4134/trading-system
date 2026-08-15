@@ -44,6 +44,7 @@ from validation.purged_cross_validation import (
     UnknownStrategyFamily,
     combinatorial_purged_folds,
 )
+from models.naive_baseline import BaselineVerdict
 from validation.trial_registry import TrialRegistry, TrialSpec
 
 _TRADING_DAYS_PER_YEAR = 252
@@ -81,11 +82,44 @@ class PromotionVerdict:
         return [f"{g.name}: {g.detail}" for g in self.gates if not g.passed]
 
 
+def _baseline_gate(baseline: "BaselineVerdict | None") -> GateResult:
+    """MD-001, made mandatory: no candidate is promoted without beating a naive
+    baseline, and NOT CHECKED is not PASSED.
+
+    `FEATURES.md` §3 calls this the cheapest overfitting check that exists and
+    marks it MISSED. A gate that quietly passed when no comparison was supplied
+    would be the fifth control in this corpus that reads as present and is not -
+    and it would fail in the flattering direction, like the other four.
+
+    The absent case reports `measured=1.0` against the alpha threshold, because a
+    p-value of 1 is exactly what "no evidence against the null" means. Anyone
+    auditing the numbers alone, without reading the detail, still sees a failure.
+    """
+    if baseline is None:
+        return GateResult(
+            name="naive_baseline", passed=False, measured=1.0, threshold=0.05,
+            detail=("no baseline comparison supplied. MD-001 requires every model "
+                    "to beat a naive 'predict the last price' benchmark before "
+                    "promotion, and a gate that passed for want of a measurement "
+                    "would be worse than no gate - it would report the check as "
+                    "done"))
+    if baseline.reproduced_lag_one_trap:
+        return GateResult(
+            name="naive_baseline", passed=False, measured=baseline.p_value,
+            threshold=0.05,
+            detail=(f"the model reproduced the lag-one trap - it learned to emit "
+                    f"the last price rather than to forecast. {baseline.detail}"))
+    return GateResult(
+        name="naive_baseline", passed=baseline.beats_naive,
+        measured=baseline.p_value, threshold=0.05, detail=baseline.detail)
+
+
 def evaluate_for_promotion(
     registry: TrialRegistry,
     spec: TrialSpec,
     backtest_fold: Callable[[CpcvFold], list[float]],
     *,
+    baseline: "BaselineVerdict | None" = None,
     n_rows: int,
     n_groups: int = 6,
     k_test: int = 2,
@@ -193,6 +227,7 @@ def evaluate_for_promotion(
                     f"observations x {effective_sample_multiplier:.1f} effective "
                     f"breadth"),
         ),
+        _baseline_gate(baseline),
         GateResult(
             name="purge_retention", passed=retention >= min_train_retention,
             measured=retention, threshold=min_train_retention,
