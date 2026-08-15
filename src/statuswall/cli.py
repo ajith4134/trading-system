@@ -75,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         paper_running=paper_running,
         paper_evidence=paper_evidence,
         generated_at=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        # The epoch the page ages itself against in the reader's browser. A
+        # server-rendered age cannot cover the case that matters: the server that
+        # would render it is the one that stopped writing.
+        generated_at_epoch_s=int(dt.datetime.now(dt.timezone.utc).timestamp()),
     ), encoding="utf-8")
     print(f"wrote {progress_out}")
 

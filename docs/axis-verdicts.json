@@ -826,6 +826,25 @@
     "src/paper/forward_engine.py",
     "scripts/paper_supervisor.sh"
    ]
+  },
+  "ops.liveness_ledger": {
+   "learning": "n/a: it records. Nothing here is fitted",
+   "reasoning": "pass: it refuses to confuse a cold start with an outage, which would put a fictional 56-year gap at the top of the ledger on day one, and it records the gap it OBSERVED - the two instants either side - rather than guessing when the box actually died. It also names its own limit out loud: a watcher on the box cannot report that the box is off, so this is retrospective by construction",
+   "depth": "pass: an unreadable stamp reads as a cold start rather than as alive, which is wrong in the safe direction - treating it as alive would erase the very outage that corrupted it. A clock that went backwards raises instead of writing a negative outage that would poison every duration derived from the ledger afterwards. Reachable through scripts/health_supervisor.sh",
+   "evidence": [
+    "tests/test_liveness_ledger.py",
+    "src/ops/liveness_ledger.py",
+    "scripts/health_supervisor.sh"
+   ]
+  },
+  "statuswall.staleness_banner": {
+   "learning": "n/a: it renders",
+   "reasoning": "pass: it puts the age measurement in the READER's browser, because the case that matters is a stopped generator and a server-rendered age cannot cover it - the server that would render it is the one that stopped. The stale message names the generator rather than the page age, because that is the thing to go and fix",
+   "depth": "pass: with script blocked it keeps its server-rendered AGE UNKNOWN text in warning styling rather than falling back to healthy, and an unparseable timestamp resolves to epoch 0 which lands on the same unknown state. It fetches nothing - a staleness check needing a CDN would go blank in exactly the network conditions that produce a stale board",
+   "evidence": [
+    "tests/test_staleness_banner.py",
+    "src/statuswall/staleness_banner.py"
+   ]
   }
  }
 }

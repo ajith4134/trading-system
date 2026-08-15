@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from statuswall.catalogue import Feature
+from statuswall.staleness_banner import render_staleness_banner
 from statuswall.evidence import NOT_BUILT, ProbeResult, SEVERITY_ORDER, STATE_LABEL
 
 # Phase key, phase title, and the FEATURES.md sections whose features it owns.
@@ -226,7 +227,8 @@ def render_build_progress_page(
         unresolved_rows: int | None,
         paper_running: bool,
         paper_evidence: str,
-        generated_at: str) -> str:
+        generated_at: str,
+        generated_at_epoch_s: int | None = None) -> str:
     """The whole page. Every number on it arrived through an argument that was
     measured by the caller; nothing here invents one."""
     rows = "".join(_phase_row(p) for p in phases)
@@ -252,6 +254,8 @@ def render_build_progress_page(
 <title>Build progress — full-build master plan</title>
 <style>{_PAGE_STYLE}</style></head><body>
 <h1>Build progress — phases A–J</h1>
+{render_staleness_banner(generated_at_epoch_s, generated_at)
+ if generated_at_epoch_s is not None else ""}
 <div class="sub">generated {html.escape(generated_at)} ·
 {lit} / {total} catalogue features lit ·
 plan: docs/superpowers/plans/2026-08-09-full-build-master-plan.md</div>

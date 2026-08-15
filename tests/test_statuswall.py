@@ -1210,3 +1210,49 @@ def test_a_real_receipt_with_observations_reads_ok(tmp_path):
     result = probe_participation_calibration(_facts(capture_root=tmp_path))
     assert result.state == OK
     assert "52 observation(s)" in result.detail
+
+
+# --------------------------------------------------------------------------
+# the outage tile — the system's record of its own absence
+# --------------------------------------------------------------------------
+
+def test_the_outage_tile_is_not_measured_when_nothing_stamps_liveness(tmp_path):
+    from statuswall.evidence import NOT_MEASURED, probe_outage_detection
+    result = probe_outage_detection(_facts(capture_root=tmp_path))
+    assert result.state == NOT_MEASURED
+    assert "hole in the tape" in result.detail
+
+
+def test_the_outage_tile_reads_stopped_when_the_stamp_itself_went_quiet(tmp_path):
+    """If whatever writes the stamp dies, the tile must say so — otherwise the
+    outage detector fails in exactly the silent way it exists to catch."""
+    import time as _time
+    from ops.liveness_ledger import record_liveness
+    from statuswall.evidence import STOPPED, probe_outage_detection
+    record_liveness(tmp_path / "liveness",
+                    now_ns=_time.time_ns() - 5 * 3600 * 10**9)
+    assert probe_outage_detection(
+        _facts(capture_root=tmp_path)).state == STOPPED
+
+
+def test_a_recorded_outage_leaves_the_tile_degraded_not_green(tmp_path):
+    """The gap is over and it is still true. OK would erase it; a hole in the
+    tape is a permanent fact about every model later trained on it."""
+    import time as _time
+    from ops.liveness_ledger import record_liveness
+    from statuswall.evidence import DEGRADED, probe_outage_detection
+    root = tmp_path / "liveness"
+    now = _time.time_ns()
+    record_liveness(root, now_ns=now - 6 * 86_400 * 10**9)
+    record_liveness(root, now_ns=now)
+    result = probe_outage_detection(_facts(capture_root=tmp_path))
+    assert result.state == DEGRADED
+    assert "1 outage(s) on record" in result.detail
+
+
+def test_a_clean_history_reads_ok(tmp_path):
+    import time as _time
+    from ops.liveness_ledger import record_liveness
+    from statuswall.evidence import OK, probe_outage_detection
+    record_liveness(tmp_path / "liveness", now_ns=_time.time_ns())
+    assert probe_outage_detection(_facts(capture_root=tmp_path)).state == OK

@@ -68,6 +68,14 @@ while true; do
     exit_code=$?
     child_pid=""
 
+    # The system's own liveness stamp, on the same 60s tick. It rides this loop
+    # rather than owning a process because the thing being defended against is a
+    # process dying quietly, and a separate daemon would be one more of those.
+    # An outage is reported the first tick after the box comes back - which is
+    # the only moment anything on this machine can report it. See the module
+    # docstring for why a watcher here cannot report that the box is off.
+    "$PYTHON" -m ops.liveness_ledger --capture-root "$CAPTURE_ROOT" >>"$LOG" 2>&1
+
     # Recorded and retried, never fatal. A venue whose report cannot be built
     # this minute is next minute's problem; exiting over it would stop halting
     # for every other venue too. Only failures are logged - a line per healthy

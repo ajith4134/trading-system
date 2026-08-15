@@ -1644,10 +1644,65 @@ def probe_participation_calibration(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
+def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
+    """Is the system recording its own liveness, and what gaps has it found?
+
+    The tile reports the outages rather than hiding them once they end. A gap in
+    the tape is a permanent fact about every model later trained on it, and the
+    five days this box spent off in August 2026 are exactly the kind of thing
+    that gets rediscovered months later as an unexplained hole.
+
+    DEGRADED while outages are on record, not FAILING and not OK. They are real
+    and they are over: OK would erase them, and FAILING would imply something is
+    wrong right now when what is wrong already happened.
+    """
+    from ops.liveness_ledger import last_seen_ns, read_outages
+
+    root = facts.capture_root / "liveness"
+    proof = str(root)
+    stamp = last_seen_ns(root)
+    if stamp is None:
+        return ProbeResult(
+            NOT_MEASURED,
+            "no liveness stamp - nothing is recording whether this system is "
+            "running, so an outage would leave no trace but a hole in the tape",
+            proof)
+
+    age_hours = (time.time_ns() - stamp) / 3_600_000_000_000
+    outages = read_outages(root)
+    if age_hours > 1.0:
+        return ProbeResult(
+            STOPPED,
+            f"the liveness stamp is {age_hours:.1f}h old - whatever writes it is "
+            f"not running, which is the one failure this feature exists to catch",
+            proof)
+    if outages:
+        worst = max(outages, key=lambda o: o.duration_ns)
+        observed = sum(1 for o in outages if not o.is_reconstructed)
+        reconstructed = len(outages) - observed
+        # Counted apart on the tile for the same reason bars_reconstructed_* is a
+        # separate dataset: a gap this system watched happen and one worked out
+        # afterwards from boot logs are different claims, and a single number
+        # would let the weaker one be read as the stronger.
+        breakdown = (f"{observed} observed, {reconstructed} reconstructed"
+                     if reconstructed else f"{observed} observed")
+        return ProbeResult(
+            DEGRADED,
+            f"{len(outages)} outage(s) on record ({breakdown}), longest "
+            f"{worst.duration_hours:.1f}h - the tape has holes and every model "
+            f"trained on it inherits them",
+            proof)
+    return ProbeResult(
+        OK, f"liveness stamped {age_hours * 60:.0f} min ago; no outages recorded",
+        proof)
+
+
 # Feature key -> probe. A feature absent from this map has no measurement and is
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "outage detection the system s record of its own absence":
+        probe_outage_detection,
     "paper execution engine forward journal both accountings": probe_paper_engine,
     "participation rate calibrated from the depth archive":
         probe_participation_calibration,

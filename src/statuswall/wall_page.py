@@ -7,10 +7,13 @@ crash rather than a green tile.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import html
 from dataclasses import dataclass
 
 from statuswall.catalogue import Feature
+from statuswall.staleness_banner import render_staleness_banner
 from statuswall.evidence import (
     BUILT, DEGRADED, FAILING, NOT_BUILT, NOT_MEASURED, OK, PARTIAL, SEVERITY_ORDER,
     STATE_LABEL, STOPPED, ProbeResult, SystemFacts,
@@ -93,7 +96,24 @@ def _system_banner(facts: SystemFacts) -> str:
         f'<span class="banner-text">{_esc(headline)}</span>'
         f'<span class="banner-meta">measured {_esc(facts.measured_at)}</span>'
         f"</div>"
+        # The board's own age, computed in the reader's browser. A server-
+        # rendered age is impossible for the case that matters: the server that
+        # would render it is the one that stopped. See staleness_banner.
+        + render_staleness_banner(_epoch_of(facts.measured_at),
+                                  facts.measured_at)
     )
+
+
+def _epoch_of(measured_at: str) -> int:
+    """`measured_at` back to an epoch, or 0 when it cannot be parsed.
+
+    0 makes the banner render its AGE UNKNOWN fallback rather than claiming
+    freshness - the safe direction for a stamp nobody could read."""
+    try:
+        return int(dt.datetime.strptime(measured_at, "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=dt.timezone.utc).timestamp())
+    except (ValueError, TypeError):
+        return 0
 
 
 def _system_tiles(facts: SystemFacts) -> str:
