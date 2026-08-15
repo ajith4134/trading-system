@@ -1104,3 +1104,109 @@ def test_every_phase_b_module_built_so_far_has_a_tile():
                           "absorption detection delta vs price hold",
                           "kyle s lambda", "fractional differentiation"):
         assert catalogue_key in PROBES, f"{catalogue_key} has no probe"
+
+
+# --------------------------------------------------------------------------
+# the paper tiles — measured, and able to say the engine died
+# --------------------------------------------------------------------------
+
+def _paper_journal(tmp_path, *, age_ns, **overrides):
+    from paper.forward_journal import ForwardJournal
+    import time as _time
+    journal = tmp_path / "paper" / "forward"
+    journal.mkdir(parents=True)
+    fields = dict(strategy="plumbing-momentum", makes_edge_claim=False,
+                  events_fed=7, orders_submitted=2, orders_rejected=0, fills=1,
+                  open_orders=1, last_event_time_ns=42, detail="")
+    fields.update(overrides)
+    ForwardJournal(journal).record_heartbeat(
+        now_ns=_time.time_ns() - age_ns, **fields)
+    return journal
+
+
+def test_the_paper_tile_reads_not_built_before_the_engine_ever_runs(tmp_path):
+    from statuswall.evidence import NOT_BUILT, probe_paper_engine
+    result = probe_paper_engine(_facts(capture_root=tmp_path))
+    assert result.state == NOT_BUILT
+
+
+def test_the_paper_tile_is_not_measured_when_a_journal_exists_but_no_heartbeat(
+        tmp_path):
+    from statuswall.evidence import NOT_MEASURED, probe_paper_engine
+    (tmp_path / "paper" / "forward").mkdir(parents=True)
+    result = probe_paper_engine(_facts(capture_root=tmp_path))
+    assert result.state == NOT_MEASURED
+
+
+def test_the_paper_tile_reads_stopped_when_the_heartbeat_went_quiet(tmp_path):
+    """The failure this whole tile exists for: the box was off 2026-08-10 to
+    2026-08-15 and every board went on looking healthy."""
+    from statuswall.evidence import STOPPED, probe_paper_engine
+    _paper_journal(tmp_path, age_ns=5 * 86_400 * 10**9)
+    result = probe_paper_engine(_facts(capture_root=tmp_path))
+    assert result.state == STOPPED
+    assert "not running" in result.detail
+
+
+def test_a_running_engine_on_a_no_edge_signal_is_partial_never_green(tmp_path):
+    """Running is not the same as working. A green tile over a signal that
+    claims no edge reads, six weeks later, as 'paper trading is working' in the
+    sense that matters."""
+    from statuswall.evidence import PARTIAL, probe_paper_engine
+    _paper_journal(tmp_path, age_ns=10**9, makes_edge_claim=False)
+    result = probe_paper_engine(_facts(capture_root=tmp_path))
+    assert result.state == PARTIAL
+    assert "claims no edge" in result.detail
+
+
+def test_the_paper_tile_goes_ok_only_for_a_strategy_that_claims_edge(tmp_path):
+    from statuswall.evidence import OK, probe_paper_engine
+    _paper_journal(tmp_path, age_ns=10**9, makes_edge_claim=True,
+                   strategy="phase-c-model")
+    assert probe_paper_engine(_facts(capture_root=tmp_path)).state == OK
+
+
+def test_participation_is_not_measured_without_a_receipt(tmp_path):
+    from statuswall.evidence import NOT_MEASURED, probe_participation_calibration
+    result = probe_participation_calibration(_facts(capture_root=tmp_path))
+    assert result.state == NOT_MEASURED
+    assert "uncalibrated" in result.detail
+
+
+def test_a_receipt_resting_on_no_observations_is_not_a_measurement(tmp_path):
+    import json as _json
+    from statuswall.evidence import (
+        NOT_MEASURED, PARTICIPATION_RECEIPT_DIR, probe_participation_calibration)
+    directory = tmp_path / PARTICIPATION_RECEIPT_DIR
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(_json.dumps(
+        {"measured_at_ns": 1, "symbols": {"BTCUSDT": {"n_observations": 0}}}),
+        encoding="utf-8")
+    result = probe_participation_calibration(_facts(capture_root=tmp_path))
+    assert result.state == NOT_MEASURED
+    assert "wearing a measurement's clothes" in result.detail
+
+
+def test_an_unreadable_receipt_fails_loudly_rather_than_reporting_a_rate(
+        tmp_path):
+    from statuswall.evidence import (
+        FAILING, PARTICIPATION_RECEIPT_DIR, probe_participation_calibration)
+    directory = tmp_path / PARTICIPATION_RECEIPT_DIR
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text("{broken", encoding="utf-8")
+    assert probe_participation_calibration(
+        _facts(capture_root=tmp_path)).state == FAILING
+
+
+def test_a_real_receipt_with_observations_reads_ok(tmp_path):
+    import json as _json, time as _time
+    from statuswall.evidence import (
+        OK, PARTICIPATION_RECEIPT_DIR, probe_participation_calibration)
+    directory = tmp_path / PARTICIPATION_RECEIPT_DIR
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(_json.dumps(
+        {"measured_at_ns": _time.time_ns(),
+         "symbols": {"BTCUSDT": {"n_observations": 52}}}), encoding="utf-8")
+    result = probe_participation_calibration(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "52 observation(s)" in result.detail

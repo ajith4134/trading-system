@@ -10,6 +10,7 @@ it. A status whose provenance cannot be named is not a status.
 """
 from __future__ import annotations
 
+import json
 import datetime as dt
 import functools
 import shutil
@@ -1534,10 +1535,122 @@ def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     )
 
 
+# The supervisor polls every 60s, so five minutes is four missed polls: long
+# enough not to flap on a slow universe-wide read, short enough that a dead engine
+# is visible within one coffee. Shared with build_progress's Phase J row so the
+# two boards cannot disagree about whether the engine is alive.
+_PAPER_HEARTBEAT_STALE_HOURS = 300 / 3600
+# Where a participation calibration receipt lands, mirroring the fee receipt at
+# ~/capture/fee-verification/latest.json. Declared here rather than derived, so a
+# probe cannot report a clean bill of health by looking somewhere nothing writes.
+PARTICIPATION_RECEIPT_DIR = "participation-calibration"
+
+
+def probe_paper_engine(facts: SystemFacts) -> ProbeResult:
+    """Is the forward paper engine running, and what has it actually done?
+
+    Graded on the engine's own heartbeat and its AGE — never on the presence of
+    the code, and never on the presence of a file. Rule 8's whole point: this
+    tile must be able to say the engine died, and a tile that goes green because
+    a module exists can never say that.
+
+    The states are kept apart because a board that cannot distinguish them is
+    worse than no board. An engine running with nothing to trade and an engine
+    that stopped five days ago produce identical fill counts; only the heartbeat
+    age separates them, and this box spent 2026-08-10 to 2026-08-15 proving it.
+    """
+    from paper.forward_journal import count_fills, read_heartbeat
+
+    journal_dir = facts.capture_root / "paper" / "forward"
+    proof = str(journal_dir)
+    if not journal_dir.is_dir():
+        return ProbeResult(NOT_BUILT, "no forward journal; the engine has never "
+                                      "run on this machine", proof)
+
+    beat = read_heartbeat(journal_dir)
+    if beat is None:
+        return ProbeResult(
+            NOT_MEASURED,
+            "journal directory exists but holds no readable heartbeat - the "
+            "engine has not completed a poll, and nothing here says it works",
+            proof)
+
+    age_hours = beat.age_ns(time.time_ns()) / 3_600_000_000_000
+    claim = "claims edge" if beat.makes_edge_claim else "makes NO edge claim"
+    fills = count_fills(journal_dir)
+    summary = (f"strategy {beat.strategy!r} ({claim}); {beat.events_fed} event(s) "
+               f"fed, {beat.orders_submitted} submitted, {beat.open_orders} "
+               f"resting, {fills} fill(s) journalled")
+
+    if age_hours > _PAPER_HEARTBEAT_STALE_HOURS:
+        return ProbeResult(
+            STOPPED,
+            f"last heartbeat {age_hours:.1f}h ago - the engine is not running. "
+            f"{summary}", proof)
+    if beat.makes_edge_claim is False:
+        # Running, and deliberately not OK. The engine is doing its job, but the
+        # only signal it can run is a plumbing signal, and a green tile over that
+        # would be read six weeks from now as "paper trading is working" in the
+        # sense that matters. PARTIAL is the honest state until a model from
+        # Phase C is the thing being journalled.
+        return ProbeResult(
+            PARTIAL,
+            f"running, but on a signal that claims no edge - its P&L is not a "
+            f"result. {summary}", proof)
+    return ProbeResult(OK, summary, proof)
+
+
+def probe_participation_calibration(facts: SystemFacts) -> ProbeResult:
+    """Has the fill model's participation rate been measured, or is it declared?
+
+    NOT_MEASURED when no receipt exists, which is the state today. That is the
+    difference between a fraction measured from resting size at the touch and a
+    fraction somebody typed, and it is exactly the difference that decides whether
+    a paper result may be promoted. A tile that could not tell them apart would
+    let an assumed number be read as a measured one - which the design document
+    names as the single largest lever in the engine.
+    """
+    receipt = facts.capture_root / PARTICIPATION_RECEIPT_DIR / "latest.json"
+    proof = str(receipt)
+    if not receipt.is_file():
+        return ProbeResult(
+            NOT_MEASURED,
+            "no calibration receipt - participation is a declared number, every "
+            "paper fill carries uncalibrated=true, and no tier-2 promotion may "
+            "read one",
+            proof)
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        symbols = payload["symbols"]
+        measured_at_ns = int(payload["measured_at_ns"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return ProbeResult(
+            FAILING,
+            f"calibration receipt present but unreadable ({type(exc).__name__}: "
+            f"{exc}) - refusing to report a rate nobody can check",
+            proof)
+
+    observations = sum(int(s.get("n_observations", 0)) for s in symbols.values()
+                       if isinstance(s, dict))
+    age_hours = (time.time_ns() - measured_at_ns) / 3_600_000_000_000
+    detail = (f"{len(symbols)} symbol(s), {observations} observation(s), measured "
+              f"{age_hours:.1f}h ago")
+    if observations == 0:
+        return ProbeResult(
+            NOT_MEASURED,
+            f"receipt exists and rests on nothing: {detail}. A receipt with no "
+            f"observations is a declared number wearing a measurement's clothes",
+            proof)
+    return ProbeResult(OK, detail, proof)
+
+
 # Feature key -> probe. A feature absent from this map has no measurement and is
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "paper execution engine forward journal both accountings": probe_paper_engine,
+    "participation rate calibrated from the depth archive":
+        probe_participation_calibration,
     "exchange reserve netflow": probe_exchange_reserves,
     "feature staleness timestamp on every value": probe_feature_staleness,
     "spot ohlcv trade tape multi venue": probe_trade_tape,
