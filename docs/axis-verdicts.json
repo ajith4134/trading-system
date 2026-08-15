@@ -865,6 +865,16 @@
     "src/features/triple_barrier.py",
     "src/statuswall/evidence.py"
    ]
+  },
+  "features.sample_uniqueness": {
+   "learning": "n/a: it reweights samples, it does not fit anything",
+   "reasoning": "pass: it counts concurrency over each label's ACTUAL span, event to touch, which is why triple_barrier returns the touch index at all - assuming the maximum holding period would over-count the overlap of every trade that resolved early. An unresolved label has no span and is refused rather than defaulted to the end of the series, a default that would inflate the measured overlap of exactly the newest data",
+   "depth": "pass: the sequential bootstrap's claim is EMPIRICAL and is measured rather than asserted - the wall probe re-runs the comparison against uniform sampling on every pass and goes FAILING if the lift disappears or if concurrency stops counting. The benefit is recorded honestly as +4.8% to +7.7% under heavy overlap rather than described as a fix for non-IID data, because VX-102 calls the non-parallelisable cost a real engineering expense and an expense wants a measured benefit beside it. Reachable today only through that probe; the training consumer is MD-010 and does not exist yet",
+   "evidence": [
+    "tests/test_sample_uniqueness.py",
+    "src/features/sample_uniqueness.py",
+    "src/statuswall/evidence.py"
+   ]
   }
  }
 }

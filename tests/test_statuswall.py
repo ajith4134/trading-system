@@ -1313,3 +1313,26 @@ def test_the_labelling_tile_catches_a_regression_to_close_only_labelling(
     result = probe_triple_barrier_labelling(_facts(capture_root=tmp_path))
     assert result.state == FAILING
     assert "close-only" in result.detail
+
+
+# --------------------------------------------------------------------------
+# FE-009 — the tile runs the empirical claim
+# --------------------------------------------------------------------------
+
+def test_the_uniqueness_tile_measures_the_lift_rather_than_asserting_it(tmp_path):
+    from statuswall.evidence import OK, probe_sample_uniqueness
+    result = probe_sample_uniqueness(_facts(capture_root=tmp_path))
+    assert result.state == OK
+    assert "vs uniform" in result.detail
+
+
+def test_the_uniqueness_tile_fails_if_concurrency_stops_counting(tmp_path,
+                                                                 monkeypatch):
+    """The flattering failure: every overlapping sample looks independent, and
+    the effective sample size behind every significance test inflates."""
+    from statuswall.evidence import FAILING, probe_sample_uniqueness
+    monkeypatch.setattr("features.sample_uniqueness.average_uniqueness",
+                        lambda spans, n_bars: [1.0] * len(spans))
+    result = probe_sample_uniqueness(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "stopped counting" in result.detail

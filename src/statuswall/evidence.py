@@ -1644,6 +1644,78 @@ def probe_participation_calibration(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
+def probe_sample_uniqueness(facts: SystemFacts) -> ProbeResult:
+    """Does the sequential bootstrap still beat uniform sampling?
+
+    Exercised, not asserted. The claim this module makes is EMPIRICAL - that
+    drawing proportional to remaining uniqueness produces a more independent
+    sample than drawing uniformly - and an empirical claim is the one kind that
+    absolutely cannot be reported from the presence of a file. A sequential
+    bootstrap that stopped working would still import, still return the right
+    number of draws, and still be wrong.
+
+    Two overlapping labels are also checked to report less than full uniqueness,
+    which catches the other way this breaks: a concurrency count that silently
+    stopped counting would make every sample look perfectly independent, and that
+    is the flattering direction - it inflates the effective sample size behind
+    every significance test downstream.
+    """
+    import random as _random
+
+    from features.sample_uniqueness import (
+        LabelSpan, average_uniqueness, sequential_bootstrap)
+
+    proof = "src/features/sample_uniqueness.py"
+    try:
+        pair = average_uniqueness(
+            [LabelSpan(0, 3), LabelSpan(0, 3)], n_bars=4)
+        spans = [LabelSpan(i * 2, i * 2 + 19) for i in range(40)]
+        n_bars, size, runs = 200, 8, 12
+
+        def mean_uniqueness(draw):
+            drawn = [spans[i] for i in draw]
+            return sum(average_uniqueness(drawn, n_bars=n_bars)) / len(drawn)
+
+        sequential, uniform = [], []
+        for seed in range(runs):
+            sequential.append(mean_uniqueness(
+                sequential_bootstrap(spans, n_bars=n_bars, size=size, seed=seed)))
+            rng = _random.Random(seed)
+            uniform.append(mean_uniqueness(
+                [rng.randrange(len(spans)) for _ in range(size)]))
+    except Exception as exc:                      # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the uniqueness machinery raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    if max(pair) >= 1.0:
+        return ProbeResult(
+            FAILING,
+            f"two labels covering identical bars each scored {max(pair)} "
+            f"uniqueness instead of 0.5 - concurrency has stopped counting, and "
+            f"every overlapping sample now looks perfectly independent",
+            proof)
+
+    mean_sequential = sum(sequential) / runs
+    mean_uniform = sum(uniform) / runs
+    if mean_sequential <= mean_uniform:
+        return ProbeResult(
+            FAILING,
+            f"the sequential bootstrap scored {mean_sequential:.4f} against "
+            f"uniform sampling's {mean_uniform:.4f} over {runs} seeds - it is no "
+            f"longer buying anything for its non-parallelisable cost",
+            proof)
+    lift = (mean_sequential / mean_uniform - 1) * 100
+    return ProbeResult(
+        OK,
+        f"sequential bootstrap {mean_sequential:.4f} vs uniform "
+        f"{mean_uniform:.4f} over {runs} seeds on heavily overlapping labels, "
+        f"{lift:+.1f}% more effective samples. Measured on this pass, and it is "
+        f"an improvement rather than a fix for non-IID data",
+        proof)
+
+
 def probe_triple_barrier_labelling(facts: SystemFacts) -> ProbeResult:
     """Does the labeller still refuse the two things it exists to refuse?
 
@@ -1793,6 +1865,7 @@ def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "sample uniqueness sequential bootstrap": probe_sample_uniqueness,
     "triple barrier labelling": probe_triple_barrier_labelling,
     "linear naive baseline mandatory": probe_naive_baseline_gate,
     "outage detection the system s record of its own absence":
