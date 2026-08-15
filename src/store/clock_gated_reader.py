@@ -43,6 +43,17 @@ class ClockGatedReader:
         # holdout cannot be read.
         self._custodian = custodian
 
+    @property
+    def is_guarded(self) -> bool:
+        """Whether a holdout custodian can refuse reads through this reader.
+
+        Public because callers for whom a custodian is *not* optional need to be
+        able to say so at construction rather than discovering it when a sealed
+        range is quietly read. `paper.market_replay` refuses an unguarded reader
+        on exactly this.
+        """
+        return self._custodian is not None
+
     def read_as_of(self, sim_clock_ns: int,
                    symbols: Sequence[str] | None = None) -> pd.DataFrame:
         """Everything knowable at `sim_clock_ns`, and nothing else.

@@ -466,6 +466,15 @@
     "src/paper/fill_model.py"
    ]
   },
+  "paper.market_replay": {
+   "learning": "n/a: it feeds the tape. Nothing is fitted, and a feed that adapted to what it fed would be the leak the clock gate exists to prevent",
+   "reasoning": "pass: replay and forward are the same method called with a different clock rather than two loops that drift apart, and it refuses a reader built without a holdout custodian instead of trusting the caller to have passed one - the holdout's only value is never having been read, and that cannot be checked after the fact",
+   "depth": "fail: cannot yet change what the system does, because no script runs it. Clears when `scripts/paper_supervisor.sh` makes the paper path a reachability root",
+   "evidence": [
+    "tests/test_market_replay.py",
+    "src/paper/market_replay.py"
+   ]
+  },
   "paper.paper_broker": {
    "learning": "n/a: a venue model, not a learner. The one estimated quantity it uses - participation - is `paper.participation_calibration`'s to measure, and is carried onto every fill with its calibrated flag rather than absorbed",
    "reasoning": "pass: it returns refusals instead of raising them, because `OrderIntentWal` writes outcome=unknown before calling a transport and leaves it there when the transport raises - and unknown is the specific claim that the venue may be holding the order, which for a local refusal is false and would block every later startup reconciliation. It also refuses market and reduce_only orders rather than approximating them",
