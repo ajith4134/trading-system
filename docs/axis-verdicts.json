@@ -466,10 +466,19 @@
     "src/paper/fill_model.py"
    ]
   },
+  "paper.paper_broker": {
+   "learning": "n/a: a venue model, not a learner. The one estimated quantity it uses - participation - is `paper.participation_calibration`'s to measure, and is carried onto every fill with its calibrated flag rather than absorbed",
+   "reasoning": "pass: it returns refusals instead of raising them, because `OrderIntentWal` writes outcome=unknown before calling a transport and leaves it there when the transport raises - and unknown is the specific claim that the venue may be holding the order, which for a local refusal is false and would block every later startup reconciliation. It also refuses market and reduce_only orders rather than approximating them",
+   "depth": "fail: cannot yet change what the system does, because no script runs it. Clears when `scripts/paper_supervisor.sh` makes the paper path a reachability root",
+   "evidence": [
+    "tests/test_paper_broker.py",
+    "src/paper/paper_broker.py"
+   ]
+  },
   "paper.position_book": {
    "learning": "n/a: it records what was filled. Nothing here is fitted, and a position model that inferred anything would be the wrong kind of clever",
    "reasoning": "pass: it keeps one book per accounting rather than one book holding both, because the average of an optimistic and a pessimistic fill is true of neither, and it omits flat positions because presence in the reconciler's input is a claim that something is held",
-   "depth": "fail: cannot yet change what the system does, because nothing calls it. `paper.paper_broker` is the intended caller and is not built. Clears when the broker drives it",
+   "depth": "fail: cannot yet change what the system does. `paper.paper_broker` now drives it, but the broker is itself unreachable - no script runs the paper engine, so the whole chain is dead code that agrees with itself. Clears when `scripts/paper_supervisor.sh` makes the path a root",
    "evidence": [
     "tests/test_position_book.py",
     "src/paper/position_book.py"
