@@ -466,6 +466,15 @@
     "src/paper/fill_model.py"
    ]
   },
+  "paper.position_book": {
+   "learning": "n/a: it records what was filled. Nothing here is fitted, and a position model that inferred anything would be the wrong kind of clever",
+   "reasoning": "pass: it keeps one book per accounting rather than one book holding both, because the average of an optimistic and a pessimistic fill is true of neither, and it omits flat positions because presence in the reconciler's input is a claim that something is held",
+   "depth": "fail: cannot yet change what the system does, because nothing calls it. `paper.paper_broker` is the intended caller and is not built. Clears when the broker drives it",
+   "evidence": [
+    "tests/test_position_book.py",
+    "src/paper/position_book.py"
+   ]
+  },
   "paper.participation_calibration": {
    "learning": "n/a: it would estimate participation from prints, and does not run",
    "reasoning": "pass: the question it asks is the right one - how much of a print a resting order would actually have received, rather than a fixed fraction",
