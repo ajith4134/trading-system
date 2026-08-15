@@ -1,0 +1,336 @@
+"""The forward paper engine: the supervised process Phase J is waiting on.
+
+    python -m paper.forward_engine --strategy plumbing-momentum --participation 0.1
+
+This is the root that makes the paper path reachable. Until it existed,
+`position_book`, `paper_broker` and `market_replay` were three modules importing
+each other with nothing running any of them — a dead subsystem vouching for
+itself, which is the shape `integrity.unsupported_claims` was written to catch and
+which `CLAUDE.md` names as the trap this codebase keeps falling into.
+
+**`--strategy` has no default, deliberately.** The only signal that exists today
+is a plumbing signal with no edge claim, and an engine that ran it by default
+would quietly accumulate a P&L series that later reads as a result. Naming it is
+the point: `makes_edge_claim` is false for it, and that flag rides on every fill
+row and every heartbeat rather than sitting in a header that gets separated from
+its data.
+
+**It refuses to start while a kill is in force.** `ops.watchdog.is_killed` is the
+one question a trading path must ask, and it is asked before the journal is
+touched — a run that was killed should leave no record implying it traded.
+
+**Every poll writes a heartbeat**, whether or not anything happened. An engine
+that is running and finding nothing produces exactly the same fills as an engine
+that died three days ago, and this box has already demonstrated the failure: it
+was off from 2026-08-10 to 2026-08-15 while the board went on looking healthy.
+
+No network, no credentials, no venue. `PaperBroker` is a local object and the
+existence of verified fee data does not make this able to trade.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+
+from cost.fee_schedule import FeeRate
+from execution.order_intent_wal import IntentExpired, OrderIntent, OrderIntentWal
+from ops.watchdog import is_killed, kill_reason
+from paper.fill_model import Participation
+from paper.forward_journal import ForwardJournal
+from paper.market_replay import MarketReplay, TapeEvent
+from paper.paper_broker import PaperBroker
+from store.clock_gated_reader import ClockGatedReader
+from validation.holdout_custodian import HoldoutCustodian
+
+BARS_DATASET = "bars_60000000000ns"
+# One bar. An intent that outlives the bar it was decided on would fire against a
+# market it never saw, which is what valid_for_ns exists to prevent.
+INTENT_VALID_NS = 60_000_000_000
+
+# Verified 2026-08-09 from signed endpoints at this account's own tier, recorded
+# in ~/capture/fee-verification/latest.json. Not a documentation page.
+VERIFIED_FEES = {
+    "binance": FeeRate(maker_bps=Decimal("2.0"), taker_bps=Decimal("5.0")),
+    "hyperliquid": FeeRate(maker_bps=Decimal("1.5"), taker_bps=Decimal("4.5")),
+}
+
+
+class KillSwitchEngaged(RuntimeError):
+    """A kill is in force, so the engine must not start."""
+
+
+class PlumbingMomentum:
+    """Rest a BUY at the previous close and hope the bar trades through it.
+
+    **This is not a strategy and its P&L is not evidence of edge.** It is a coin
+    flip with extra steps, kept because the engine needs *something* to submit
+    before Phase C produces a model, and because a signal whose worthlessness is
+    stated is safer than an engine with no orders at all — the fill path only
+    proves itself when orders actually flow through it.
+
+    `makes_edge_claim` is False and that value is written onto every fill row.
+    """
+
+    name = "plumbing-momentum"
+    makes_edge_claim = False
+
+    def __init__(self, quantity: Decimal) -> None:
+        self._quantity = quantity
+        self._previous_close: dict[tuple[str, str], Decimal] = {}
+
+    def __call__(self, event: TapeEvent, now_ns: int) -> OrderIntent | None:
+        """`now_ns` is the DECISION clock, not the bar's.
+
+        `created_at_ns` is when this signal was computed, which is now. Stamping
+        it with the bar's event time conflates two different things and gets one
+        of them wrong: EX-003 asks "was this decision made too long ago to act
+        on", and the age of the DATA behind the decision is a separate question
+        that `features.staleness` (FE-001) already carries per value.
+
+        Measured 2026-08-15, which is how this was found: stamped with the bar
+        time, a run over the live archive fed 3,494 events and submitted zero -
+        every intent expired against a 60-second window before it could be sent,
+        and the engine looked idle rather than blocked.
+        """
+        key = (event.venue, event.symbol)
+        previous = self._previous_close.get(key)
+        self._previous_close[key] = event.market_event.trade_price
+        if previous is None:
+            return None
+        return OrderIntent(
+            strategy=self.name, symbol=event.symbol, venue=event.venue,
+            side="BUY", quantity=self._quantity,
+            created_at_ns=now_ns, valid_for_ns=INTENT_VALID_NS,
+            price=previous)
+
+
+STRATEGIES = {PlumbingMomentum.name: PlumbingMomentum}
+
+
+@dataclass
+class EngineCounts:
+    """What the run did, counted by outcome rather than summarised into one word."""
+
+    polls: int = 0
+    events_fed: int = 0
+    orders_submitted: int = 0
+    orders_rejected: int = 0
+    orders_expired: int = 0
+    # Counted apart from orders_rejected because they mean different things: the
+    # broker refusing an order is a market/config condition, and the WAL refusing
+    # one is its duplicate guard working. Lumped together, a cold-start burst of
+    # duplicates reads as a broker rejecting everything.
+    orders_duplicate: int = 0
+    primed_events: int = 0
+    fills: int = 0
+    last_event_time_ns: int | None = None
+
+
+class ForwardEngine:
+    """One poll of the tape, applied to the broker, journalled. Repeat."""
+
+    def __init__(self, *, replay: MarketReplay, broker: PaperBroker,
+                 wal: OrderIntentWal, journal: ForwardJournal, strategy,
+                 kill_root: Path) -> None:
+        self._replay = replay
+        self._broker = broker
+        self._wal = wal
+        self._journal = journal
+        self._strategy = strategy
+        self._kill_root = Path(kill_root)
+        self.counts = EngineCounts()
+
+    def _assert_not_killed(self) -> None:
+        if is_killed(self._kill_root):
+            reason = kill_reason(self._kill_root) or "no reason recorded"
+            raise KillSwitchEngaged(
+                f"a kill is in force ({reason}) - refusing to run, before "
+                f"anything is journalled")
+
+    def prime(self, now_ns: int) -> int:
+        """Mark everything already in the store as fed, WITHOUT trading it.
+
+        Forward operation has to begin at the current clock. Without this, the
+        first poll of a fresh journal replays the whole archive as though it were
+        live: measured 2026-08-15 on BTCUSDT alone, 3,494 archived bars fed in one
+        poll produced 1,074 fills against prices days old, and every one of them
+        would have entered the forward journal as a forward result.
+
+        It is not a backtest either - a backtest advances a simulated clock and
+        this discards. Replay is `poll()` with a simulated clock, which is the
+        whole reason there is one method.
+        """
+        self._assert_not_killed()
+        fed = len(self._replay.poll(now_ns))
+        self.counts.primed_events += fed
+        self._journal.record_heartbeat(
+            now_ns=now_ns, strategy=self._strategy.name,
+            makes_edge_claim=self._strategy.makes_edge_claim,
+            events_fed=0, orders_submitted=0, orders_rejected=0, fills=0,
+            open_orders=0, last_event_time_ns=None,
+            detail=f"primed: {fed} archived event(s) marked as seen without "
+                   f"trading, so forward operation starts at this clock")
+        return fed
+
+    def poll_once(self, now_ns: int) -> tuple:
+        """Feed everything newly available, submit, fill, journal. Returns fills."""
+        self._assert_not_killed()
+        self.counts.polls += 1
+
+        produced = []
+        for event in self._replay.poll(now_ns):
+            self.counts.events_fed += 1
+            self.counts.last_event_time_ns = event.event_time_ns
+
+            # Fills first, on the orders already resting. An order submitted from
+            # this same print must not fill on it: it was not in the book when the
+            # trade happened, and awarding it a fill is the cheapest way to invent
+            # a strategy that front-runs its own data.
+            for fill in self._broker.on_market_event(
+                    event.symbol, event.venue, event.market_event):
+                self.counts.fills += 1
+                produced.append(fill)
+                self._journal.record_fill(
+                    fill, now_ns=now_ns, strategy=self._strategy.name,
+                    makes_edge_claim=self._strategy.makes_edge_claim)
+
+            intent = self._strategy(event, now_ns)
+            if intent is None:
+                continue
+            try:
+                response = self._wal.submit(intent, self._broker, now_ns=now_ns)
+            except IntentExpired:
+                self.counts.orders_expired += 1
+                continue
+            except RuntimeError:
+                # Already submitted: two decisions in the same nanosecond, on the
+                # same instrument, size and limit, hash to the same client order
+                # id. That is the deterministic id doing its job - blind-retrying
+                # an order whose response was lost is a second order - and it is
+                # not a broker rejection, so it is counted apart.
+                self.counts.orders_duplicate += 1
+                continue
+            if response.get("status") == "rejected":
+                self.counts.orders_rejected += 1
+            else:
+                self.counts.orders_submitted += 1
+
+        self._journal.record_heartbeat(
+            now_ns=now_ns, strategy=self._strategy.name,
+            makes_edge_claim=self._strategy.makes_edge_claim,
+            events_fed=self.counts.events_fed,
+            orders_submitted=self.counts.orders_submitted,
+            orders_rejected=(self.counts.orders_rejected
+                             + self.counts.orders_expired
+                             + self.counts.orders_duplicate),
+            fills=self.counts.fills,
+            open_orders=self._broker.open_order_count,
+            last_event_time_ns=self.counts.last_event_time_ns,
+            detail=self._replay.watermark_note)
+        return tuple(produced)
+
+
+def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
+                 participation: Participation, quantity: Decimal,
+                 symbols=None, holdout_start_ns: int,
+                 holdout_end_ns: int) -> ForwardEngine:
+    """Wire the engine. The custodian is not optional on this path."""
+    if strategy_name not in STRATEGIES:
+        raise SystemExit(
+            f"unknown strategy {strategy_name!r}; available: "
+            f"{sorted(STRATEGIES)}. There is no default - the only signal that "
+            f"exists makes no edge claim, and running it unnamed would let its "
+            f"P&L be read later as a result")
+    paper_root = Path(capture_root) / "paper" / "forward"
+    custodian = HoldoutCustodian(Path(capture_root) / "holdout",
+                                 holdout_start_ns=holdout_start_ns,
+                                 holdout_end_ns=holdout_end_ns)
+    reader = ClockGatedReader(Path(store_root), BARS_DATASET, custodian=custodian)
+    return ForwardEngine(
+        replay=MarketReplay(reader=reader, symbols=symbols),
+        broker=PaperBroker(participation=participation,
+                           fees_by_venue=VERIFIED_FEES),
+        wal=OrderIntentWal(paper_root / "wal"),
+        journal=ForwardJournal(paper_root),
+        strategy=STRATEGIES[strategy_name](quantity=quantity),
+        kill_root=Path(capture_root) / "ops")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="paper.forward_engine",
+        description="The forward paper engine. Journals fills under both "
+                    "accountings; claims no edge it was not told to claim.")
+    parser.add_argument("--strategy", required=True,
+                        help=f"one of {sorted(STRATEGIES)}. No default, on "
+                             f"purpose - see the module docstring")
+    parser.add_argument("--participation", required=True,
+                        help="share of printed volume a resting order receives. "
+                             "No default: an invented rate is what manufactures "
+                             "edge. Open question 1 of the design")
+    parser.add_argument("--participation-calibrated", action="store_true",
+                        help="assert the rate came from the depth archive. Off "
+                             "by default, and every fill then carries "
+                             "uncalibrated=true")
+    parser.add_argument("--quantity", default="0.001")
+    parser.add_argument("--symbols", default=None,
+                        help="comma-separated; omit for every symbol in the store")
+    parser.add_argument("--store-root", default=str(Path.home() / "capture" / "store"))
+    parser.add_argument("--capture-root", default=str(Path.home() / "capture"))
+    parser.add_argument("--interval-seconds", type=float, default=60.0)
+    parser.add_argument("--polls", type=int, default=0,
+                        help="stop after this many polls; 0 runs until stopped")
+    parser.add_argument("--replay-archive-on-start", action="store_true",
+                        help="trade everything already in the store on the first "
+                             "poll. OFF by default: forward operation starts at "
+                             "the current clock, or a fresh journal opens with "
+                             "days-old fills recorded as forward results")
+    parser.add_argument("--holdout-start-ns", type=int, default=2_000_000_000_000_000_000)
+    parser.add_argument("--holdout-end-ns", type=int, default=2_100_000_000_000_000_000)
+    args = parser.parse_args(argv)
+
+    engine = build_engine(
+        store_root=Path(args.store_root), capture_root=Path(args.capture_root),
+        strategy_name=args.strategy,
+        participation=Participation(fraction=Decimal(args.participation),
+                                    calibrated=args.participation_calibrated),
+        quantity=Decimal(args.quantity),
+        symbols=(args.symbols.split(",") if args.symbols else None),
+        holdout_start_ns=args.holdout_start_ns,
+        holdout_end_ns=args.holdout_end_ns)
+
+    print(f"forward paper engine: strategy={args.strategy} "
+          f"edge_claim={STRATEGIES[args.strategy].makes_edge_claim} "
+          f"participation={args.participation} "
+          f"calibrated={args.participation_calibrated}", flush=True)
+
+    if not args.replay_archive_on_start:
+        primed = engine.prime(time.time_ns())
+        print(f"primed: {primed} archived event(s) marked as seen without "
+              f"trading; forward operation starts now", flush=True)
+
+    polls = 0
+    while True:
+        engine.poll_once(time.time_ns())
+        polls += 1
+        counts = engine.counts
+        # orders_expired is printed because it was INVISIBLE on the first live
+        # run: 3,494 events fed, 0 submitted, and nothing said that every single
+        # intent had expired. A silent zero and a silent 3,494 looked identical.
+        print(f"poll {polls}: {engine._replay.watermark_note}; "
+              f"{counts.orders_submitted} submitted, "
+              f"{counts.orders_rejected} rejected, "
+              f"{counts.orders_duplicate} refused as duplicates, "
+              f"{counts.orders_expired} expired before submission, "
+              f"{counts.fills} filled", flush=True)
+        if args.polls and polls >= args.polls:
+            return 0
+        time.sleep(args.interval_seconds)
+
+
+if __name__ == "__main__":       # pragma: no cover
+    sys.exit(main())

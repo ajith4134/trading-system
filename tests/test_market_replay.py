@@ -132,6 +132,20 @@ def test_a_correction_to_an_already_emitted_bar_is_counted_not_re_emitted(
     assert replay.corrections_after_emission == 1
 
 
+def test_re_reading_the_same_row_is_not_a_correction(tmp_path):
+    """Found by running it, 2026-08-15: poll 2 against the live store reported
+    3,494 corrections where nothing had been corrected. Every poll re-reads every
+    row it has already fed, so holding only the keys made a re-read and a genuine
+    correction indistinguishable — and the count that was meant to expose a real
+    problem became noise proportional to uptime."""
+    _write(tmp_path, [_bar(100, 200), _bar(160, 200)])
+    replay = a_replay(tmp_path)
+    replay.poll(200)
+    for _ in range(5):
+        assert replay.poll(300) == ()
+    assert replay.corrections_after_emission == 0
+
+
 def test_a_correction_that_lands_before_the_bar_was_ever_emitted_is_the_one_used(
         tmp_path):
     _write(tmp_path, [_bar(100, 200, close=100.0)], "snap1")

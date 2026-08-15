@@ -100,13 +100,56 @@ def test_paper_not_running_when_no_journal(tmp_path):
     assert "no journal directory" in evidence
 
 
-def test_paper_running_when_journal_present(tmp_path):
+def _journal_with_heartbeat(tmp_path, written_at_ns, **overrides):
+    from paper.forward_journal import ForwardJournal
     journal_dir = tmp_path / "paper" / "forward"
     journal_dir.mkdir(parents=True)
-    (journal_dir / "2026-08-09.ndjson").write_text("{}\n", encoding="utf-8")
+    fields = dict(strategy="plumbing-momentum", makes_edge_claim=False,
+                  events_fed=12, orders_submitted=3, orders_rejected=0, fills=1,
+                  open_orders=2, last_event_time_ns=99, detail="")
+    fields.update(overrides)
+    ForwardJournal(journal_dir).record_heartbeat(now_ns=written_at_ns, **fields)
+    return journal_dir
+
+
+def test_a_supervisor_restart_log_is_not_a_journal(tmp_path):
+    """The regression this probe was rewritten for. It used to glob *.ndjson and
+    would report RUNNING off `restarts.ndjson` — the supervisor's own log,
+    written once at startup and never again. A tile that goes green because a
+    process started once, and stays green after it dies, is the exact Rule 8
+    failure this board exists to prevent."""
+    journal_dir = tmp_path / "paper" / "forward"
+    journal_dir.mkdir(parents=True)
+    (journal_dir / "restarts.ndjson").write_text(
+        '{"event": "supervisor_started"}\n', encoding="utf-8")
     running, evidence = probe_forward_paper(tmp_path)
+    assert not running
+    assert "heartbeat" in evidence
+
+
+def test_paper_running_when_the_heartbeat_is_fresh(tmp_path):
+    now = 1_000_000_000_000_000_000
+    _journal_with_heartbeat(tmp_path, now - 10_000_000_000)
+    running, evidence = probe_forward_paper(tmp_path, now_ns=now)
     assert running
-    assert "2026-08-09.ndjson" in evidence
+    assert "plumbing-momentum" in evidence
+
+
+def test_a_running_engine_that_claims_no_edge_says_so_on_the_tile(tmp_path):
+    now = 1_000_000_000_000_000_000
+    _journal_with_heartbeat(tmp_path, now - 10_000_000_000)
+    _, evidence = probe_forward_paper(tmp_path, now_ns=now)
+    assert "NO edge claim" in evidence
+
+
+def test_an_engine_that_died_reads_stale_not_running(tmp_path):
+    """The failure that motivated all of this: the box was off 2026-08-10 to
+    2026-08-15 and the board went on looking healthy the whole time."""
+    now = 1_000_000_000_000_000_000
+    _journal_with_heartbeat(tmp_path, now - 5 * 86_400 * 1_000_000_000)
+    running, evidence = probe_forward_paper(tmp_path, now_ns=now)
+    assert not running
+    assert "STALE" in evidence and "120.0h" in evidence
 
 
 # --- the page -------------------------------------------------------------

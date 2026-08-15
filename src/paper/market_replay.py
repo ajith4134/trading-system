@@ -81,7 +81,12 @@ class MarketReplay:
                 "cannot be un-seen — its only value is never having been read")
         self._reader = reader
         self._symbols = list(symbols) if symbols is not None else None
-        self._emitted: set[tuple[str, str, int]] = set()
+        # key -> the availability time the key was emitted at. The VALUE is what
+        # separates "this poll re-read the same row" from "a corrected version of
+        # a bar we already traded on". Holding only the keys made every re-read
+        # look like a correction: measured on the live store 2026-08-15, poll 2
+        # reported 3,494 corrections where nothing had been corrected at all.
+        self._emitted: dict[tuple[str, str, int], int] = {}
 
         self.events_emitted = 0
         self.corrections_after_emission = 0
@@ -104,11 +109,15 @@ class MarketReplay:
         for row in ordered.itertuples(index=False):
             key = (getattr(row, SYMBOL), getattr(row, VENUE),
                    int(getattr(row, EVENT_TIME)))
+            available_at = int(getattr(row, AVAILABILITY_TIME))
             if key in self._emitted:
-                # The reader already resolved corrections to the newest visible
-                # version, so seeing this key again at a later clock means a
-                # correction arrived after we traded on the original.
-                self.corrections_after_emission += 1
+                # Seen before. The reader resolves corrections to the newest
+                # visible version, so a LATER availability time means a genuine
+                # correction arrived after we traded on the original; an equal one
+                # is simply this poll re-reading a row it already fed, which is
+                # every row of every poll and is not news.
+                if available_at > self._emitted[key]:
+                    self.corrections_after_emission += 1
                 continue
 
             close, high, low = (_decimal(row.close), _decimal(row.high),
@@ -119,15 +128,15 @@ class MarketReplay:
             # its trade stream and 746 early bars ate one into `low` via min(),
             # every one otherwise looking normal.
             if close <= 0 or high <= 0 or low <= 0:
-                self._emitted.add(key)
+                self._emitted[key] = available_at
                 self.refused_invalid_price += 1
                 continue
             if volume <= 0:
-                self._emitted.add(key)
+                self._emitted[key] = available_at
                 self.refused_no_volume += 1
                 continue
 
-            self._emitted.add(key)
+            self._emitted[key] = available_at
             self.events_emitted += 1
             produced.append(TapeEvent(
                 symbol=key[0], venue=key[1], event_time_ns=key[2],

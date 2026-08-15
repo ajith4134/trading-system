@@ -469,7 +469,7 @@
   "paper.market_replay": {
    "learning": "n/a: it feeds the tape. Nothing is fitted, and a feed that adapted to what it fed would be the leak the clock gate exists to prevent",
    "reasoning": "pass: replay and forward are the same method called with a different clock rather than two loops that drift apart, and it refuses a reader built without a holdout custodian instead of trusting the caller to have passed one - the holdout's only value is never having been read, and that cannot be checked after the fact",
-   "depth": "fail: cannot yet change what the system does, because no script runs it. Clears when `scripts/paper_supervisor.sh` makes the paper path a reachability root",
+   "depth": "pass: it refuses an unguarded reader at construction, refuses a non-positive price on sight, and counts corrections that arrive after their bar was already traded on instead of re-feeding them. Reachable since scripts/paper_supervisor.sh",
    "evidence": [
     "tests/test_market_replay.py",
     "src/paper/market_replay.py"
@@ -478,7 +478,7 @@
   "paper.paper_broker": {
    "learning": "n/a: a venue model, not a learner. The one estimated quantity it uses - participation - is `paper.participation_calibration`'s to measure, and is carried onto every fill with its calibrated flag rather than absorbed",
    "reasoning": "pass: it returns refusals instead of raising them, because `OrderIntentWal` writes outcome=unknown before calling a transport and leaves it there when the transport raises - and unknown is the specific claim that the venue may be holding the order, which for a local refusal is false and would block every later startup reconciliation. It also refuses market and reduce_only orders rather than approximating them",
-   "depth": "fail: cannot yet change what the system does, because no script runs it. Clears when `scripts/paper_supervisor.sh` makes the paper path a reachability root",
+   "depth": "pass: a refusal comes back as a rejection rather than as an exception, so the WAL records a known outcome instead of leaving outcome=unknown on the startup work list forever - the behaviour under error IS the design here. AccountingDiverged raises rather than re-syncing the two books. Reachable since scripts/paper_supervisor.sh",
    "evidence": [
     "tests/test_paper_broker.py",
     "src/paper/paper_broker.py"
@@ -487,7 +487,7 @@
   "paper.position_book": {
    "learning": "n/a: it records what was filled. Nothing here is fitted, and a position model that inferred anything would be the wrong kind of clever",
    "reasoning": "pass: it keeps one book per accounting rather than one book holding both, because the average of an optimistic and a pessimistic fill is true of neither, and it omits flat positions because presence in the reconciler's input is a claim that something is held",
-   "depth": "fail: cannot yet change what the system does. `paper.paper_broker` now drives it, but the broker is itself unreachable - no script runs the paper engine, so the whole chain is dead code that agrees with itself. Clears when `scripts/paper_supervisor.sh` makes the path a root",
+   "depth": "pass: it changes what the system does when something is wrong - a flat position is omitted rather than reported at zero, which is what stops recover_and_reconcile refusing every startup after the first closed round trip, and a venue with no declared fee schedule is refused rather than priced at a default. Reachable since scripts/paper_supervisor.sh",
    "evidence": [
     "tests/test_position_book.py",
     "src/paper/position_book.py"
@@ -806,6 +806,25 @@
    "evidence": [
     "tests/test_realized_volatility.py",
     "src/features/realized_volatility.py"
+   ]
+  },
+  "paper.forward_journal": {
+   "learning": "n/a: it records what happened and judges none of it",
+   "reasoning": "pass: it writes a heartbeat on every poll rather than only when something happened, because an engine running and finding nothing produces exactly the same fills as an engine that died three days ago - and this box demonstrated that failure between 2026-08-10 and 2026-08-15. makes_edge_claim rides on every fill ROW rather than a header, because a header is the first thing separated from its data",
+   "depth": "pass: an unparseable or incomplete heartbeat reads as absent rather than being filled in with defaults, so the wall says NOT MEASURED instead of something green",
+   "evidence": [
+    "tests/test_forward_engine.py",
+    "src/paper/forward_journal.py"
+   ]
+  },
+  "paper.forward_engine": {
+   "learning": "n/a: the engine learns nothing and the one signal it can run is explicitly a plumbing signal. makes_edge_claim is False and is written onto every fill",
+   "reasoning": "pass: --strategy and --participation both have NO default. An engine that ran the plumbing signal implicitly would accumulate a P&L series that later reads as a result, and an invented participation rate is the cheapest way to manufacture edge. It also applies fills before the strategy sees a print, so an order cannot fill on the very event that created it",
+   "depth": "pass: it refuses to run under a kill before the journal is touched, so a killed run leaves no record implying it traded - tested",
+   "evidence": [
+    "tests/test_forward_engine.py",
+    "src/paper/forward_engine.py",
+    "scripts/paper_supervisor.sh"
    ]
   }
  }

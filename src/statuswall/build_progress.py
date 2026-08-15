@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,15 +130,54 @@ def count_unresolved_ledger_rows(ledger_root: Path) -> int | None:
     return unresolved
 
 
-def probe_forward_paper(capture_root: Path) -> tuple[bool, str]:
-    """Is forward paper trading journalling? (answer, evidence)."""
+# How old a heartbeat may be before the engine is reported STALE rather than
+# running. The supervisor's default poll is 60s, so five minutes is four missed
+# polls - long enough not to flap on a slow universe-wide read, short enough that
+# a dead engine is visible within one coffee.
+_HEARTBEAT_STALE_NS = 300 * 1_000_000_000
+
+
+def probe_forward_paper(capture_root: Path,
+                        now_ns: int | None = None) -> tuple[bool, str]:
+    """Is forward paper trading actually running? (answer, evidence).
+
+    Graded on the engine's own heartbeat and its AGE, never on the presence of a
+    file. The previous version of this probe globbed `*.ndjson` in the journal
+    directory and would have reported RUNNING off `restarts.ndjson` — the
+    supervisor's own restart log, written once at startup and never again. A tile
+    that goes green because a process started once, and stays green after it
+    dies, is the exact Rule 8 failure this board was built to prevent, sitting
+    inside the board.
+
+    Three distinguishable states, because a board that cannot tell them apart is
+    worse than no board:
+
+        never ran      -> NOT RUNNING, and says no heartbeat was ever written
+        ran, then died -> NOT RUNNING, and says how long ago it last spoke
+        running        -> RUNNING, with the fill count and the strategy named
+    """
+    from paper.forward_journal import count_fills, read_heartbeat
+
     journal_dir = capture_root / "paper" / "forward"
     if not journal_dir.is_dir():
         return False, f"no journal directory at {journal_dir}"
-    journals = sorted(journal_dir.glob("*.ndjson"))
-    if not journals:
-        return False, f"{journal_dir} exists but holds no journal"
-    return True, f"{len(journals)} journal file(s), latest {journals[-1].name}"
+
+    beat = read_heartbeat(journal_dir)
+    if beat is None:
+        return False, (f"{journal_dir} exists but holds no readable heartbeat — "
+                       f"the engine has never completed a poll")
+
+    now_ns = time.time_ns() if now_ns is None else now_ns
+    age_s = beat.age_ns(now_ns) / 1_000_000_000
+    fills = count_fills(journal_dir)
+    claim = ("claims edge" if beat.makes_edge_claim
+             else "makes NO edge claim")
+    if age_s > _HEARTBEAT_STALE_NS / 1_000_000_000:
+        return False, (f"STALE — last heartbeat {age_s / 3600:.1f}h ago, "
+                       f"strategy {beat.strategy!r}. The engine is not running")
+    return True, (f"heartbeat {age_s:.0f}s ago · strategy {beat.strategy!r} "
+                  f"({claim}) · {beat.events_fed} event(s) fed, "
+                  f"{beat.orders_submitted} submitted, {fills} fill(s) journalled")
 
 
 _PAGE_STYLE = """

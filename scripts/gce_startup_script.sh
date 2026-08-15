@@ -121,5 +121,13 @@ start_as_user "bars_supervisor.sh" \
 # record "nothing captured" as this boot's first verdict.
 start_as_user "health_supervisor.sh" \
   "cd ${REPO} && nohup scripts/health_supervisor.sh"
+# The forward paper engine. Last, and after bars on purpose: it reads bars
+# through the clock-gated reader and starting it first would prime an empty
+# archive. The strategy and the participation rate are BOTH named here and both
+# have no default in the engine - the only signal that exists makes no edge
+# claim, and an invented participation rate is the cheapest way to manufacture
+# edge. When Phase C produces a model, this line is where it is named.
+start_as_user "paper_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/paper_supervisor.sh plumbing-momentum 0.1 60"
 
 log "startup-script finished"

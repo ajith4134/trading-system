@@ -21,7 +21,6 @@
 
 # execution.state_recovery - reconciliation against exchange truth on restart.
 # Nothing runs it at recorder start. Phase 2, named in DECISIONS.md §13.
-RX-005
 
 # VX-001 and VX-002 cleared 2026-08-09: the §5a.4 breadth gate is the Trial
 # Registry's first caller.
