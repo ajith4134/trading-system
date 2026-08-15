@@ -1284,3 +1284,32 @@ def test_the_baseline_tile_goes_failing_if_the_gate_ever_starts_passing(tmp_path
     result = probe_naive_baseline_gate(_facts(capture_root=tmp_path))
     assert result.state == FAILING
     assert "become optional" in result.detail
+
+
+# --------------------------------------------------------------------------
+# FE-008 — the tile runs the labeller instead of trusting it
+# --------------------------------------------------------------------------
+
+def test_the_labelling_tile_is_ok_because_both_properties_still_hold(tmp_path):
+    from statuswall.evidence import OK, probe_triple_barrier_labelling
+    result = probe_triple_barrier_labelling(_facts(capture_root=tmp_path))
+    assert result.state == OK
+
+
+def test_the_labelling_tile_catches_a_regression_to_close_only_labelling(
+        tmp_path, monkeypatch):
+    """The specific regression worth catching: labelling on closes calls a
+    stopped-out trade a winner, and every backtest downstream improves."""
+    import statuswall.evidence as ev
+    from features.triple_barrier import BarrierTouch
+    from statuswall.evidence import FAILING, probe_triple_barrier_labelling
+
+    def close_only(*args, **kwargs):
+        return [BarrierTouch(event_index=0, label=1, reason="profit_take",
+                             touched_at_index=1, entry_price=100.0,
+                             upper_barrier=102.0, lower_barrier=98.0,
+                             is_ambiguous=False)]
+    monkeypatch.setattr("features.triple_barrier.label_triple_barrier", close_only)
+    result = probe_triple_barrier_labelling(_facts(capture_root=tmp_path))
+    assert result.state == FAILING
+    assert "close-only" in result.detail

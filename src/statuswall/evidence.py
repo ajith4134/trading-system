@@ -1644,6 +1644,66 @@ def probe_participation_calibration(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
+def probe_triple_barrier_labelling(facts: SystemFacts) -> ProbeResult:
+    """Does the labeller still refuse the two things it exists to refuse?
+
+    Exercised on every board pass rather than asserted, for the reason
+    `probe_naive_baseline_gate` is: a labelling rule is a behaviour, and the only
+    honest way to report a behaviour is to run it.
+
+    Two properties, both of which fail in the flattering direction if they
+    regress:
+
+      * a bar that closes UP having traded through the stop must label -1. The
+        naive close-only version calls it a win, which is the exact defect
+        `finml-feature-engineering.md` names triple-barrier labelling as fixing.
+      * an event whose vertical barrier runs past the data must be UNRESOLVED,
+        never 0. Zeroing it fills the newest stretch of every dataset - the part
+        closest to live - with an outcome nobody observed.
+
+    This is also the module's only caller today. The training consumer is MD-010
+    and is not built, and that is stated in the axis verdict rather than dressed
+    up: what runs here is the control being checked, not a model being trained.
+    """
+    from features.triple_barrier import Bars, label_triple_barrier
+
+    proof = "src/features/triple_barrier.py"
+    try:
+        through_stop = label_triple_barrier(
+            Bars(high=[100.0, 103.0], low=[100.0, 97.0], close=[100.0, 102.5]),
+            event_indices=[0], volatility=[0.01], profit_take_multiple=2.0,
+            stop_loss_multiple=2.0, max_holding_bars=5)[0]
+        ran_out = label_triple_barrier(
+            Bars(high=[100.0] * 4, low=[100.0] * 4, close=[100.0] * 4),
+            event_indices=[2], volatility=[0.10], profit_take_multiple=2.0,
+            stop_loss_multiple=2.0, max_holding_bars=5)[0]
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the labeller raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if through_stop.label != -1:
+        broken.append(
+            f"a bar closing up through the stop labelled {through_stop.label} "
+            f"instead of -1 - close-only labelling has come back, and it calls "
+            f"stopped-out trades winners")
+    if ran_out.label is not None:
+        broken.append(
+            f"an event with no data past its vertical barrier labelled "
+            f"{ran_out.label} instead of being left unresolved - the newest "
+            f"stretch of every dataset is now filled with an unobserved outcome")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+    return ProbeResult(
+        OK,
+        "path-dependent and honest about the tail: a bar closing up through the "
+        "stop labels -1, and an event whose window runs past the data stays "
+        "unresolved rather than 0. Exercised on this pass, not inferred",
+        proof)
+
+
 def probe_naive_baseline_gate(facts: SystemFacts) -> ProbeResult:
     """Does the mandatory naive-baseline gate actually refuse?
 
@@ -1733,6 +1793,7 @@ def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
 PROBES = {
+    "triple barrier labelling": probe_triple_barrier_labelling,
     "linear naive baseline mandatory": probe_naive_baseline_gate,
     "outage detection the system s record of its own absence":
         probe_outage_detection,

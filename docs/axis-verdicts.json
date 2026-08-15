@@ -855,6 +855,16 @@
     "src/models/naive_baseline.py",
     "src/validation/promotion_gate.py"
    ]
+  },
+  "features.triple_barrier": {
+   "learning": "n/a: it labels. Nothing is fitted here, and the barrier widths are hyperparameters that FE-008 requires to go through the Trial Registry rather than be tuned in place - a width adjusted until the labels look good is a search, and an untracked search is what the registry's N exists to count",
+   "reasoning": "pass: it labels on the PATH rather than the endpoints, which is the defect the method exists to repair - a bar closing up having traded through the stop is a stop, where close-only labelling calls it a win. When one bar spans both barriers OHLC cannot say which came first, so the stop takes it and is_ambiguous is set: awarding the profit-take there is a free win drawn from missing information, on precisely the most volatile bars in the sample",
+   "depth": "pass: an event whose vertical barrier runs past the data is UNRESOLVED, never 0 - zeroing it would fill the newest stretch of every dataset, the part closest to live, with an outcome nobody observed. A volatility series aligned to bars instead of events refuses rather than being broadcast, and a bar whose low exceeds its high refuses because this store has served 746 malformed bars before. Reachable today ONLY through the status-wall probe that exercises these properties on every pass; the training consumer is MD-010 and does not exist yet, which is stated rather than dressed up",
+   "evidence": [
+    "tests/test_triple_barrier.py",
+    "src/features/triple_barrier.py",
+    "src/statuswall/evidence.py"
+   ]
   }
  }
 }
