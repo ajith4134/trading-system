@@ -20,11 +20,30 @@
 # recorder: one slow job inside a loop starves everything else in it.
 #
 # The bars build is idempotent and refuses a rebuild by snapshot id BEFORE
-# parsing anything, so running it more often than a day changes costs little -
-# but nothing here needs to run hourly either. Bars build YESTERDAY only:
-# store.cli reads whole closed hours, and the hour a writer still holds is a
-# partial zstd frame it refuses. Today's bars appear tomorrow, and that lag is
-# real.
+# parsing anything, so running it more often than a day changes costs little.
+#
+# TWO PASSES SINCE 2026-08-15, and the second one is why paper trading can tick
+# at all. This comment used to say "bars build YESTERDAY only... today's bars
+# appear tomorrow, and that lag is real", and treated that as a property of the
+# store. It is not: it was a property of THIS FILE. store.cli already skips an
+# hour a writer still holds, in the day's own folder as well as the lookahead,
+# and names every skipped hour in the snapshot id - so a later pass, with more
+# hours closed, is a different snapshot that appends the newly readable bars
+# rather than a refused duplicate. Verified by running it: building 2026-08-15
+# at 19:02 produced 88 BTCUSDT bars and skipped the live hour 19 by name, and
+# the forward paper engine fed those 88 bars on its next poll and produced 43
+# fills. Before that pass existed the engine had run 63 polls and traded nothing.
+#
+#   DAILY    yesterday, every venue, --symbols ALL. The complete build.
+#   INTRADAY today, every venue, CORE SYMBOLS ONLY. What forward trading eats.
+#
+# The intraday pass is bounded to the core symbols on purpose. It rebuilds the
+# whole of today from hour 0 each time - the day partition is written whole - so
+# its cost grows through the day, and a universe-wide version of it would be
+# quadratic in a way that eats the hour it runs in. The paper execution design
+# already tiers exactly this way: broad discovery on the daily build, finalists
+# on BTC/ETH/SOL. The core lists are per venue because the venues name the same
+# instrument differently, which is the same reason --symbols ALL exists below.
 #
 # Usage: bars_supervisor.sh [interval-seconds]
 set -uo pipefail
@@ -45,6 +64,20 @@ RUNS="$STATE_DIR/runs.ndjson"
 # for funding and bybit-liq records liquidations, so asking either for bars
 # would log "no-capture" forever about a venue that was never going to have any.
 VENUES="binance binance-spot hyperliquid coinbase"
+
+# Core symbols per venue, for the intraday pass. Read off the archive on
+# 2026-08-15 rather than assumed: binance perp and spot use BTCUSDT, hyperliquid
+# uses bare BTC, coinbase uses BTC-USD. A single list would silently build three
+# venues and miss the other one, which is exactly how 99.6% of the tape went
+# unbuilt in August.
+core_symbols_for() {
+  case "$1" in
+    binance|binance-spot) echo "BTCUSDT,ETHUSDT,SOLUSDT" ;;
+    hyperliquid)          echo "BTC,ETH,SOL" ;;
+    coinbase)             echo "BTC-USD,ETH-USD,SOL-USD" ;;
+    *)                    echo "" ;;
+  esac
+}
 
 mkdir -p "$STATE_DIR"
 
@@ -103,8 +136,38 @@ while true; do
     symbols=$(printf '%s' "$output" | grep -oE '^[0-9]+ symbol\(s\) captured' \
       | grep -oE '^[0-9]+' | head -1)
     printf '%s\n' "$output" >> "$LOG"
-    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","symbols":%s,"bars":%s}}\n' \
+    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","pass":"daily","symbols":%s,"bars":%s}}\n' \
       "$started" "$yesterday" "$venue" "$yesterday" "$status" "${symbols:-null}" "${bars:-null}" >> "$RUNS"
+  done
+
+  # The intraday pass. Today's CLOSED hours, core symbols only. Each run is a
+  # new snapshot because the set of still-live hours it skipped is part of the
+  # id, so this appends the hour that just closed instead of being refused as a
+  # duplicate - and the newly built bars carry a later availability time, which
+  # is what the clock-gated reader's correction resolution keys on.
+  #
+  # already-built is the expected result when no hour has closed since the last
+  # pass, and it is recorded under its own name rather than as a failure, for
+  # the same reason the daily pass does it: a genuine failure must not arrive in
+  # a stream of expected ones.
+  today=$(date -u +%F)
+  for venue in $VENUES; do
+    core=$(core_symbols_for "$venue")
+    [ -z "$core" ] && continue
+    output=$(build_bars "$venue" "$today" "$core")
+    code=$?
+    case $code in
+      0) status=built
+         printf '%s' "$output" | grep -q 'nothing to build' && status=no-capture ;;
+      "$EXIT_ALREADY_BUILT") status=already-built ;;
+      *) status=failed ;;
+    esac
+    bars=$(printf '%s' "$output" | grep -oE '> [0-9]+ bars' | grep -oE '[0-9]+' | head -1)
+    symbols=$(printf '%s' "$output" | grep -oE '^[0-9]+ symbol\(s\) captured' \
+      | grep -oE '^[0-9]+' | head -1)
+    printf '%s\n' "$output" >> "$LOG"
+    printf '{"ts":"%s","day":"%s","result":{"dataset":"bars","venue":"%s","date":"%s","status":"%s","pass":"intraday","symbols":%s,"bars":%s}}\n' \
+      "$started" "$today" "$venue" "$today" "$status" "${symbols:-null}" "${bars:-null}" >> "$RUNS"
   done
 
   sleep "$INTERVAL"
