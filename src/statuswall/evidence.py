@@ -1526,6 +1526,172 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_volatility_regime(facts: SystemFacts) -> ProbeResult:
+    from features.volatility_regime import compute_volatility_regime
+    return _probe_computed_feature(
+        facts, module="features.volatility_regime",
+        entry_point="compute_volatility_regime",
+        compute=compute_volatility_regime,
+        unit="(venue, symbol) volatility deciles")
+
+
+def probe_calendar_effects(facts: SystemFacts) -> ProbeResult:
+    """Is there a funding-hour effect on anything, and is it distinguishable?
+
+    Like `probe_har_rv`, this one asks the harder question rather than routing
+    through `_probe_computed_feature`, and for the same reason: the feature's
+    claim is EMPIRICAL - that flow around settlement is predictably different -
+    and returning rows does not test a claim like that. A tile going green on
+    row count would be green on a calendar dummy that means nothing.
+
+    A row whose p-value has not cleared its own schedule's floor is reported as
+    an effect that is not distinguishable from alignment, which is the honest
+    reading and the common one.
+    """
+    from features.calendar_effects import compute_calendar_effects
+
+    module, entry_point = "features.calendar_effects", "compute_calendar_effects"
+    proof = f"{module}.{entry_point} run against the live store"
+    try:
+        table = compute_calendar_effects(facts.capture_root / "store",
+                                         int(time.time() * 1e9))
+    except Exception as error:                     # noqa: BLE001 - reported, not hidden
+        return ProbeResult(NOT_MEASURED, f"{entry_point} raised: {error}", proof)
+
+    refused = {reason: count for reason, count in table.refused.items() if count}
+    refusal_note = ", ".join(f"{reason} {count}" for reason, count in
+                             sorted(refused.items(), key=lambda kv: -kv[1]))
+    rows = table.rows
+    if rows.empty and not refused:
+        return ProbeResult(NOT_MEASURED,
+                           f"no input reached {module} at this clock", proof)
+    if rows.empty:
+        biggest = max(refused.items(), key=lambda kv: kv[1])
+        return ProbeResult(
+            DEGRADED,
+            f"measured nothing: every key refused ({refusal_note}). Dominant "
+            f"reason {biggest[0]} on {biggest[1]}", proof)
+
+    # A p-value at the floor is the strongest this test can say; one above it is
+    # an effect the alignment shift reproduces, which is no effect at all.
+    significant = rows[rows["p_value"] <= rows["min_achievable_p_value"]]
+    detail = f"{len(rows)} (venue, symbol) contrast(s) measured"
+    if refused:
+        detail += f"; refused {refusal_note}"
+
+    if significant.empty:
+        return ProbeResult(
+            PARTIAL,
+            f"{detail}. NO funding-hour effect is distinguishable from a shifted "
+            f"alignment on any of them - which is a result, and the common one. "
+            f"The calendar position is emitted regardless; the claim that it "
+            f"matters is not supported here", proof)
+
+    loudest = significant.loc[
+        (significant["funding_hour_variance_ratio"] - 1.0).abs().idxmax()]
+    consumers = _consumers_of(facts.repo_root, module, entry_point)
+    summary = (f"{detail}; {len(significant)} show a funding-hour effect at "
+               f"their schedule's resolution floor, loudest "
+               f"{loudest['venue']}/{loudest['symbol']} at "
+               f"{loudest['funding_hour_variance_ratio']:.2f}x variance "
+               f"(p={loudest['p_value']:.3f}, floor "
+               f"{loudest['min_achievable_p_value']:.3f})")
+    if not consumers:
+        return ProbeResult(
+            PARTIAL,
+            f"{summary}. Nothing consumes it - no module outside {module} calls "
+            f"{entry_point}, so a real effect cannot yet change what the system "
+            f"does", proof)
+    return ProbeResult(OK, f"{summary}; read by {', '.join(consumers)}", proof)
+
+
+def probe_funding_basis(facts: SystemFacts) -> ProbeResult:
+    from features.funding_basis import compute_funding_basis
+    return _probe_computed_feature(
+        facts, module="features.funding_basis",
+        entry_point="compute_funding_basis", compute=compute_funding_basis,
+        unit="(venue, symbol) funding/basis feature rows")
+
+
+def probe_har_rv(facts: SystemFacts) -> ProbeResult:
+    """Did the cascade beat the random walk on this pass, on anything?
+
+    Not routed through `_probe_computed_feature` like its five phase-B siblings,
+    and the difference is the point. Those five compute a value; there is no such
+    thing as a wrong microprice on the board's terms, only a missing one. HAR-RV
+    computes a FORECAST, and a forecast has a second way to be worthless that
+    producing rows does not rule out: it can be beaten by "tomorrow looks like
+    today". A tile reading OK because the module returned rows would be green on
+    a model that lost to the cheapest benchmark in the literature.
+
+    So a fitted symbol that did not beat the random walk holds the tile at
+    PARTIAL and says so with its p-value. That is not a failure - the crypto HAR
+    evidence `finml-feature-engineering.md` cites reports no universal winner, so
+    losing on a given symbol is a result. It is simply not a reason for green.
+
+    `reproduced_lag_one_trap` is surfaced separately and is the worse finding of
+    the two: it means the coefficients collapsed onto the benchmark, so the
+    cascade is not being outperformed, it is being imitated.
+    """
+    from features.har_rv import compute_har_rv
+
+    module, entry_point = "features.har_rv", "compute_har_rv"
+    proof = f"{module}.{entry_point} run against the live store"
+    try:
+        table = compute_har_rv(facts.capture_root / "store", int(time.time() * 1e9))
+    except Exception as error:                     # noqa: BLE001 - reported, not hidden
+        return ProbeResult(NOT_MEASURED, f"{entry_point} raised: {error}", proof)
+
+    refused = {reason: count for reason, count in table.refused.items() if count}
+    refusal_note = ", ".join(f"{reason} {count}" for reason, count in
+                             sorted(refused.items(), key=lambda kv: -kv[1]))
+    rows = table.rows
+    if rows.empty and not refused:
+        return ProbeResult(NOT_MEASURED,
+                           f"no input reached {module} at this clock", proof)
+    if rows.empty:
+        biggest = max(refused.items(), key=lambda kv: kv[1])
+        return ProbeResult(
+            DEGRADED,
+            f"fitted nothing: every candidate refused ({refusal_note}). "
+            f"Dominant reason {biggest[0]} on {biggest[1]} - the cascade needs a "
+            f"day of unbroken bars behind its first observation, and the tape is "
+            f"not offering one", proof)
+
+    beaten = rows[rows["beats_naive"].astype(bool)]
+    copied = int(rows["reproduced_lag_one_trap"].astype(bool).sum())
+    detail = f"{len(rows)} (venue, symbol) fit(s) walk-forward"
+    if refused:
+        detail += f"; refused {refusal_note}"
+
+    if beaten.empty:
+        note = (f", {copied} of which reproduced the lag-one trap"
+                if copied else "")
+        best = rows.loc[rows["p_value"].idxmin()]
+        return ProbeResult(
+            PARTIAL,
+            f"{detail}. NONE beat the random walk on variance{note} - closest "
+            f"was {best['venue']}/{best['symbol']} at p={best['p_value']:.3f}, "
+            f"loss {best['loss_reduction_pct']:+.1f}% against the benchmark. The "
+            f"model runs and does not yet earn its place", proof)
+
+    winners = ", ".join(f"{r.venue}/{r.symbol} {r.loss_reduction_pct:+.1f}% "
+                        f"p={r.p_value:.3f}"
+                        for r in beaten.itertuples(index=False))
+    consumers = _consumers_of(facts.repo_root, module, entry_point)
+    if not consumers:
+        return ProbeResult(
+            PARTIAL,
+            f"{detail}; beat the random walk on {len(beaten)} of them "
+            f"({winners}). Nothing consumes it - no module outside {module} "
+            f"calls {entry_point}, so a forecast that works cannot yet change "
+            f"what the system does", proof)
+    return ProbeResult(
+        OK,
+        f"{detail}; beat the random walk on {len(beaten)} of them ({winners}); "
+        f"read by {', '.join(consumers)}", proof)
+
+
 def probe_status_wall(facts: SystemFacts) -> ProbeResult:
     """This board, reporting on itself. It exists, so it says so."""
     return ProbeResult(
@@ -1909,6 +2075,14 @@ PROBES = {
     "absorption detection delta vs price hold": probe_absorption,
     "kyle s lambda": probe_kyle_lambda,
     "fractional differentiation": probe_fractional_differentiation,
+    "funding basis spread features": probe_funding_basis,
+    "volatility regime decile": probe_volatility_regime,
+    # Also graded on the empirical claim rather than on row count - a calendar
+    # dummy always returns rows. See `probe_calendar_effects`.
+    "time of day day of week funding hour effects": probe_calendar_effects,
+    # Graded on whether it beats the random walk, not on whether it returns
+    # rows - see `probe_har_rv` for why a forecast needs the harder question.
+    "har rv": probe_har_rv,
 }
 
 

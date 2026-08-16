@@ -29,7 +29,14 @@ _DATASET = "funding"
 # Hours past midnight UTC at which each venue settles funding. Encoded as a
 # schedule rather than an interval because Binance's settlements are at fixed
 # wall-clock hours, not every-8-hours-from-whenever-you-opened.
-_SETTLEMENT_HOURS = {
+#
+# Public because `features.funding_basis` annualises a funding rate by the
+# number of settlements a year actually holds, and that count has to come from
+# the same schedule this module charges against. A private copy there would put
+# the eightfold Binance/Hyperliquid asymmetry in two places, and the copy that
+# drifts is the one nobody re-derived - which is the exact defect the docstring
+# above says this module exists to prevent.
+SETTLEMENT_HOURS = {
     "binance": (0, 8, 16),
     "binance-spot": (),          # spot has no funding at all
     "hyperliquid": tuple(range(24)),
@@ -52,14 +59,14 @@ def settlements_between(venue: str, held_from_ns: int, held_to_ns: int) -> list[
     when the settlement landed and pays it. Exclusive at the open for the mirror
     reason: opening exactly at 08:00:00 is opening after that settlement.
     """
-    if venue not in _SETTLEMENT_HOURS:
+    if venue not in SETTLEMENT_HOURS:
         raise NoFundingAvailable(
             f"no funding schedule known for venue {venue!r}. Refusing rather "
             f"than assuming a default - the schedules genuinely differ "
             f"(Binance 8-hourly on mark, Hyperliquid hourly on oracle) and a "
             f"wrong one misprices carry in the flattering direction")
 
-    hours = _SETTLEMENT_HOURS[venue]
+    hours = SETTLEMENT_HOURS[venue]
     if not hours or held_to_ns <= held_from_ns:
         return []
 

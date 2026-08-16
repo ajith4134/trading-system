@@ -170,12 +170,17 @@ class RealizedVolatilityTable:
     refused: dict[str, int]
 
 
-def _decimal_close(value) -> Decimal | None:
+def decimal_close(value) -> Decimal | None:
     """The row's close as a Decimal, or None if it cannot be trusted as one.
 
     `str(value)` before `Decimal(...)`, matching `spot_perp_basis` and
     `term_structure`: constructing straight from a float would import that
     float's own binary rounding as if it were a digit of the stored price.
+
+    Public because `features.har_rv` reads the same bars with the same defect
+    history and must parse them the same way. A private copy there would be a
+    second place for the placeholder-price rule to live, and the copy that drifts
+    is always the one nobody re-derived.
     """
     if value is None:
         return None
@@ -220,7 +225,7 @@ def compute_realized_volatility(store_root: Path, as_of_ns: int,
             closes: list[Decimal] = []
             refusal_reason = None
             for raw_close in window["close"]:
-                close = _decimal_close(raw_close)
+                close = decimal_close(raw_close)
                 if close is None:
                     refusal_reason = "unparseable_close"
                     break
