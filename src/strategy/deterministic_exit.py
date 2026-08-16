@@ -34,6 +34,17 @@ every trade, so the order is declared rather than emergent:
 4. **Vertical barrier** — time. Last because it is the only rule that fires on
    nothing having happened.
 
+## A gapped path is labelled, because the rail it reports may not be the first
+
+The path a position is judged on can have holes: the store builds bars an hour at
+a time and skips the hour a live writer still holds, and the archive carries a
+141-hour outage. Walked as though continuous, a policy reports the first rail it
+**observed** being touched, which is not necessarily the first one that **was**.
+
+There is nothing to correct that with — the bars in the hole do not exist — so
+`path_has_gap` rides the record instead. An exit derived from a gapped path is a
+real exit at a real level; it is just not a claim about which rail came first.
+
 ## Ambiguity inside a bar is resolved AGAINST the position, always
 
 A bar whose high touched the target and whose low touched the stop contains both
@@ -128,12 +139,43 @@ class ExitPolicy:
     max_holding_bars: int = 480          # the carry family's own label horizon
 
 
+class CorruptBar(ValueError):
+    """A bar that cannot be traded through.
+
+    Refused at construction, so a corrupt bar cannot enter a path at all. Found
+    2026-08-16 by running the policy over the real BTCUSDT archive: the store
+    holds bars whose close is **0.0** - the documented placeholder-price defect,
+    where Binance emits frames with price "0" and 746 early bars ate one into
+    `low` via `min()`. Walked blindly, such a bar takes out the hard stop
+    instantly and books an exit at nothing; across 503 replayed round trips it
+    turned the result into a loss of 187,831 per unit, which is not a finding
+    about the policy at all.
+
+    Every sibling that reads this store already refuses non-positive prices -
+    `realized_volatility`, `har_rv`, `volatility_regime`, `funding_basis`. This
+    module did not, and it is the one that decides when to leave a position.
+    """
+
+
 @dataclass(frozen=True)
 class Bar:
-    """One bar of the path after entry."""
+    """One bar of the path after entry. Validated, because this store has served
+    bars that cannot be traded through."""
     high: Decimal
     low: Decimal
     close: Decimal
+
+    def __post_init__(self) -> None:
+        if self.high <= 0 or self.low <= 0 or self.close <= 0:
+            raise CorruptBar(
+                f"non-positive price in bar high={self.high} low={self.low} "
+                f"close={self.close}. A price of zero is not a price, and a "
+                f"policy that walks one exits at nothing")
+        if self.low > self.high:
+            raise CorruptBar(
+                f"bar low {self.low} is above its high {self.high}. Not a "
+                f"pricing question, but a bar like this silently decides every "
+                f"rail it touches")
 
 
 @dataclass(frozen=True)
@@ -163,6 +205,12 @@ class ExitRecord:
     max_favourable_excursion: Decimal
     max_adverse_excursion: Decimal
     is_ambiguous: bool
+    # True when the path this exit was derived from is not continuous. A gap
+    # means the market may have traded through a rail we never saw, so the exit
+    # level is the first one we OBSERVED being touched rather than the first one
+    # that was. Carried rather than corrected, because there is nothing to
+    # correct it with. See the module docstring.
+    path_has_gap: bool = False
 
     @property
     def pnl_per_unit(self) -> Decimal:

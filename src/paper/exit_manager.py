@@ -71,14 +71,14 @@ outright, which would have rejected every exit here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
 from execution.order_intent_wal import OrderIntent
 from strategy.deterministic_exit import (
-    ATR_PERIOD, LONG, SHORT, STILL_OPEN, Bar, ExitPolicy, ExitRecord,
-    NoTrueRange, average_true_range, run_exit_policy,
+    ATR_PERIOD, LONG, SHORT, STILL_OPEN, Bar, CorruptBar, ExitPolicy,
+    ExitRecord, NoTrueRange, average_true_range, run_exit_policy,
 )
 
 BUY = "BUY"
@@ -110,6 +110,11 @@ class _Position:
     # the normal case; anything else says this position was unprotected for that
     # long, and it is carried rather than smoothed over.
     bars_before_rails: int = 0
+    # The event time of the last bar appended, so a hole in the series can be
+    # detected. A gapped path still produces real exits - it is just not a claim
+    # about which rail was touched FIRST.
+    last_bar_ns: int | None = None
+    path_has_gap: bool = False
 
     @property
     def entry_optimistic(self) -> Decimal:
@@ -152,6 +157,8 @@ class ExitManager:
         self.exits_by_reason: dict[str, int] = {}
         self.atr_unavailable = 0
         self.rails_set_late = 0
+        self.gapped_paths = 0
+        self.corrupt_bars = 0
 
     # --- state ------------------------------------------------------------
 
@@ -162,7 +169,9 @@ class ExitManager:
     def position(self, venue: str, symbol: str) -> _Position | None:
         return self._positions.get((venue, symbol))
 
-    def observe(self, venue: str, symbol: str, bar: Bar) -> None:
+    def observe(self, venue: str, symbol: str, bar: Bar,
+                at_ns: int | None = None,
+                bar_interval_ns: int = 60_000_000_000) -> None:
         """Record a bar, for the ATR before a position and the path after one.
 
         Called for every event whether or not anything is open, because the ATR
@@ -191,6 +200,17 @@ class ExitManager:
             # nothing - and the cost of the alternative is total. `
             # bars_before_rails` records how late they arrived so a reader can
             # see which positions ran naked and for how long.
+            # A hole in the series. The store builds bars an hour at a time and
+            # skips the hour a live writer holds, and the archive carries a
+            # 141-hour outage - so this is the ordinary case, not an alarm. It is
+            # recorded because a rail touched across a hole is the first one we
+            # SAW, not necessarily the first one that happened.
+            if (at_ns is not None and position.last_bar_ns is not None
+                    and at_ns - position.last_bar_ns != bar_interval_ns):
+                position.path_has_gap = True
+                self.gapped_paths += 1
+            if at_ns is not None:
+                position.last_bar_ns = int(at_ns)
             if position.atr_at_entry is None:
                 position.bars_before_rails += 1
                 atr = self._atr(key)
@@ -261,6 +281,7 @@ class ExitManager:
             side=position.side, entry_price=position.entry_pessimistic,
             path=path, atr_at_entry=position.atr_at_entry,
             policy=self._policy)
+        record = replace(record, path_has_gap=position.path_has_gap)
         if record.exit_reason == STILL_OPEN:
             return None
 
@@ -303,5 +324,7 @@ class ExitManager:
         reasons = ", ".join(f"{reason} {count}" for reason, count
                             in sorted(self.exits_by_reason.items()))
         return (f"{self.open_positions} open, {self.exits_proposed} exit(s) "
-                f"proposed ({reasons}); exits are MARKET orders so crossing is "
-                f"modelled, but a gap beyond the bar is not")
+                f"proposed ({reasons}); {self.gapped_paths} path(s) have a hole "
+                f"so their exit is the first rail SEEN rather than the first "
+                f"touched; exits are MARKET orders so crossing is modelled, but "
+                f"a gap beyond the bar is not")

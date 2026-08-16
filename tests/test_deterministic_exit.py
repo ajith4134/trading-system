@@ -293,3 +293,45 @@ def test_nothing_here_places_an_order():
     imported = {node.module for node in ast.walk(tree)
                 if isinstance(node, ast.ImportFrom) and node.module}
     assert not any("execution" in name or "paper" in name for name in imported)
+
+
+# --- bars that cannot be traded through -----------------------------------
+
+def test_a_non_positive_price_is_refused_at_construction():
+    """Found by replaying the real BTCUSDT archive: 124 of its 2,537 bars carry
+    a non-positive price - the documented placeholder-price defect. Walked
+    blindly, one takes out the hard stop instantly and books an exit at nothing;
+    across 503 replayed round trips it turned the result into a loss of 187,831
+    per unit, which is not a finding about the policy at all.
+    """
+    from strategy.deterministic_exit import CorruptBar
+
+    for high, low, close in ((100, 0, 50), (0, 0, 0), (100, 99, 0)):
+        with pytest.raises(CorruptBar, match="not a price"):
+            Bar(high=Decimal(high), low=Decimal(low), close=Decimal(close))
+
+
+def test_a_low_above_its_high_is_refused():
+    """A bar like this silently decides every rail it touches."""
+    from strategy.deterministic_exit import CorruptBar
+
+    with pytest.raises(CorruptBar, match="above its high"):
+        Bar(high=Decimal(90), low=Decimal(110), close=Decimal(100))
+
+
+def test_an_ordinary_bar_still_constructs():
+    """A validator that refuses everything is not a validator."""
+    assert Bar(high=Decimal(101), low=Decimal(99), close=Decimal(100)).close == 100
+
+
+def test_a_gapped_path_is_labelled_rather_than_corrected():
+    """The store builds bars an hour at a time and skips the hour a live writer
+    holds, and the archive carries a 141-hour outage. There is nothing to correct
+    a hole with, so the record says the exit is the first rail SEEN rather than
+    the first touched."""
+    from dataclasses import replace
+
+    record = run_exit_policy(LONG, _ENTRY, [_bar(105, 100, 104)], _ATR)
+
+    assert record.path_has_gap is False
+    assert replace(record, path_has_gap=True).path_has_gap is True

@@ -50,7 +50,7 @@ from risk.pre_trade_gate import (
 )
 from risk.tail_cap import CeilingNotSet, read_ceiling
 from store.clock_gated_reader import ClockGatedReader
-from strategy.deterministic_exit import Bar
+from strategy.deterministic_exit import Bar, CorruptBar
 from validation.holdout_custodian import HoldoutCustodian
 
 BARS_DATASET = "bars_60000000000ns"
@@ -306,11 +306,20 @@ class ForwardEngine:
             # bar after its own entry - a position cannot be exited by the print
             # that opened it.
             if self._exits is not None:
-                self._exits.observe(
-                    event.venue, event.symbol,
-                    Bar(high=event.market_event.best_ask,
-                        low=event.market_event.best_bid,
-                        close=event.market_event.trade_price))
+                try:
+                    self._exits.observe(
+                        event.venue, event.symbol,
+                        Bar(high=event.market_event.best_ask,
+                            low=event.market_event.best_bid,
+                            close=event.market_event.trade_price),
+                        at_ns=event.event_time_ns)
+                except CorruptBar:
+                    # A bar that cannot be traded through - the store's
+                    # documented placeholder-price defect. Counted and skipped
+                    # rather than walked: a policy that walks one exits at
+                    # nothing, and the replay that found this booked a loss of
+                    # 187,831 per unit off exactly that.
+                    self._exits.corrupt_bars += 1
                 proposal = self._exits.exit_proposal(
                     event.venue, event.symbol, now_ns)
                 if proposal is not None:
