@@ -23,12 +23,34 @@ candidate. The only per-symbol quantity is the funding percentile, which comes
 from `features.funding_basis` and is a rank against that symbol's own visible
 history. `test_no_per_symbol_parameter_exists` pins the absence.
 
+## The gate compares carry EARNED to cost PAID, over a declared holding period
+
+This is the defect the first shipped version had, and it is worth stating in
+full because it is the exact shape this project exists to catch.
+
+That version compared the **annualised** carry against the **one-off** round-trip
+cost: `1095 bps - 24 bps = +1071 bps, PASS`. But an annualised rate is only
+earned by holding for a year. Over one 8-hour settlement the same trade earns
+**1 bp** and pays **24 bps** — a 23 bp loss — and it needs **24 settlements, 8
+days**, merely to break even. The gate passed trades that lose money on every
+realistic holding period, and the output looked outstanding.
+
+So the gate now uses the carry **earned over `holding_settlements`**, which is a
+declared property of the trade rather than a unit conversion. `FEATURES.md`'s own
+spec §4 step 3 states the rule this restores: *"expected carry per settlement
+must exceed `quote_round_trip_cost` for the round trip"*.
+
+`annualised_carry_bps` is still reported, because it is the figure that compares
+two instruments with different settlement schedules — but it is **not** the gate
+input, and `CarryProposal` keeps the two in separate fields so they cannot be
+confused again.
+
 ## The carry number is a FORECAST, and it is labelled as one
 
-`expected_carry_bps` is the latest observed funding rate, annualised on the
-venue's own settlement count. The expectation embedded in that is *"the rate at
-the next settlement equals the rate we last saw"*, which is a random walk on
-funding and is not a measurement of anything.
+`expected_carry_bps` is the latest observed funding rate over the holding period.
+The expectation embedded in that is *"the rate at every settlement in the hold
+equals the rate we last saw"*, which is a random walk on funding and is not a
+measurement of anything.
 
 It is named `expected_` rather than `realised_`, `CarryProposal` carries
 `rate_observed_at_ns` so the age of that assumption is visible, and the module
@@ -146,6 +168,17 @@ DEFAULT_QUOTE_NOTIONAL = Decimal("1000")
 # trade nobody has to do in a hurry as though they did.
 DEFAULT_ORDER_TYPE = "maker"
 
+# How many funding settlements the trade is assumed to be held across. ONE by
+# default, which is the spec's own rule - "expected carry per settlement must
+# exceed quote_round_trip_cost for the round trip" - and the strictest honest
+# gate, because a trade that pays for its round trip in a single settlement is
+# not exposed to the rate changing afterwards.
+#
+# It is a declared property of the trade, not a unit conversion, and it lands in
+# the Trial Registry: raising it is a real loosening of the gate and has to be
+# counted as the search it is.
+DEFAULT_HOLDING_SETTLEMENTS = 1
+
 _DECLINE_REASONS = ("no_funding_rank", "no_spot_leg", "unknown_perp_venue",
                     "not_dollar_quoted", "cost_refused", "below_cost_gate",
                     "below_flow_threshold")
@@ -181,7 +214,14 @@ class CarryProposal:
     perp_venue: str
     spot_venue: str
     symbol: str
+    # Carry EARNED over the holding period. This is the gate input.
     expected_carry_bps: Decimal
+    # The same rate scaled to a year. Comparable across instruments with
+    # different settlement schedules, and NOT the gate input - kept in its own
+    # field so the two cannot be confused, which is how the first version passed
+    # trades that lose money on every realistic hold.
+    annualised_carry_bps: Decimal
+    holding_settlements: int
     funding_rate_bps: Decimal
     funding_percentile: float
     rate_observed_at_ns: int
@@ -196,10 +236,13 @@ class CarryProposal:
 
     def describe(self) -> str:
         return (f"{self.perp_venue}/{self.symbol}: forecast carry "
-                f"{self.expected_carry_bps:.1f} bps annualised (last rate "
+                f"{self.expected_carry_bps:.2f} bps over "
+                f"{self.holding_settlements} settlement(s) (last rate "
                 f"{self.funding_rate_bps:.3f} bps, its own p"
-                f"{self.funding_percentile:.2f}) less {self.total_cost_bps:.1f} "
-                f"bps of two-leg round trip = {self.net_carry_bps:.1f} bps net")
+                f"{self.funding_percentile:.2f}; "
+                f"{self.annualised_carry_bps:.0f} bps annualised, which is NOT "
+                f"the gate) less {self.total_cost_bps:.1f} bps of two-leg round "
+                f"trip = {self.net_carry_bps:.2f} bps net")
 
 
 @dataclass(frozen=True)
@@ -289,7 +332,8 @@ def select(store_root: Path, as_of_ns: int, *, capacity: int,
            registry: TrialRegistry, trial_name: str,
            dollar_quoted: dict[str, frozenset[str]],
            notional: Decimal = DEFAULT_QUOTE_NOTIONAL,
-           holding_ns: int = 0, custodian=None) -> CarrySelection:
+           holding_settlements: int = DEFAULT_HOLDING_SETTLEMENTS,
+           custodian=None) -> CarrySelection:
     """Evaluate the carry setup across the universe and propose what survives.
 
     Counted in the Trial Registry before it runs: §5a.5 says every scan counts,
@@ -321,11 +365,12 @@ def select(store_root: Path, as_of_ns: int, *, capacity: int,
         name=trial_name, family=FAMILY,
         params={"setup": "delta-hedged funding carry", "capacity": capacity,
                 "notional": str(notional), "order_type": DEFAULT_ORDER_TYPE,
-                "holding_ns": holding_ns, "hedge_match": _HEDGE_MATCH})
+                "holding_settlements": holding_settlements,
+                "hedge_match": _HEDGE_MATCH})
 
     def evaluate(_spec: TrialSpec) -> dict:
         selection = _run(store_root, as_of_ns, capacity, dollar_quoted,
-                         notional, holding_ns, custodian)
+                         notional, holding_settlements, custodian)
         return {
             "sharpe": None,
             "proposals": len(selection.proposals),
@@ -340,14 +385,20 @@ def select(store_root: Path, as_of_ns: int, *, capacity: int,
 
     registry.evaluate(spec, evaluate)
     return _run(store_root, as_of_ns, capacity, dollar_quoted, notional,
-                holding_ns, custodian)
+                holding_settlements, custodian)
 
 
 def _run(store_root: Path, as_of_ns: int, capacity: int,
          dollar_quoted: dict[str, frozenset[str]],
-         notional: Decimal, holding_ns: int, custodian) -> CarrySelection:
+         notional: Decimal, holding_settlements: int,
+         custodian) -> CarrySelection:
     store_root = Path(store_root)
     as_of_ns = int(as_of_ns)
+    if holding_settlements < 1:
+        raise ValueError(
+            f"holding_settlements must be >= 1, got {holding_settlements}; a "
+            f"trade held across no settlement earns no funding, and gating on "
+            f"zero carry would pass everything")
     declined = {reason: 0 for reason in _DECLINE_REASONS}
 
     basis = compute_funding_basis(store_root, as_of_ns, custodian=custodian)
@@ -378,24 +429,35 @@ def _run(store_root: Path, as_of_ns: int, capacity: int,
             continue
 
         # Priced against the FEE identity, not the feed name - see HEDGE_VENUES.
+        # NO funding in the cost quote, on either leg, and this is a correction
+        # rather than an omission. `quote_round_trip_cost` charges funding as a
+        # COST for a long. This trade is SHORT the perp, so funding is its
+        # REVENUE - it is the whole edge - and charging it in the quote would
+        # subtract the edge from itself with the sign reversed. It also made the
+        # selection unrunnable: the funding path re-reads the whole clock-gated
+        # dataset per symbol, which is 1,100 full reads for one pass.
         perp_cost = _cost_bps(perp_fee[0], symbol, notional, as_of_ns,
-                              perp_fee[1], holding_ns, store_root)
-        # The spot leg is charged no funding: `holding_ns=0`. Spot has no
-        # settlements, and asking for them would refuse on a venue with no
-        # funding schedule rather than charge zero, which is the right refusal
-        # for a perp and the wrong one here.
+                              perp_fee[1], 0, store_root)
+        # Spot has no settlements at all, so the same zero here is the
+        # ordinary case rather than a correction.
         spot_cost = _cost_bps(spot_fee[0], symbol, notional, as_of_ns,
                               spot_fee[1], 0, store_root)
         if perp_cost is None or spot_cost is None:
             declined["cost_refused"] += 1
             continue
 
-        expected_carry = Decimal(str(row.funding_annualised_bps))
+        rate = Decimal(str(row.funding_rate_bps))
+        # Carry EARNED over the hold, not the annualised rate. See the module
+        # docstring: comparing an annual rate to a one-off cost passed trades
+        # that lose 23 bps on every settlement they are actually held for.
+        expected_carry = rate * Decimal(holding_settlements)
         net = expected_carry - (perp_cost + spot_cost)
         priced.append(CarryProposal(
             perp_venue=perp_venue, spot_venue=spot_venue, symbol=symbol,
             expected_carry_bps=expected_carry,
-            funding_rate_bps=Decimal(str(row.funding_rate_bps)),
+            annualised_carry_bps=Decimal(str(row.funding_annualised_bps)),
+            holding_settlements=holding_settlements,
+            funding_rate_bps=rate,
             funding_percentile=float(row.funding_percentile),
             rate_observed_at_ns=int(row.event_time_ns),
             perp_cost_bps=perp_cost, spot_cost_bps=spot_cost,

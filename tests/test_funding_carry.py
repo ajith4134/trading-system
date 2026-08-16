@@ -1,4 +1,16 @@
-"""The highest-carry rows of any naive screen are the ones you cannot hedge.
+"""Carry earned over the hold, against cost paid once - not an annual rate.
+
+The first shipped version of this setup compared the ANNUALISED carry against the
+one-off round-trip cost: 1095 bps - 24 bps = +1071, PASS. But an annual rate is
+only earned by holding for a year. Over one 8-hour settlement the same trade
+earns 1 bp and pays 24 - a 23 bp loss - and needs 24 settlements to break even.
+The gate passed trades that lose money on every realistic hold, and the output
+looked outstanding. `test_the_gate_uses_carry_earned_not_the_annual_rate` is what
+keeps that fixed.
+
+The other thing this file is about:
+
+The highest-carry rows of any naive screen are the ones you cannot hedge.
 
 That is not a metaphor here - it is what the first live run produced. Without the
 dollar-quoted universe wired in, the top four proposals were BTWUSDT, ESPORTSUSDT,
@@ -90,7 +102,7 @@ def test_a_perp_with_no_dollar_quoted_spot_leg_is_declined(tmp_path):
     a naked short with a hedge's name, and it is exactly what sits at the top of
     an unfiltered carry screen - because that is what the funding is paying for.
     """
-    rows = _funding_rows("HOTUSDT", "binance", 60, "0.0012")
+    rows = _funding_rows("HOTUSDT", "binance", 60, "0.0030000")
     selection = _select(tmp_path, rows,
                         _universe("HOTUSDT", spot=()))
 
@@ -100,7 +112,7 @@ def test_a_perp_with_no_dollar_quoted_spot_leg_is_declined(tmp_path):
 
 
 def test_a_symbol_not_dollar_quoted_on_the_perp_venue_is_declined(tmp_path):
-    rows = _funding_rows("BTCTRY", "binance", 60, "0.0012")
+    rows = _funding_rows("BTCTRY", "binance", 60, "0.0030000")
     selection = _select(tmp_path, rows, _universe())
 
     assert selection.declined["not_dollar_quoted"] == 1
@@ -112,7 +124,7 @@ def test_a_hedged_carry_pays_two_round_trips(tmp_path):
     """Pricing one leg is the flattering error and it is roughly a factor of
     two: the trade is short the perp and long the spot, and it pays to enter and
     exit both."""
-    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0012")
+    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0030000")
     selection = _select(tmp_path, rows, _universe("BTCUSDT"))
 
     assert selection.proposals, selection.declined
@@ -138,7 +150,7 @@ def test_a_carry_below_the_two_leg_cost_is_declined(tmp_path):
 def test_an_unknown_perp_venue_is_declined_rather_than_paired_by_guess(tmp_path):
     """A hedge on the wrong exchange is not a hedge, and it would look like an
     ordinary position until the two legs moved apart."""
-    rows = _funding_rows("BTCUSDT", "hyperliquid", 60, "0.0012")
+    rows = _funding_rows("BTCUSDT", "hyperliquid", 60, "0.0030000")
     selection = _select(tmp_path, rows, _universe("BTCUSDT"))
 
     assert selection.declined["unknown_perp_venue"] == 1
@@ -179,13 +191,13 @@ def test_a_book_that_can_hold_nothing_is_refused():
 def test_the_same_carry_is_taken_when_quiet_and_declined_when_busy(tmp_path):
     """§5a.5's rule, end to end: a fixed threshold takes the same trade whether
     it is one of three opportunities or one of three hundred."""
-    modest = _funding_rows("MIDUSDT", "binance", 60, "0.0004")
+    modest = _funding_rows("MIDUSDT", "binance", 60, "0.0030000")
     quiet = _select(tmp_path / "quiet", modest, _universe("MIDUSDT"),
                     capacity=2)
 
     busy_rows = list(modest)
     for i in range(6):
-        busy_rows += _funding_rows(f"HOT{i}USDT", "binance", 60, "0.0020")
+        busy_rows += _funding_rows(f"HOT{i}USDT", "binance", 60, "0.0060000")
     busy = _select(tmp_path / "busy", busy_rows,
                    _universe("MIDUSDT", *[f"HOT{i}USDT" for i in range(6)]),
                    capacity=2)
@@ -201,7 +213,7 @@ def test_ties_at_the_threshold_are_reported_rather_than_broken(tmp_path):
     first live run 48 symbols tied at binance's 1 bp default rate."""
     rows = []
     for i in range(6):
-        rows += _funding_rows(f"SAME{i}USDT", "binance", 60, "0.0010")
+        rows += _funding_rows(f"SAME{i}USDT", "binance", 60, "0.0030000")
     selection = _select(tmp_path, rows,
                         _universe(*[f"SAME{i}USDT" for i in range(6)]),
                         capacity=2)
@@ -234,13 +246,45 @@ def test_the_carry_is_labelled_a_forecast_not_a_measurement(tmp_path):
     """The expectation inside it is "the next settlement's rate equals the last
     one", which is a random walk on funding. Funding is persistent, so it is
     usually nearly right - which is the property that stops anyone checking."""
-    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0012")
+    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0030000")
     selection = _select(tmp_path, rows, _universe("BTCUSDT"))
     proposal = selection.proposals[0]
 
     assert "forecast carry" in proposal.describe()
+    assert "which is NOT the gate" in proposal.describe()
     assert proposal.rate_observed_at_ns > 0, (
         "the age of the assumption must be visible, not implied")
+
+
+def test_the_gate_uses_carry_earned_not_the_annual_rate(tmp_path):
+    """The defect the first shipped version had, and the one that flatters most.
+
+    An annualised rate against a one-off cost passes trades that lose money on
+    every holding period anyone would actually use. At 1 bp a settlement against
+    a 24 bps round trip the annualised comparison reads +1071 bps and the trade
+    loses 23 bps over the settlement it is held for.
+    """
+    rows = _funding_rows("SLIMUSDT", "binance", 60, "0.0001000")   # 1 bp/settle
+    universe = _universe("SLIMUSDT")
+
+    one = _select(tmp_path / "one", rows, universe, holding_settlements=1)
+    many = _select(tmp_path / "many", rows, universe, holding_settlements=90)
+
+    assert one.proposals == [], (
+        "1 bp against a 24 bps round trip must not clear on one settlement")
+    assert one.declined["below_cost_gate"] == 1
+    assert many.proposals, "90 settlements of the same rate does clear"
+    assert many.proposals[0].annualised_carry_bps > (
+        many.proposals[0].expected_carry_bps), (
+        "the annualised figure is reported and is larger - and is not the gate")
+
+
+def test_a_zero_settlement_hold_is_refused(tmp_path):
+    """A trade held across no settlement earns no funding, and gating on zero
+    carry would pass everything."""
+    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0030000")
+    with pytest.raises(ValueError, match="passes everything|>= 1"):
+        _select(tmp_path, rows, _universe("BTCUSDT"), holding_settlements=0)
 
 
 # --- counting and the empty case -----------------------------------------
@@ -249,7 +293,7 @@ def test_a_selection_pass_is_one_trial(tmp_path):
     """§5a.5: every scan counts. A pass is a look at the data whatever it
     proposes."""
     registry = _registry(tmp_path)
-    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0012")
+    rows = _funding_rows("BTCUSDT", "binance", 60, "0.0030000")
     select(_store(tmp_path, rows), _START + 200 * _MINUTE, capacity=10,
            registry=registry, trial_name="counted",
            dollar_quoted=_universe("BTCUSDT"))
@@ -264,7 +308,7 @@ def test_the_declines_separate_a_quiet_market_from_a_broken_feed(tmp_path):
     # Both rates carry seven decimal places on purpose: pyarrow infers decimal
     # precision per part, and per-symbol parts with different precisions refuse
     # to merge on read - the same fixture rule `test_spot_perp_basis` records.
-    rows = (_funding_rows("NOSPOTUSDT", "binance", 60, "0.0012000")
+    rows = (_funding_rows("NOSPOTUSDT", "binance", 60, "0.0030000")
             + _funding_rows("TINYUSDT", "binance", 60, "0.0000001"))
     selection = _select(tmp_path, rows,
                         _universe("NOSPOTUSDT", "TINYUSDT", spot=("TINYUSDT",)))
