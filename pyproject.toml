@@ -45,7 +45,7 @@ build-backend = "hatchling.build"
 # because pytest runs off `pythonpath = ["src"]` rather than off an install.
 packages = ["src/capture", "src/statuswall", "src/store", "src/cost", "src/ops",
             "src/execution", "src/validation", "src/paper", "src/features",
-            "src/models", "src/risk", "src/integrity"]
+            "src/models", "src/risk", "src/integrity", "src/strategy"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

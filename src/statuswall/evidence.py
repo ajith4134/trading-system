@@ -1526,6 +1526,71 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_funding_carry(facts: SystemFacts) -> ProbeResult:
+    """Does the carry setup still refuse what it cannot hedge?
+
+    Run against the live store and the live dollar-quoted universe on every board
+    pass. The check that matters is `no_spot_leg`: without the universe filter
+    this setup's top proposals were microcap perps at 79-137% annualised with no
+    spot market to hedge against, because that is precisely what the funding was
+    paying for. A run where nothing is declined for a missing hedge leg means the
+    filter has stopped working, and the output would look better, not worse.
+
+    A stand-aside is a healthy result, not a failure - the default action is to
+    stand aside and the tile says so rather than reading red on a quiet market.
+    """
+    import tempfile
+
+    from store.quote_currency import QuoteAssetsNotRecorded, dollar_quoted_symbols
+    from strategy.funding_carry import HEDGE_VENUES, select
+    from validation.trial_registry import TrialRegistry
+
+    proof = "src/strategy/funding_carry.py"
+    now = int(time.time() * 1e9)
+    venues = sorted({v for perp, (spot, _p, _s) in HEDGE_VENUES.items()
+                     for v in (perp, spot)})
+    try:
+        universe = {venue: frozenset(
+            dollar_quoted_symbols(facts.capture_root, venue, now).dollar)
+            for venue in venues}
+    except QuoteAssetsNotRecorded as error:
+        return ProbeResult(
+            DEGRADED,
+            f"no dollar-quoted universe to select from: {error}. The setup "
+            f"refuses rather than treating 'unknown' as 'everything', which is "
+            f"correct and means nothing can be proposed", proof)
+
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            selection = select(
+                facts.capture_root / "store", now, capacity=10,
+                registry=TrialRegistry(Path(scratch)),
+                trial_name="board-probe", dollar_quoted=universe)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the carry setup raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    declined = selection.declined
+    if selection.candidates and declined["no_spot_leg"] == 0:
+        return ProbeResult(
+            FAILING,
+            f"{selection.candidates} candidate(s) and NOT ONE was declined for a "
+            f"missing hedge leg - the dollar-quoted filter has stopped working, "
+            f"and the proposals now include perps with no spot market to hedge "
+            f"against. That reads as a better result, which is why it is checked",
+            proof)
+
+    note = ", ".join(f"{reason} {count}" for reason, count
+                     in sorted(declined.items(), key=lambda kv: -kv[1]) if count)
+    return ProbeResult(
+        PARTIAL,
+        f"{selection.describe()}; declined {note}. Proposals only - nothing "
+        f"sizes or orders from them, because the arbiter and the risk gate do "
+        f"not exist yet", proof)
+
+
 def probe_universe_coverage(facts: SystemFacts) -> ProbeResult:
     """The roll-call: every symbol, every segment, including the quiet ones.
 
@@ -2773,6 +2838,9 @@ PROBES = {
     "universe watch list across spot perp and dated futures segments":
         probe_universe_coverage,
     "adaptive paper tail cap bounded": probe_paper_tail_cap,
+    # §4's first strategy family. Graded on whether it still refuses what it
+    # cannot hedge - see `probe_funding_carry`.
+    "funding rate carry": probe_funding_carry,
     "meta model over the experiment ledger": probe_ledger_meta_model,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
