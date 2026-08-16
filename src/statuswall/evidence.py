@@ -1661,6 +1661,86 @@ def probe_deterministic_exit(facts: SystemFacts) -> ProbeResult:
         f"the market", proof)
 
 
+def probe_pre_trade_gate(facts: SystemFacts) -> ProbeResult:
+    """Are the limits on disk, and does the gate still refuse and still allow?
+
+    Two failures, opposite and both silent. A gate that blocks nothing is the
+    state this system was in until 2026-08-16 - 363 open positions, nothing
+    saying no. A gate that blocks everything looks like caution and is an outage.
+    Both are exercised on every pass.
+
+    The third check is the one found by a test: a position already over its cap
+    must still be reducible. Blocking a reducing order traps the book at its own
+    limit, in the one state where an exit matters most.
+    """
+    from decimal import Decimal
+
+    from risk.pre_trade_gate import (
+        LimitsNotSet, PreTradeGate, RejectionReason, read_gate_limits,
+    )
+
+    risk_root = facts.capture_root / "risk"
+    proof = str(risk_root / "paper-gate.json")
+    try:
+        limits, nav = read_gate_limits(risk_root)
+    except LimitsNotSet as error:
+        return ProbeResult(
+            NOT_MEASURED,
+            f"no gate limits on disk, so the engine runs UNGATED: {error}",
+            proof)
+
+    gate = PreTradeGate(limits)
+    price = Decimal("100")
+    common = dict(venue="binance", symbol="PROBEUSDT",
+                  reference_price=price, limit_price=None, nav=nav,
+                  now_ns=int(time.time() * 1e9))
+    try:
+        allowed = gate.evaluate(side="BUY", quantity=Decimal("0.001"),
+                                open_positions={}, **common)
+        blocked = gate.evaluate(
+            side="BUY", quantity=limits.max_order_notional / price * 10,
+            open_positions={}, **common)
+        over_cap = limits.max_position_notional / price * 10
+        reducing = gate.evaluate(
+            side="SELL", quantity=Decimal("0.001"),
+            open_positions={("binance", "PROBEUSDT"): over_cap}, **common)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the gate raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if not allowed.approved:
+        broken.append(
+            f"a tiny order inside every limit was REFUSED "
+            f"({', '.join(r.value for r in allowed.reasons)}) - a gate that "
+            f"blocks everything looks like caution and is an outage")
+    if blocked.approved:
+        broken.append(
+            "an order ten times the notional cap was APPROVED - the gate is "
+            "blocking nothing, which is the state that produced 363 unbounded "
+            "positions")
+    if RejectionReason.POSITION_CAP_EXCEEDED in reducing.reasons:
+        broken.append(
+            "a REDUCING order against an over-cap position was blocked by the "
+            "position cap - the book is trapped at its own limit, in the one "
+            "state where an exit matters most")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"limits on disk (NAV {nav}, max {limits.max_open_instruments} "
+        f"instruments, {limits.max_order_notional} per order, "
+        f"{limits.max_orders_per_window} orders per "
+        f"{limits.order_rate_window_ns // 1_000_000_000}s): a compliant order "
+        f"passes, one ten times the cap is refused, and an over-cap position can "
+        f"still be reduced. The numbers are a SEEDED PROPOSAL the user has not "
+        f"confirmed, and daily-loss and drawdown kills are not here - they are "
+        f"risk/tail-cap.json", proof)
+
+
 def probe_paper_blotter(facts: SystemFacts) -> ProbeResult:
     """Open positions and closed round trips, as the journal actually has them.
 
@@ -3030,6 +3110,7 @@ PROBES = {
     # cannot hedge - see `probe_funding_carry`.
     "funding rate carry": probe_funding_carry,
     "paper blotter open positions and closed round trips": probe_paper_blotter,
+    "pre trade gate notional leverage position cap": probe_pre_trade_gate,
     # Two catalogue rows, one module: the exit policy and the ratchet inside it.
     "ratchetprofitlock monotone volatility scaled": probe_ratchet_profit_lock,
     "deterministic exit policy as p1 fallback and permanent rollback target":

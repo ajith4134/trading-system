@@ -44,6 +44,9 @@ from paper.fill_model import Participation
 from paper.forward_journal import ForwardJournal
 from paper.market_replay import MarketReplay, TapeEvent
 from paper.paper_broker import PaperBroker
+from risk.pre_trade_gate import (
+    LimitsNotSet, PreTradeGate, read_gate_limits, seed_gate_limits,
+)
 from store.clock_gated_reader import ClockGatedReader
 from strategy.deterministic_exit import Bar
 from validation.holdout_custodian import HoldoutCustodian
@@ -134,6 +137,11 @@ class EngineCounts:
     # exiting entirely reads as a run that submitted slightly fewer orders.
     exits_submitted: int = 0
     exits_proposed: int = 0
+    # Blocked BEFORE the WAL, so they were never written as something that was
+    # sent. Counted apart from broker rejections: the gate refusing an order is
+    # a risk decision, and the broker refusing one is a market or config
+    # condition, and a board that lumps them cannot tell a cap from an outage.
+    orders_gated: int = 0
     orders_rejected: int = 0
     orders_expired: int = 0
     # Counted apart from orders_rejected because they mean different things: the
@@ -151,7 +159,9 @@ class ForwardEngine:
 
     def __init__(self, *, replay: MarketReplay, broker: PaperBroker,
                  wal: OrderIntentWal, journal: ForwardJournal, strategy,
-                 kill_root: Path, exits: ExitManager | None = None) -> None:
+                 kill_root: Path, exits: ExitManager | None = None,
+                 gate: PreTradeGate | None = None,
+                 nav: Decimal | None = None) -> None:
         self._replay = replay
         self._broker = broker
         self._wal = wal
@@ -164,7 +174,23 @@ class ForwardEngine:
         # policy: an exit policy applied because nobody passed one is a policy
         # nobody chose.
         self._exits = exits
+        # `FEATURES.md` §6 (P0): "blocks the order BEFORE it is sent". Optional
+        # so the engine can be run ungated deliberately - which is what it was
+        # until 2026-08-16, and which produced 363 unbounded positions.
+        self._gate = gate
+        self._nav = nav
         self.counts = EngineCounts()
+
+    def _open_positions(self) -> dict:
+        """Signed quantity per (venue, symbol), from the OPTIMISTIC book.
+
+        One accounting has to be chosen and it is stated: the two hold identical
+        sizes by construction - `paper_broker.AccountingDiverged` is raised if
+        they ever do not - so the choice affects nothing but the name in this
+        line, and picking one silently would leave a reader guessing which.
+        """
+        return {(p.venue, p.symbol): p.quantity
+                for p in self._broker.optimistic.local_positions()}
 
     def _assert_not_killed(self) -> None:
         if is_killed(self._kill_root):
@@ -198,13 +224,27 @@ class ForwardEngine:
                    f"trading, so forward operation starts at this clock")
         return fed
 
-    def _submit(self, intent, now_ns: int, *, is_exit: bool) -> None:
+    def _submit(self, intent, now_ns: int, *, is_exit: bool,
+                reference_price=None) -> None:
         """Send one intent and count its outcome. Shared by entries and exits.
+
+        The pre-trade gate runs FIRST, before the WAL, because §6's own words are
+        "blocks the order before it is sent" - an order written to the intent log
+        and then blocked is a different claim from one that never existed.
 
         Exits are counted apart from entries throughout: lumped together, a run
         that stopped exiting entirely would read as one that submitted slightly
         fewer orders.
         """
+        if self._gate is not None:
+            decision = self._gate.evaluate(
+                venue=intent.venue, symbol=intent.symbol, side=intent.side,
+                quantity=intent.quantity, reference_price=reference_price,
+                limit_price=intent.price, nav=self._nav,
+                open_positions=self._open_positions(), now_ns=now_ns)
+            if not decision.approved:
+                self.counts.orders_gated += 1
+                return
         try:
             response = self._wal.submit(intent, self._broker, now_ns=now_ns)
         except IntentExpired:
@@ -267,12 +307,14 @@ class ForwardEngine:
                     event.venue, event.symbol, now_ns)
                 if proposal is not None:
                     self.counts.exits_proposed += 1
-                    self._submit(proposal.intent, now_ns, is_exit=True)
+                    self._submit(proposal.intent, now_ns, is_exit=True,
+                                 reference_price=event.market_event.trade_price)
 
             intent = self._strategy(event, now_ns)
             if intent is None:
                 continue
-            self._submit(intent, now_ns, is_exit=False)
+            self._submit(intent, now_ns, is_exit=False,
+                         reference_price=event.market_event.trade_price)
 
         self._journal.record_heartbeat(
             now_ns=now_ns, strategy=self._strategy.name,
@@ -284,7 +326,8 @@ class ForwardEngine:
                               + self.counts.exits_submitted),
             orders_rejected=(self.counts.orders_rejected
                              + self.counts.orders_expired
-                             + self.counts.orders_duplicate),
+                             + self.counts.orders_duplicate
+                             + self.counts.orders_gated),
             fills=self.counts.fills,
             open_orders=self._broker.open_order_count,
             last_event_time_ns=self.counts.last_event_time_ns,
@@ -308,6 +351,20 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
                                  holdout_start_ns=holdout_start_ns,
                                  holdout_end_ns=holdout_end_ns)
     reader = ClockGatedReader(Path(store_root), BARS_DATASET, custodian=custodian)
+    # FEATURES.md §6 (P0). Seeded on first run so the gate exists rather than
+    # being skipped by absence, and then never overwritten - the numbers are the
+    # user's to edit. If the file is unreadable the engine runs UNGATED and says
+    # so, rather than refusing to trade at all: a paper engine that will not
+    # start is a paper engine nobody watches.
+    risk_root = Path(capture_root) / "risk"
+    seed_gate_limits(risk_root)
+    try:
+        limits, nav = read_gate_limits(risk_root)
+        gate = PreTradeGate(limits)
+    except LimitsNotSet as error:
+        print(f"NO PRE-TRADE GATE: {error}", file=sys.stderr)
+        gate, nav = None, None
+
     return ForwardEngine(
         replay=MarketReplay(reader=reader, symbols=symbols),
         broker=PaperBroker(participation=participation,
@@ -316,6 +373,7 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
         journal=ForwardJournal(paper_root),
         strategy=STRATEGIES[strategy_name](quantity=quantity),
         kill_root=Path(capture_root) / "ops",
+        gate=gate, nav=nav,
         # Wired 2026-08-16. Until then the engine had no exit at all: 12,983
         # fills, 363 open positions and zero closed round trips, because
         # `plumbing-momentum` rests a bid and never sells. The policy is
