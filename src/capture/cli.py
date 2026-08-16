@@ -31,6 +31,7 @@ from capture.venues.binance_spot import BinanceSpotVenue
 from capture.venues.bybit import BybitVenue
 from capture.venues.bybit_liquidation import BybitLiquidationVenue
 from capture.venues.coinbase import CoinbaseVenue
+from capture.venues.deribit import DeribitVenue
 from capture.venues.hyperliquid import HyperliquidVenue
 
 _VENUES = {
@@ -56,6 +57,13 @@ _VENUES = {
     # only the private API does. A third spot tape, and the only one of the
     # three that is not binance.
     "coinbase": CoinbaseVenue,
+    # OPTIONS - the third segment, which had no data at all until 2026-08-16.
+    # Polled, keyless, and its own process for the same reason bybit is: one
+    # response fans out into 1,502 files and there is no websocket here that a
+    # write storm could take down with it. The chain cannot be backfilled, which
+    # is what makes capturing it today rather than when a feature needs it the
+    # whole point.
+    "deribit": DeribitVenue,
 }
 
 def archive_name_for(venue_key: str) -> str:

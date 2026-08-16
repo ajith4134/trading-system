@@ -110,6 +110,20 @@ start_as_user "capture_supervisor.sh bybit-liq" \
 # venue's own name for the market), broad tail on trades alone.
 start_as_user "capture_supervisor.sh coinbase" \
   "cd ${REPO} && nohup scripts/capture_supervisor.sh coinbase BTC-USD,ETH-USD,SOL-USD ALL"
+# OPTIONS - the third segment, captured from 2026-08-16. Until this line existed
+# the segment had ZERO data while the user's ruling names it as one of the three
+# the bot trades. Polled, keyless, its own process: one response fans out into
+# 1,502 files and there is no websocket here for a write storm to take down.
+#
+# With the capture supervisors rather than the builders, and that ordering is the
+# whole argument for doing it now: a Deribit option chain cannot be backfilled at
+# all - the endpoint ignores a `timestamp` parameter and returns the current
+# chain - so an hour not captured is an hour that can never be reconstructed.
+#
+# The symbol argument is ignored by this venue, since one request returns the
+# whole BTC or ETH chain; BTC is passed only because the supervisor requires one.
+start_as_user "capture_supervisor.sh deribit" \
+  "cd ${REPO} && nohup scripts/capture_supervisor.sh deribit BTC"
 # Bars, in their own process since 2026-08-10. They were inside store_supervisor
 # and a universe-wide build takes hours, so the polled datasets beside them
 # refreshed once per full pass instead of once an hour - and every feature in

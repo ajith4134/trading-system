@@ -277,6 +277,15 @@
     "src/store/trade_bars.py"
    ]
   },
+  "capture.venues.deribit": {
+   "learning": "n/a: a capture adapter. Nothing is fitted",
+   "reasoning": "pass: it is polled rather than subscribed because one request returns the whole chain against 1,502 websocket channels, and it declines to capture DVOL because that series IS backfillable while the chain is not - the endpoint ignores a `timestamp` parameter and returns the current chain, which is the entire argument for capturing today rather than when a feature needs it",
+   "depth": "pass: nulls are carried through untouched because they are real market structure - `bid_price` is null on 89 of 818 BTC instruments and `high`/`low` on 588, and the prior-art client in nse-crypto-bot-final coerced exactly those fields with `float(x or 0.0)`, inventing a bid of zero that makes a worthless option look free. A JSON-RPC error body is refused before it can be split under every instrument in the last good chain, and the two currencies polled were measured against the live venue - 49 of Deribit's 51 currencies list no options at all. Verified by running it: 1,502 files, 3,822 records, 0 dropped and 0 malformed, and 401 null bids still null after a round trip through the archive",
+   "evidence": [
+    "tests/test_deribit_venue.py",
+    "src/capture/venues/deribit.py"
+   ]
+  },
   "store.live_bars": {
    "learning": "n/a: a build entry point. Nothing is fitted",
    "reasoning": "pass: it publishes provisional bars WITHOUT re-stamping availability, so the complete hourly build - whose stamp is derived from the data and is therefore EARLIER than any wall clock - still supersedes them under `drop_duplicates(keep=\"last\")`. The first version stamped `now` and would have made every provisional bar permanent in a store with no delete path",
