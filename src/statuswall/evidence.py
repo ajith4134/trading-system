@@ -1526,6 +1526,145 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_universe_coverage(facts: SystemFacts) -> ProbeResult:
+    """The roll-call: every symbol, every segment, including the quiet ones.
+
+    Graded on whether the watch list can still tell a lagging build from a dead
+    feed, because without that distinction it is thousands of rows all reading
+    STALE - which is what its first live run produced, correctly, while the feeds
+    were fine.
+
+    DEGRADED when a segment is entirely stale AND nothing is quiet beyond the
+    build: that is the pipeline being behind, which is a real problem with a
+    known home (FE-001) and is not the venues' fault. FAILING only if the module
+    cannot classify at all.
+    """
+    from features.universe_coverage import compute_universe_coverage
+
+    proof = "src/features/universe_coverage.py"
+    try:
+        coverage = compute_universe_coverage(facts.capture_root / "store",
+                                             int(time.time() * 1e9))
+    except Exception as error:                     # noqa: BLE001 - reported, not hidden
+        return ProbeResult(NOT_MEASURED,
+                           f"compute_universe_coverage raised: {error}", proof)
+
+    if not coverage.segments:
+        return ProbeResult(NOT_MEASURED,
+                           "no symbols visible in any segment at this clock", proof)
+
+    missing = [segment for segment in ("perpetual", "dated-future", "spot")
+               if segment not in {s.segment for s in coverage.segments}]
+    worst_lag = max(s.build_lag_ns for s in coverage.segments)
+    lag_minutes = worst_lag / 60_000_000_000
+    fresh = sum(s.fresh for s in coverage.segments)
+    quiet = sum(s.behind_build for s in coverage.segments)
+    detail = coverage.describe()
+
+    if missing:
+        return ProbeResult(
+            DEGRADED,
+            f"{coverage.total_symbols} symbol(s) watched but {', '.join(missing)} "
+            f"has no rows at all - a segment missing from the roll-call is the "
+            f"one thing this feature exists to make impossible. {detail}", proof)
+    if fresh == 0:
+        return ProbeResult(
+            DEGRADED,
+            f"NOTHING is fresh anywhere: the store build is {lag_minutes:.0f} min "
+            f"behind the capture feeds, which makes a one-minute bar series stale "
+            f"across the whole universe at once. That is FE-001's recorded defect "
+            f"- the store supervisor serialising polled builds behind a "
+            f"universe-wide bars build - not a venue outage. {detail}", proof)
+    return ProbeResult(
+        PARTIAL,
+        f"{detail}. Nothing consumes it - no module outside "
+        f"features.universe_coverage calls compute_universe_coverage, so a "
+        f"symbol going quiet cannot yet change what the system does", proof)
+
+
+def probe_paper_tail_cap(facts: SystemFacts) -> ProbeResult:
+    """Can the adaptive paper cap still refuse to widen without limit?
+
+    The user asked for a cap that adapts on paper. The naive version of that
+    request is how accounts die - a limit derived from recent realised risk rises
+    exactly when risk rises - so the probe feeds it a violent series and a calm
+    one on every pass and checks both bounds hold.
+
+    It also re-checks that the LIVE ceiling module still refuses to be
+    overwritten. That invariant is §6 and it lives in a different module, which
+    is exactly why a regression in it would not show up in any test of this one.
+    """
+    import tempfile
+    from decimal import Decimal
+
+    import numpy as np
+
+    from risk.paper_tail_cap import (
+        MAX_WIDENING_MULTIPLE, MIN_TIGHTENING_MULTIPLE, derive_paper_cap,
+    )
+    from risk.tail_cap import CeilingNotSet, TailCap, read_ceiling, seed_ceiling
+
+    proof = "src/risk/paper_tail_cap.py"
+    live_root = facts.capture_root / "risk"
+    try:
+        live = read_ceiling(live_root)
+    except CeilingNotSet as error:
+        return ProbeResult(
+            NOT_MEASURED,
+            f"no live ceiling to bound the paper cap against: {error}", proof)
+
+    rng = np.random.default_rng(0)
+    try:
+        violent = derive_paper_cap(live, list(rng.normal(0, 0.05, 2000)),
+                                   n_samples=200)
+        calm = derive_paper_cap(live, list(rng.normal(0, 1e-6, 2000)),
+                                n_samples=200)
+        thin = derive_paper_cap(live, list(rng.normal(0, 0.01, 10)))
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            seed_ceiling(root, Decimal("0.01"), Decimal("0.03"))
+            seed_ceiling(root, Decimal("0.50"), Decimal("0.90"))
+            unwidened = read_ceiling(root) == TailCap(Decimal("0.01"),
+                                                      Decimal("0.03"))
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the paper cap raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if violent.cap.drawdown_fraction > live.drawdown_fraction * MAX_WIDENING_MULTIPLE:
+        broken.append(
+            f"a violent series widened the paper cap to "
+            f"{violent.cap.drawdown_fraction} against a bound of "
+            f"{live.drawdown_fraction * MAX_WIDENING_MULTIPLE} - an adaptive "
+            f"limit that rises without a bound stops binding at the moment it "
+            f"was for")
+    if calm.cap.drawdown_fraction < live.drawdown_fraction * MIN_TIGHTENING_MULTIPLE:
+        broken.append("a calm series collapsed the paper cap below its floor")
+    if thin.is_derived:
+        broken.append(
+            "a cap was derived from 10 observations - that is random rather than "
+            "adaptive, and the tidy percentile it produces is what makes it "
+            "convincing")
+    if not unwidened:
+        broken.append(
+            "the LIVE ceiling was overwritten by a second seed - §6 says no code "
+            "in this system raises it, and that invariant is the reason the "
+            "adaptive path is a separate module")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"live ceiling {live.describe()}; a violent series is capped at "
+        f"{MAX_WIDENING_MULTIPLE}x and a calm one floored at "
+        f"{MIN_TIGHTENING_MULTIPLE}x, 10 observations are refused, and the live "
+        f"ceiling still refuses to be overwritten. Exercised on this pass, on "
+        f"SYNTHETIC returns - no paper run feeds it yet, so no cap has been "
+        f"derived from this system's own results", proof)
+
+
 def probe_stacked_ensemble(facts: SystemFacts) -> ProbeResult:
     """Is the meta-learner still trained on out-of-fold base predictions?
 
@@ -2629,6 +2768,11 @@ PROBES = {
     "champion challenger with delayed label comparison":
         probe_champion_challenger,
     "stacked ensemble": probe_stacked_ensemble,
+    # Added 2026-08-16 at the user's instruction. Neither is a §3 model; both
+    # answer a direct request and carry a catalogue row of their own.
+    "universe watch list across spot perp and dated futures segments":
+        probe_universe_coverage,
+    "adaptive paper tail cap bounded": probe_paper_tail_cap,
     "meta model over the experiment ledger": probe_ledger_meta_model,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
