@@ -1526,6 +1526,230 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_stacked_ensemble(facts: SystemFacts) -> ProbeResult:
+    """Is the meta-learner still trained on out-of-fold base predictions?
+
+    The defect this module closes structurally is the one that makes stacking
+    look brilliant: train the stacker on the base models' IN-SAMPLE predictions
+    and it sees a column that is nearly the answer. Because `stack()` takes
+    fitters rather than predictions, the probe can check the property directly -
+    it records every call the module makes and asserts no base learner was ever
+    asked to predict a row it had just trained on.
+
+    It also runs a REDUNDANT pair, because a module that always reports an
+    improvement is reporting the fit rather than the finding.
+    """
+    import tempfile
+
+    import numpy as np
+
+    from models.stacked_ensemble import BaseLearner, _sigmoid, stack
+    from validation.trial_registry import TrialRegistry
+
+    proof = "src/models/stacked_ensemble.py"
+    rng = np.random.default_rng(0)
+    n = 600
+    features = rng.normal(size=(n, 2))
+    labels = np.where(features[:, 0] + features[:, 1] > 0, 1, -1)
+    calls: list[tuple] = []
+
+    def column(index):
+        def fit_predict(train_rows, test_rows):
+            calls.append((np.asarray(train_rows), np.asarray(test_rows)))
+            return _sigmoid(3.0 * features[test_rows, index])
+        return fit_predict
+
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            registry = TrialRegistry(Path(scratch))
+            complementary = stack(
+                labels, [BaseLearner("a", column(0)), BaseLearner("b", column(1))],
+                family="microstructure", registry=registry,
+                trial_name="probe-complementary", n_groups=4, k_test=2)
+            redundant = stack(
+                labels,
+                [BaseLearner("a", column(0)),
+                 BaseLearner("b", lambda _t, rows:
+                             _sigmoid(2.9 * features[rows, 0]))],
+                family="microstructure", registry=registry,
+                trial_name="probe-redundant", n_groups=4, k_test=2)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the stacker raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    leaked = [i for i, (train_rows, test_rows) in enumerate(calls)
+              if set(train_rows.tolist()) & set(test_rows.tolist())]
+    broken = []
+    if leaked:
+        broken.append(
+            f"{len(leaked)} base-learner call(s) were asked to predict rows they "
+            f"had just trained on - the meta-learner is being fed in-sample base "
+            f"predictions, which is the defect that makes a stack look brilliant")
+    if not complementary.beats_best_base:
+        broken.append(
+            f"two complementary base models did not beat the better of them "
+            f"({complementary.stack_accuracy:.3f} against "
+            f"{complementary.base_accuracies[complementary.best_base]:.3f})")
+    if redundant.beats_best_base:
+        broken.append(
+            "two REDUNDANT base models were reported as worth combining - the "
+            "stacker is reporting the fit rather than the finding")
+    if not complementary.meta_learner.converged:
+        broken.append("the meta-learner did not converge")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"no base learner saw a row it was asked to predict across "
+        f"{len(calls)} call(s); complementary pair "
+        f"{complementary.stack_accuracy:.3f} beats its best base "
+        f"{complementary.base_accuracies[complementary.best_base]:.3f}, and a "
+        f"redundant pair is correctly not worth combining. Exercised on this "
+        f"pass, on SYNTHETIC base models - no two real models exist to stack",
+        proof)
+
+
+def probe_ledger_meta_model(facts: SystemFacts) -> ProbeResult:
+    """Does it still refuse to model a ledger too small to model?
+
+    The row's honest state today is a refusal, and the probe reports the actual
+    trial count from the live registry against the floor - so the tile shows
+    progress toward being able to answer rather than a flat "not built".
+
+    A refusal that stopped firing is the failure that matters: a meta-model over
+    thirty trials produces coefficients, and coefficients read as knowledge.
+    """
+    from models.ledger_meta_model import (
+        MIN_TRIALS_TO_FIT, FitRefused, TrialOutcome, fit, summarise,
+    )
+    from validation.trial_registry import TrialRegistry
+
+    proof = "src/models/ledger_meta_model.py"
+    registry_root = facts.capture_root / "trials"
+    try:
+        live_trials = (TrialRegistry(registry_root).cumulative_count()
+                       if registry_root.is_dir() else 0)
+        # The refusal, checked on a ledger deliberately below the floor.
+        small = [TrialOutcome(i, "carry", "calm", i % 2 == 0, 1_000 + i)
+                 for i in range(MIN_TRIALS_TO_FIT - 10)]
+        refused = fit(small)
+        summary = summarise(small, abandoned=0)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the ledger meta-model raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    if not isinstance(refused, FitRefused):
+        return ProbeResult(
+            FAILING,
+            f"a meta-model was fitted on {len(small)} trial(s), below the floor "
+            f"of {MIN_TRIALS_TO_FIT} - coefficients from a ledger that size read "
+            f"as knowledge and describe the sample", proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"the live trial registry holds {live_trials} trial(s) against a floor "
+        f"of {MIN_TRIALS_TO_FIT}, so the model is correctly refused and the "
+        f"descriptive half is what is available: {summary.describe()}. The "
+        f"summary here is over a scratch ledger - no trial carries a regime "
+        f"label yet, because nothing joins a trial's window to "
+        f"features.volatility_regime", proof)
+
+
+def probe_champion_challenger(facts: SystemFacts) -> ProbeResult:
+    """Does it still keep pending decisions out of the score?
+
+    The defect this module exists to prevent is silent and one-sided: scoring a
+    pending decision as a loss punishes whichever model made more recent
+    predictions, which is always the challenger. So the probe plants a pending
+    decision and a matured-but-unsettled one alongside a settled population, and
+    checks all three land in different counts.
+
+    It also checks the floor still refuses a verdict on too few decisions, which
+    is the other way this goes quiet: a swap recommended off eleven observations
+    reads exactly like one recommended off a thousand.
+    """
+    import tempfile
+
+    from models.champion_challenger import (
+        MIN_MATURED_DECISIONS, NoVerdict, ShadowLedger,
+    )
+
+    proof = "src/models/champion_challenger.py"
+    hour = 3_600_000_000_000
+    start = 1_700_000_000_000_000_000
+    now = start + 1_000 * hour
+
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            ledger = ShadowLedger(Path(scratch) / "shadow")
+            settled = MIN_MATURED_DECISIONS + 20
+            for i in range(settled):
+                made = start + i * 60_000_000_000
+                ledger.record_decision(
+                    f"p{i:04d}", made_at_ns=made, matures_at_ns=made + hour,
+                    champion_prediction=1 if i % 3 else 0,
+                    challenger_prediction=1)
+                ledger.settle(f"p{i:04d}", 1, settled_at_ns=made + 2 * hour)
+            # One matured with nobody writing the outcome, one still pending.
+            ledger.record_decision("stale", made_at_ns=start,
+                                   matures_at_ns=start + hour,
+                                   champion_prediction=0,
+                                   challenger_prediction=1)
+            ledger.record_decision("pending", made_at_ns=now,
+                                   matures_at_ns=now + hour,
+                                   champion_prediction=0,
+                                   challenger_prediction=1)
+            verdict = ledger.compare(now_ns=now)
+
+            thin = ShadowLedger(Path(scratch) / "thin")
+            for i in range(MIN_MATURED_DECISIONS - 5):
+                made = start + i * 60_000_000_000
+                thin.record_decision(f"t{i:04d}", made_at_ns=made,
+                                     matures_at_ns=made + hour,
+                                     champion_prediction=0,
+                                     challenger_prediction=1)
+                thin.settle(f"t{i:04d}", 1, settled_at_ns=made + 2 * hour)
+            thin_verdict = thin.compare(now_ns=now)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the shadow ledger raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if getattr(verdict, "matured_decisions", None) != settled:
+        broken.append(
+            f"{getattr(verdict, 'matured_decisions', '?')} decision(s) scored "
+            f"from {settled} settled - a pending or unsettled decision is "
+            f"reaching the comparison, which punishes the challenger by "
+            f"construction")
+    if getattr(verdict, "pending_decisions", None) != 1:
+        broken.append("the pending decision is not being counted apart")
+    if getattr(verdict, "unsettled_past_maturity", None) != 1:
+        broken.append(
+            "a matured decision nobody settled is not counted apart - that is an "
+            "operational fault and it looks identical to pending unless split")
+    if not isinstance(thin_verdict, NoVerdict):
+        broken.append(
+            f"a verdict was issued on {MIN_MATURED_DECISIONS - 5} decision(s), "
+            f"below the floor of {MIN_MATURED_DECISIONS}")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"{verdict.matured_decisions} matured decision(s) scored, 1 pending and "
+        f"1 matured-but-unsettled held out; a {MIN_MATURED_DECISIONS - 5}-decision "
+        f"ledger is refused a verdict rather than given a weak one. Exercised on "
+        f"this pass, on a scratch ledger - no challenger is shadowing anything "
+        f"yet, because no model is live to be the champion", proof)
+
+
 def probe_walk_forward(facts: SystemFacts) -> ProbeResult:
     """Does it still see a decay that a pooled score hides?
 
@@ -2402,6 +2626,10 @@ PROBES = {
     "gradient boosted trees": probe_gradient_boosted_trees,
     "rolling walk forward retrain": probe_walk_forward,
     "model registry with aliases": probe_model_registry,
+    "champion challenger with delayed label comparison":
+        probe_champion_challenger,
+    "stacked ensemble": probe_stacked_ensemble,
+    "meta model over the experiment ledger": probe_ledger_meta_model,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
     # dummy always returns rows. See `probe_calendar_effects`.
