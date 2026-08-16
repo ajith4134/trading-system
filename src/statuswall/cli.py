@@ -15,6 +15,7 @@ from statuswall.build_progress import (
     count_unresolved_ledger_rows, probe_forward_paper, render_build_progress_page,
     summarise_build_progress,
 )
+from statuswall.blotter_page import render_blotter_page
 from statuswall.catalogue import read_catalogue
 from statuswall.evidence import (
     NOT_BUILT, SEVERITY_ORDER, STATE_LABEL, assess, measure_system, verify_probe_coverage,
@@ -81,6 +82,21 @@ def main(argv: list[str] | None = None) -> int:
         generated_at_epoch_s=int(dt.datetime.now(dt.timezone.utc).timestamp()),
     ), encoding="utf-8")
     print(f"wrote {progress_out}")
+
+    # The blotter rides the same pass and lands beside the other two, so the
+    # boards supervisor serves it without knowing it exists - the same wiring
+    # the build-progress board uses. Read from the engine's own journal, which
+    # is a different source from everything else on this pass, so a failure
+    # here must not cost the wall: it is caught and reported on the page.
+    from paper.blotter import read_blotter
+
+    blotter_out = out.parent / "blotter.html"
+    blotter_out.write_text(render_blotter_page(
+        view=read_blotter(Path(args.capture_root)),
+        generated_at=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        generated_at_epoch_s=int(dt.datetime.now(dt.timezone.utc).timestamp()),
+    ), encoding="utf-8")
+    print(f"wrote {blotter_out}")
 
     counts = {state: 0 for state in SEVERITY_ORDER}
     for result in results.values():

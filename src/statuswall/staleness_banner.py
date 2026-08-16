@@ -33,15 +33,23 @@ import html
 STALE_AFTER_SECONDS = 15 * 60
 
 
-def render_staleness_banner(generated_at_epoch_s: int, label: str,
+def render_staleness_banner(generated_at_epoch_s: int, generated_at_label: str,
                             stale_after_seconds: int = STALE_AFTER_SECONDS
                             ) -> str:
     """The banner element and the script that ages it.
 
-    `generated_at_epoch_s` is when the page was built. `label` names the page, so
-    a reader with two boards open knows which one went quiet.
+    `generated_at_epoch_s` is when the page was built, for the script.
+    `generated_at_label` is that same instant written for a human, and it is what
+    the server-rendered fallback shows.
+
+    The second parameter was called `label` until 2026-08-16, and its docstring
+    said it "names the page". It does not - the template puts it where the
+    generation instant goes - and a new caller read the docstring, passed a page
+    name, and shipped a banner reading "generated at the paper blotter". Renamed
+    so the next reader cannot make the same mistake (Rule 7: a name that lies is
+    worse than one that is vague).
     """
-    safe_label = html.escape(label)
+    safe_label = html.escape(generated_at_label)
     return f"""
 <div id="staleness" class="staleness staleness-unknown"
      data-generated="{int(generated_at_epoch_s)}"

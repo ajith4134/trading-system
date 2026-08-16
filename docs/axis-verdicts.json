@@ -1044,6 +1044,26 @@
     "src/strategy/funding_carry.py",
     "src/statuswall/evidence.py"
    ]
+  },
+  "paper.blotter": {
+   "learning": "n/a: it reads a journal and pairs fills. It computes nothing the journal does not already contain and writes nothing back, which is deliberate - a blotter that derived anything would be a second source of truth about what was traded",
+   "reasoning": "pass: four decisions, and the first is the reason the module exists rather than a query. (1) A journal holding only BUYs reports that a round trip is IMPOSSIBLE, never as an empty table. On 2026-08-16 the live journal held 12,576 fills and every one was a buy - an empty closed-trades table would read as 'nothing closed today' when the truth is that nothing CAN close until the strategy sells, and those are different facts about the system. (2) Both accountings, always. Every fill carries an optimistic and a pessimistic price, and a blotter reporting one figure is choosing which - the one that gets chosen is the flattering one. spread_bps is carried too, because on a strategy whose participation is uncalibrated the gap between the two is the first number worth reading: it is how much of the result is an execution assumption rather than a market outcome. (3) An unmarked open position reports unrealised_pnl of None, not zero - zero reads as flat and the truth is unknown, the same distinction features.staleness insists on. (4) FIFO is DECLARED rather than assumed, because it changes the reported P&L of every partially-closed position - LIFO on a rising market books different trades - and it matches how a venue reports its own fills, which is the only tie-breaker that matters once this is reconciled against exchange truth. An exit larger than the position opens the other way rather than flipping one, matching the PROFIT-TAIL spec's rule that a reversal is a new trade. makes_edge_claim rides the view, because a blotter showing P&L for a strategy that claims no edge, without saying so, invites reading it as performance",
+   "depth": "pass: it changes what a reader concludes when the system is wrong. The wall tile reads DEGRADED - not green, not red - on a journal with only one side, and says the engine is fine while the system has never completed a trade. That is the state the board could not previously express: 12,576 fills looks like activity, and zero round trips is the fact that matters. It is reached on every board pass and reads the live journal rather than a fixture. What it does not do is mark positions itself: marks are supplied by the caller, because marking against a price this module fetched would put a stale-price decision inside a reader",
+   "evidence": [
+    "tests/test_blotter.py",
+    "src/paper/blotter.py",
+    "src/statuswall/evidence.py"
+   ]
+  },
+  "statuswall.blotter_page": {
+   "learning": "n/a: it renders a view it is handed and computes nothing.",
+   "reasoning": "pass: three renderings that the obvious page gets wrong. (1) Every position and every round trip is shown under BOTH accountings, side by side. A page with one P&L column is choosing which, and the column that gets chosen is the flattering one; putting them adjacent makes the gap between them read rather than looked up, and on a strategy whose participation is uncalibrated that gap is the first number worth reading. (2) A journal holding one side renders a BANNER saying a round trip is impossible, never an empty table - an empty table reads as a quiet session and the truth is that the system has never completed a trade. (3) Truncation is stated: several hundred positions do not belong in one table, so the largest MAX_ROWS by notional are shown and the count NOT shown is printed beside them, because a silently truncated board reads as a complete one - the failure Rule 8 names. An unmarked position renders UNKNOWN in the unrealised column rather than a zero, and the banner says marking against a stale price would report a number about a market that has moved. The no-edge-claim and uncalibrated banners ride the page whenever they are true, so nobody reads plumbing proof as performance",
+   "depth": "pass: it is the page a reader opens to answer 'what has paper trading done', and it currently answers 'nothing has ever closed' in a red banner rather than with 363 rows of open positions that look like activity. Generated on every boards pass by statuswall.cli beside the wall and the build-progress board, from the engine's own journal - so it goes stale visibly through the shared staleness banner rather than silently. Nothing here is typed and nothing derived: the generator is the deliverable and the page is its output",
+   "evidence": [
+    "src/statuswall/blotter_page.py",
+    "src/statuswall/cli.py",
+    "src/paper/blotter.py"
+   ]
   }
  }
 }

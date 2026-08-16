@@ -1526,6 +1526,59 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_paper_blotter(facts: SystemFacts) -> ProbeResult:
+    """Open positions and closed round trips, as the journal actually has them.
+
+    This tile exists to answer a question directly: what has paper trading
+    actually done. So it reports the counts rather than a health verdict, and
+    the state reflects what the numbers mean.
+
+    DEGRADED when the journal holds only one side. That is not a broken engine -
+    `plumbing-momentum` rests a bid and never sells - but a blotter showing zero
+    closed trades against thousands of fills is a system that cannot yet
+    demonstrate a single completed trade, and a green tile would say the opposite.
+    """
+    from paper.blotter import OPTIMISTIC, PESSIMISTIC, read_blotter
+
+    proof = str(facts.capture_root / "paper" / "forward")
+    try:
+        view = read_blotter(facts.capture_root)
+    except Exception as error:                     # noqa: BLE001 - reported, not hidden
+        return ProbeResult(NOT_MEASURED, f"read_blotter raised: {error}", proof)
+
+    if view.fills_read == 0:
+        return ProbeResult(
+            NOT_MEASURED,
+            "no fills journalled - the paper engine has not traded, so there is "
+            "no blotter to show", proof)
+
+    uncalibrated = ""
+    if view.uncalibrated_fills:
+        uncalibrated = (f" All {view.uncalibrated_fills} fill(s) carry "
+                        f"uncalibrated=true, so the fill prices rest on a "
+                        f"declared participation rather than a measured one.")
+
+    if not view.closed_trades_possible:
+        only = view.sides_seen[0] if view.sides_seen else "one side"
+        return ProbeResult(
+            DEGRADED,
+            f"{view.fills_read} fill(s) and {len(view.open_positions)} open "
+            f"position(s), but ZERO closed round trips - every fill is a {only}, "
+            f"so the system has never completed a trade. Not a broken engine: "
+            f"the running strategy ({', '.join(view.strategies)}) rests a bid "
+            f"and never exits.{uncalibrated}", proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"{view.fills_read} fill(s), {len(view.open_positions)} open, "
+        f"{len(view.closed_trades)} closed; realised "
+        f"{view.realised_pnl(OPTIMISTIC):.6f} optimistic against "
+        f"{view.realised_pnl(PESSIMISTIC):.6f} pessimistic, and the gap between "
+        f"those two is how much of it is an execution assumption. "
+        f"{view.unmarked_positions} open position(s) have no mark, so their "
+        f"unrealised P&L is unknown rather than zero.{uncalibrated}", proof)
+
+
 def probe_funding_carry(facts: SystemFacts) -> ProbeResult:
     """Does the carry setup still refuse what it cannot hedge?
 
@@ -2841,6 +2894,7 @@ PROBES = {
     # §4's first strategy family. Graded on whether it still refuses what it
     # cannot hedge - see `probe_funding_carry`.
     "funding rate carry": probe_funding_carry,
+    "paper blotter open positions and closed round trips": probe_paper_blotter,
     "meta model over the experiment ledger": probe_ledger_meta_model,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
