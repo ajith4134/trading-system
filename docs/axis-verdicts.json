@@ -277,6 +277,15 @@
     "src/store/trade_bars.py"
    ]
   },
+  "store.live_bars": {
+   "learning": "n/a: a build entry point. Nothing is fitted",
+   "reasoning": "pass: it publishes provisional bars WITHOUT re-stamping availability, so the complete hourly build - whose stamp is derived from the data and is therefore EARLIER than any wall clock - still supersedes them under `drop_duplicates(keep=\"last\")`. The first version stamped `now` and would have made every provisional bar permanent in a store with no delete path",
+   "depth": "pass: the minute containing the newest readable trade is dropped rather than published, because the readable prefix ends inside the last flush interval and that minute is missing trades that already happened. A file with nothing flushed yet is counted apart from a symbol with no trades - the exact pair `store.cli` skips the whole live hour to avoid confusing. Measured against the real archive: lag from 69 minutes to 30-90 seconds, and a second pass over the same hour writes 0 bars rather than a duplicate copy per minute",
+   "evidence": [
+    "tests/test_live_bars.py",
+    "src/store/live_bars.py"
+   ]
+  },
   "store.cli": {
    "learning": "n/a: a build entry point. Nothing is fitted",
    "reasoning": "pass: it builds from EVENT time with a bounded lookahead rather than from the folder a frame landed in, and drops only what is known not to be dollar-quoted - unknown and unlisted are built and named",

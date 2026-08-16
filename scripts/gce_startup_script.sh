@@ -116,6 +116,16 @@ start_as_user "capture_supervisor.sh coinbase" \
 # the system was quietly reading three-hour-old funding as a current number.
 start_as_user "bars_supervisor.sh" \
   "cd ${REPO} && nohup scripts/bars_supervisor.sh"
+# Bars for the hour still being written, since 2026-08-16. Separate from
+# bars_supervisor.sh for the same reason bars are separate from store: its
+# intraday pass sits behind a daily universe-wide build, so it refreshes once per
+# full pass. Measured before this existed: the newest bar the clock-gated reader
+# would serve was 69 minutes old, against a bot the user has ruled is intraday on
+# every segment. After: 1.8 minutes. Two tiers inside it - core at 60s, the whole
+# captured universe at 300s - because a universe pass costs 95s at the end of an
+# hour and would not fit in a 60s loop.
+start_as_user "live_bars_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/live_bars_supervisor.sh"
 # Last, and after the capture supervisors on purpose: it reports on what they
 # produce, and starting it first would have it observe an empty archive and
 # record "nothing captured" as this boot's first verdict.
