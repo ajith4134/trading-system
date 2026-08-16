@@ -354,8 +354,27 @@ not repeal that evidence. It raises the stakes on measuring it honestly.
 
 ### What this ruling requires, in order
 
-1. **Fix the data lag** — bars fresh enough for an intraday decision. Nothing else
-   on this list is measurable until this is true.
+1. ~~**Fix the data lag**~~ — **DONE 2026-08-16**, `store.live_bars` +
+   `scripts/live_bars_supervisor.sh`, commit `3569c80`. Bars are now built for the
+   hour still being written, from the readable prefix that `capture.raw_writer`
+   guarantees by closing a zstd frame and fsyncing every 30 seconds.
+
+   Measured through the clock-gated reader, before and after: **69 minutes → 1.8
+   minutes** on all four venues, and the forward paper engine's newest event went
+   to **103 seconds** old. Two tiers, sized by measurement at the worst point of an
+   hour: core 12 symbols ~5s at a 60s interval, the whole captured universe of
+   2,303 symbols 95s at 300s.
+
+   **The provisional bars are not an approximation.** Only minutes that closed
+   before that symbol's newest readable trade are published, and stamps are left
+   data-derived so the complete build supersedes correctly. Of **63,147** hour-15
+   bars published provisionally, **zero** differed from the complete build on
+   close, high, low, open or volume.
+
+   Two gaps this did NOT close, and neither is a scheduling problem:
+   **options** still has no venue to build from (item 2), and **hyperliquid**
+   subscribes `trades_*` for only BTC/ETH/SOL, so 174 of its 177 symbols in the
+   store are a week old — a capture-breadth gap that belongs with item 2.
 2. **Capture an options venue** — the segment has no data, and no options feature
    can be built or probed against nothing.
 3. **Re-run the cost gate as a feasibility question**, per segment and per
