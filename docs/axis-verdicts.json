@@ -1104,6 +1104,16 @@
     "src/paper/equity_curve.py",
     "src/risk/paper_tail_cap.py"
    ]
+  },
+  "statuswall.blotter_cli": {
+   "learning": "n/a: it renders a page on a timer.",
+   "reasoning": "pass: it exists because of a measured coupling failure. The blotter rode statuswall.cli's measurement pass, which takes ten to nineteen minutes because every probe reads the store, while paper.blotter.read_blotter returns in about 0.2 seconds. The blotter could therefore never be fresher than the slowest probe on the board - the user opened /blotter.html on 2026-08-16 and was served a page 3.5 HOURS old reporting zero closed trades when four had closed. Running the ten-minute pass more often would have burned CPU to fix a problem that was never about the interval. A render failure is reported and retried rather than fatal, because a journal being appended to while it is read is the ordinary case and a loop that dies on one bad read leaves the board frozen with nothing saying so - the exact failure boards_supervisor.sh was written after. statuswall.cli still writes the blotter too, deliberately: two writers of one file is normally a smell, but the file is written whole, whichever ran last wins, and removing it from the wall pass would mean a board with no blotter at all when this loop is not running - a missing page rather than an old one",
+   "depth": "pass: it changes what a reader sees. The two boards now age independently, which is also the more honest arrangement - the wall's age is the age of a measurement sweep and the blotter's is the age of a journal read, and a single timestamp covering both would be wrong about one of them. Running as a supervised child on a 60-second interval",
+   "evidence": [
+    "src/statuswall/blotter_cli.py",
+    "scripts/boards_supervisor.sh",
+    "src/paper/blotter.py"
+   ]
   }
  }
 }

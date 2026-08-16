@@ -2,10 +2,16 @@
 # Keep the boards reachable AND current: a generator, an authenticated local
 # server, and a tunnel to it.
 #
-# Three children, supervised independently, because they fail independently: the
-# generator dies on a probe error, the server on a code error, the tunnel when
-# Cloudflare drops the edge connection. Restarting all three when only one died
-# would change the public URL for no reason.
+# Four children, supervised independently, because they fail independently: the
+# generator dies on a probe error, the blotter on a torn journal read, the server
+# on a code error, the tunnel when Cloudflare drops the edge connection.
+# Restarting all four when only one died would change the public URL for no reason.
+#
+# The blotter is separate from the generator rather than part of its pass, and the
+# reason is measured: the wall's pass takes ten to nineteen minutes because every
+# probe reads the store, while the blotter reads one directory of NDJSON in about
+# 0.2 seconds. Riding the pass meant the blotter could never be fresher than the
+# slowest probe on the board.
 #
 # The generator exists because this script used to serve boards and never rebuild
 # them. On 2026-08-08 the wall being served was five days old - written 2026-08-03
@@ -48,6 +54,14 @@ HEALTHY_RUN_SECONDS=120
 # archive, the store and the repo, so this is not free - but it is seconds against
 # an interval of minutes, and the alternative is a board whose age is unbounded.
 REGENERATE_INTERVAL=${BOARDS_REGENERATE_INTERVAL:-300}
+# The blotter has its own, much shorter interval and its own child. It reads one
+# directory of NDJSON in about 0.2s, where the wall's measurement pass takes ten
+# to nineteen minutes because every probe reads the store. Riding that pass meant
+# the blotter could never be fresher than the slowest probe on the board - the
+# user opened it 2026-08-16 and was served a page 3.5 hours old showing zero
+# closed trades when four had closed.
+BLOTTER_INTERVAL=${BOARDS_BLOTTER_INTERVAL:-60}
+BLOTTER_LOG="$STATE_DIR/blotter.log"
 WALL_OUT="$BOARDS_DIR/status-wall.html"
 
 mkdir -p "$STATE_DIR"
@@ -55,6 +69,7 @@ mkdir -p "$STATE_DIR"
 generator_pid=""
 server_pid=""
 tunnel_pid=""
+blotter_pid=""
 
 record_restart() {
   printf '{"ts":"%s","child":"%s","exit_code":%s,"ran_seconds":%s}\n' \
@@ -65,7 +80,7 @@ record_restart() {
 # orphaned cloudflared keeps a tunnel alive that nothing is supervising, and the
 # next start would publish a second URL to the same boards.
 stop_children() {
-  for pid in "$generator_pid" "$server_pid" "$tunnel_pid"; do
+  for pid in "$generator_pid" "$server_pid" "$tunnel_pid" "$blotter_pid"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
   done
   wait 2>/dev/null
@@ -137,6 +152,15 @@ supervise() {
       wait "$generator_pid"
       code=$?
       generator_pid=""
+    elif [ "$name" = "blotter" ]; then
+      "$PYTHON" -m statuswall.blotter_cli \
+        --capture-root "$HOME/capture" \
+        --out "$BOARDS_DIR/blotter.html" \
+        --interval-seconds "$BLOTTER_INTERVAL" >> "$BLOTTER_LOG" 2>&1 &
+      blotter_pid=$!
+      wait "$blotter_pid"
+      code=$?
+      blotter_pid=""
     elif [ "$name" = "server" ]; then
       : > "$SERVER_LOG"
       BOARDS_CREDENTIALS_FILE="$CREDENTIALS" "$PYTHON" -m statuswall.board_server \
@@ -178,6 +202,7 @@ export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 ensure_credentials
 
 supervise generator &
+supervise blotter &
 supervise server &
 supervise tunnel &
 wait

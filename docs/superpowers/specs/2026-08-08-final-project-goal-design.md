@@ -286,6 +286,85 @@ smoothness rather than against it.
 
 ---
 
+## 3a. INTRADAY, on all three segments — user ruling, 2026-08-16
+
+> **"our entire trading crypto bot is intraday on all segments spot, futures, options."**
+
+Recorded verbatim because it changes §3's ruling, and §3 was itself settled with the
+user. Where the two conflict, this section is the later word.
+
+### What it changes
+
+**Carry is no longer the earnings core by right.** §3 makes funding carry and
+spot-perp basis the core *because they are latency-immune* — that is the stated
+reason, in those words. An intraday mandate removes the property the ruling rests
+on. Carry does not stop being a family; it stops being the thing "constantly"
+rests on, and it now has to win capital from the allocator on the same terms as
+everything else.
+
+**The three segments are named and unequal today:**
+
+| Segment | Captured | State |
+|---|---|---|
+| **Spot** | `binance-spot`, `coinbase` | live, byte-exact |
+| **Futures — perpetual** | `binance`, `bybit`, `hyperliquid` | live, plus funding |
+| **Futures — dated** | `bybit` | live, 48 contracts, `features.term_structure` reads them |
+| **Options** | **nothing** | **no venue is captured at all** |
+
+Options is not a phase behind — it is a segment with **zero data**. `FEATURES.md`
+§5b is eleven unbuilt rows at P3, and its own header says the layer is *"required
+before any options position"*. Deribit carries most crypto options volume, and
+§5b already records that trading it means accepting single-venue concentration
+against the per-venue exposure cap. Nothing about that is decided by this ruling;
+what the ruling does is move it from "later" to "named, missing, and blocking."
+
+**The data path becomes the binding constraint, and today it fails the mandate.**
+Measured 2026-08-16: raw capture is live to the second on every venue, and the
+newest bar the clock-gated reader serves was **69 minutes old**. Bars are built
+only for hours that have closed, in passes roughly every 35 minutes. For carry —
+8-hourly settlement — that lag is immaterial, which is why it was never a
+problem. **For an intraday system it is disqualifying.** No intraday strategy can
+be honestly judged on a feed that stale, and none should be.
+
+**Costs bind harder than anything else.** A round trip is ~24 bps on this venue
+set. Carry earns across an 8-hour settlement; an intraday trade must clear the
+same 24 bps in minutes to hours. `cost.round_trip_cost.is_signal_viable` was
+already the gate every signal passes — under an intraday mandate it becomes the
+constraint that decides whether the mandate is achievable at all, and the honest
+answer for most instruments is expected to be no.
+
+### What it does NOT change
+
+**The brain structure already spans intraday.** §8's definition of done is three
+brains — *hours→minutes, minutes→seconds, sub-second* — so an intraday mandate is
+consistent with the architecture rather than a replacement for it. What changes is
+which brain carries the weight, not that a brain exists for it.
+
+**The prime directive is untouched.** §0 stands: maximise the fraction of green
+days subject to a tail cap the system cannot raise. Intraday is a statement about
+holding period, not about objective, and the tail cap of §6 remains the user's
+alone.
+
+**`DECISIONS.md` §3's caveat still stands and is now more load-bearing, not
+less.** Sub-second was kept as a branch the system *measures and prunes* rather
+than one either party asserts about, on the record that HFT from a cloud VM is
+not realistically winnable — market making ~75% captured by HFT firms, triangular
+arbitrage on Binance found never profitable after fees. An intraday mandate does
+not repeal that evidence. It raises the stakes on measuring it honestly.
+
+### What this ruling requires, in order
+
+1. **Fix the data lag** — bars fresh enough for an intraday decision. Nothing else
+   on this list is measurable until this is true.
+2. **Capture an options venue** — the segment has no data, and no options feature
+   can be built or probed against nothing.
+3. **Re-run the cost gate as a feasibility question**, per segment and per
+   holding period, and write down what survives. If most of the universe cannot
+   clear 24 bps intraday, that is the finding and it belongs on the board.
+4. **Re-rank `FEATURES.md` §4.** "Start here" currently marks the two
+   latency-immune families, and that marking was reasoned from the property this
+   ruling removes.
+
 ## 4. Capital is a dial
 
 The user sets it. Anywhere from roughly **$2k to $100k+**. It may be changed at any time and the
