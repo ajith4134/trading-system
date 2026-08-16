@@ -1526,6 +1526,141 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def _exercise_exit_policy():
+    """Run the four rails and the ratchet once. Shared by two tiles.
+
+    Two catalogue rows are satisfied by one module - the deterministic exit
+    policy and the ratchet inside it - and running the same exercise twice would
+    be two probes disagreeing about one measurement the first time either drifted.
+    """
+    from decimal import Decimal
+
+    from strategy.deterministic_exit import (
+        HARD_STOP, LONG, PROFIT_LOCK, PROFIT_TARGET, SHORT, VERTICAL_BARRIER,
+        Bar, ExitPolicy, ratchet_profit_lock, run_exit_policy,
+    )
+
+    def bar(high, low, close):
+        return Bar(high=Decimal(str(high)), low=Decimal(str(low)),
+                   close=Decimal(str(close)))
+
+    entry, atr = Decimal(100), Decimal(1)
+    results = {
+        "hard_stop": run_exit_policy(LONG, entry, [bar(101, 96, 97)], atr),
+        "target": run_exit_policy(LONG, entry, [bar(105, 100, 104)], atr),
+        "lock": run_exit_policy(
+            LONG, entry,
+            [bar(103, 100, 102.5), bar(103, 101, 101.5), bar(102, 100, 100.5)],
+            atr),
+        "vertical": run_exit_policy(
+            LONG, entry, [bar(100, 100, 100)] * 8, atr,
+            ExitPolicy(max_holding_bars=4)),
+        "ambiguous": run_exit_policy(LONG, entry, [bar(105, 96, 100)], atr),
+    }
+    # The monotone property, exercised rather than trusted: a helpful branch
+    # added later is how "it never widens" dies.
+    lock, widened = None, False
+    for candidate in (Decimal(90), Decimal(95), Decimal(80), Decimal(97),
+                      Decimal(10)):
+        new = ratchet_profit_lock(LONG, lock, candidate)
+        widened = widened or (lock is not None and new < lock)
+        lock = new
+    short_lock, short_widened = None, False
+    for candidate in (Decimal(110), Decimal(105), Decimal(120)):
+        new = ratchet_profit_lock(SHORT, short_lock, candidate)
+        short_widened = short_widened or (short_lock is not None
+                                          and new > short_lock)
+        short_lock = new
+    return results, (widened or short_widened), lock
+
+
+def probe_ratchet_profit_lock(facts: SystemFacts) -> ProbeResult:
+    """Is the lock still monotone?
+
+    MD-017, and the one property the spec states absolutely: *"It never widens,
+    under any condition, for any model output. A lock that can loosen is not a
+    lock."* Exercised on every board pass rather than asserted, because the way
+    this dies is a helpful branch somebody adds later - and a lock that widened
+    once, on one path, leaves no trace in any output.
+    """
+    proof = "src/strategy/deterministic_exit.py"
+    try:
+        _results, widened, final_lock = _exercise_exit_policy()
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the exit policy raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    if widened:
+        return ProbeResult(
+            FAILING,
+            "THE PROFIT LOCK WIDENED. It moved away from the position on at "
+            "least one path, which the spec forbids under any condition - a lock "
+            "that can loosen is not a lock, and the loss it fails to prevent "
+            "leaves no trace in any output", proof)
+    return ProbeResult(
+        PARTIAL,
+        f"monotone across a falling-then-rising candidate sequence on both "
+        f"sides; the long lock ends at {final_lock}, the highest candidate ever "
+        f"seen, and never moved down. Volatility-scaled by construction - every "
+        f"distance is a multiple of the ATR measured at entry, never a percent. "
+        f"Exercised on this pass. No venue-side mirror: MD-018 needs an order "
+        f"path this system does not have, so a lock held only in memory is what "
+        f"exists", proof)
+
+
+def probe_deterministic_exit(facts: SystemFacts) -> ProbeResult:
+    """Are all four rails still reachable, and does the adverse one still win?
+
+    A rail nothing can trigger is a rail that is not in the policy, so the probe
+    drives each of the four and fails if any stops firing. And a bar that touched
+    both the target and the hard stop is resolved AGAINST the position - assuming
+    the favourable one is worth between a few basis points and the whole trade,
+    on exactly the bars that matter most, and it would show up as a better
+    result.
+    """
+    from strategy.deterministic_exit import (
+        HARD_STOP, PROFIT_LOCK, PROFIT_TARGET, VERTICAL_BARRIER,
+    )
+
+    proof = "src/strategy/deterministic_exit.py"
+    try:
+        results, _widened, _lock = _exercise_exit_policy()
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the exit policy raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    expected = {"hard_stop": HARD_STOP, "target": PROFIT_TARGET,
+                "lock": PROFIT_LOCK, "vertical": VERTICAL_BARRIER}
+    broken = [f"{name} exited on {results[name].exit_reason} rather than "
+              f"{reason}" for name, reason in expected.items()
+              if results[name].exit_reason != reason]
+    ambiguous = results["ambiguous"]
+    if ambiguous.exit_reason != HARD_STOP:
+        broken.append(
+            f"a bar touching BOTH rails exited on {ambiguous.exit_reason} rather "
+            f"than the hard stop - the ambiguity is being resolved in the "
+            f"position's favour, which reads as a better result")
+    if not ambiguous.is_ambiguous:
+        broken.append("a bar touching both rails was not marked ambiguous")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    lock_record = results["lock"]
+    return ProbeResult(
+        PARTIAL,
+        f"all four rails reachable and the ambiguous bar resolved against the "
+        f"position; the lock case kept {lock_record.pnl_per_unit} per unit and "
+        f"recorded MFE {lock_record.max_favourable_excursion} against MAE "
+        f"{lock_record.max_adverse_excursion}, which is the path shape "
+        f"PROFIT-TAIL trains on. Exercised on this pass - nothing routes live "
+        f"positions through it yet, so no exit record has been generated from "
+        f"the market", proof)
+
+
 def probe_paper_blotter(facts: SystemFacts) -> ProbeResult:
     """Open positions and closed round trips, as the journal actually has them.
 
@@ -2895,6 +3030,10 @@ PROBES = {
     # cannot hedge - see `probe_funding_carry`.
     "funding rate carry": probe_funding_carry,
     "paper blotter open positions and closed round trips": probe_paper_blotter,
+    # Two catalogue rows, one module: the exit policy and the ratchet inside it.
+    "ratchetprofitlock monotone volatility scaled": probe_ratchet_profit_lock,
+    "deterministic exit policy as p1 fallback and permanent rollback target":
+        probe_deterministic_exit,
     "meta model over the experiment ledger": probe_ledger_meta_model,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
