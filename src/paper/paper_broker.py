@@ -84,7 +84,9 @@ class RestingPair:
     symbol: str
     venue: str
     side: str
-    limit_price: Decimal
+    # None is a MARKET order - it crosses on the next print rather than
+    # resting at a price. See `paper.fill_model.simulate_market_fills`.
+    limit_price: Decimal | None
     optimistic_order: Order
     pessimistic_order: Order
 
@@ -132,16 +134,38 @@ class PaperBroker:
                 f"make impossible")
             return _rejected(raise_reason)
         if intent.reduce_only:
-            return _rejected(
-                "reduce_only is not implemented, and is refused rather than "
-                "ignored — an order that silently does not reduce is worse than "
-                "one that was never accepted")
+            # Implemented 2026-08-16, having been refused until then. An exit is
+            # a reduce-only order and refusing the flag meant every exit was
+            # rejected. Checked against the position rather than trusted: an
+            # order that silently does not reduce is worse than one that was
+            # never accepted, and so is one that reduces past flat and opens the
+            # other way.
+            held = self.optimistic.position(intent.symbol, intent.venue).quantity
+            reducing = ((intent.side.upper() == "SELL" and held > 0)
+                        or (intent.side.upper() == "BUY" and held < 0))
+            if not reducing:
+                return _rejected(
+                    f"reduce_only order on {intent.venue}:{intent.symbol} with "
+                    f"a position of {held} — there is nothing to reduce, so "
+                    f"accepting it would open a position under a flag that says "
+                    f"it cannot")
+            if intent.quantity > abs(held):
+                return _rejected(
+                    f"reduce_only order for {intent.quantity} against a "
+                    f"position of {abs(held)} — refused rather than trimmed, "
+                    f"because a caller that asked to close more than it holds "
+                    f"has a different view of the position than this book does, "
+                    f"and silently trimming hides the disagreement")
         if intent.price is None:
-            return _rejected(
-                "a market order has no resting price for a trade to print "
-                "through, and filling it at the last touch this broker happened "
-                "to see prices it at a moment already known to have gone the "
-                "right way")
+            # A MARKET order. Accepted since 2026-08-16 at the user's
+            # instruction, and the original objection is answered rather than
+            # overruled: it was that filling at "the last touch this broker
+            # happened to see prices it at a moment already known to have gone
+            # the right way" - lookahead. The engine applies prints to resting
+            # orders BEFORE submitting anything from that same print, so a market
+            # order is first offered the NEXT bar and never fills on the print
+            # that caused it. See `paper.fill_model.simulate_market_fills`.
+            pass
         if intent.venue not in self._fees_by_venue:
             return _rejected(
                 f"no fee schedule declared for venue {intent.venue!r} — refused "
@@ -161,7 +185,9 @@ class PaperBroker:
             limit_price=intent.price,
             optimistic_order=Order(**common), pessimistic_order=Order(**common))
         return {"status": "resting", "client_order_id": client_order_id,
-                "limit_price": str(intent.price)}
+                "limit_price": (None if intent.price is None
+                                else str(intent.price)),
+                "order_type": "market" if intent.price is None else "limit"}
 
     # --- the tape drives the fills -------------------------------------------
 

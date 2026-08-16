@@ -39,11 +39,13 @@ from pathlib import Path
 from cost.fee_schedule import FeeRate
 from execution.order_intent_wal import IntentExpired, OrderIntent, OrderIntentWal
 from ops.watchdog import is_killed, kill_reason
+from paper.exit_manager import ExitManager
 from paper.fill_model import Participation
 from paper.forward_journal import ForwardJournal
 from paper.market_replay import MarketReplay, TapeEvent
 from paper.paper_broker import PaperBroker
 from store.clock_gated_reader import ClockGatedReader
+from strategy.deterministic_exit import Bar
 from validation.holdout_custodian import HoldoutCustodian
 
 BARS_DATASET = "bars_60000000000ns"
@@ -64,7 +66,14 @@ class KillSwitchEngaged(RuntimeError):
 
 
 class PlumbingMomentum:
-    """Rest a BUY at the previous close and hope the bar trades through it.
+    """Buy at market on every bar after the first.
+
+    Changed 2026-08-16 at the user's instruction that orders be market orders
+    wherever possible. It rested a BUY at the previous close until then, and the
+    market version is both simpler and more honest here: a resting order needs a
+    participation rate nobody has measured, which is why every fill this system
+    has produced carries `uncalibrated=true`. A market order does not queue, so
+    that assumption disappears from these fills entirely.
 
     **This is not a strategy and its P&L is not evidence of edge.** It is a coin
     flip with extra steps, kept because the engine needs *something* to submit
@@ -105,7 +114,10 @@ class PlumbingMomentum:
             strategy=self.name, symbol=event.symbol, venue=event.venue,
             side="BUY", quantity=self._quantity,
             created_at_ns=now_ns, valid_for_ns=INTENT_VALID_NS,
-            price=previous)
+            # No price: a MARKET order. It crosses on the next print, never on
+            # the one that produced this decision - the engine applies prints to
+            # resting orders before it submits from them.
+            price=None)
 
 
 STRATEGIES = {PlumbingMomentum.name: PlumbingMomentum}
@@ -118,6 +130,10 @@ class EngineCounts:
     polls: int = 0
     events_fed: int = 0
     orders_submitted: int = 0
+    # Exits counted apart from entries. Lumped together, a run that stopped
+    # exiting entirely reads as a run that submitted slightly fewer orders.
+    exits_submitted: int = 0
+    exits_proposed: int = 0
     orders_rejected: int = 0
     orders_expired: int = 0
     # Counted apart from orders_rejected because they mean different things: the
@@ -135,13 +151,19 @@ class ForwardEngine:
 
     def __init__(self, *, replay: MarketReplay, broker: PaperBroker,
                  wal: OrderIntentWal, journal: ForwardJournal, strategy,
-                 kill_root: Path) -> None:
+                 kill_root: Path, exits: ExitManager | None = None) -> None:
         self._replay = replay
         self._broker = broker
         self._wal = wal
         self._journal = journal
         self._strategy = strategy
         self._kill_root = Path(kill_root)
+        # Optional so a caller can run the engine with no exit policy at all -
+        # which is what it did until 2026-08-16, and which produced 12,983 fills
+        # and zero closed round trips. A default of None rather than a default
+        # policy: an exit policy applied because nobody passed one is a policy
+        # nobody chose.
+        self._exits = exits
         self.counts = EngineCounts()
 
     def _assert_not_killed(self) -> None:
@@ -176,6 +198,33 @@ class ForwardEngine:
                    f"trading, so forward operation starts at this clock")
         return fed
 
+    def _submit(self, intent, now_ns: int, *, is_exit: bool) -> None:
+        """Send one intent and count its outcome. Shared by entries and exits.
+
+        Exits are counted apart from entries throughout: lumped together, a run
+        that stopped exiting entirely would read as one that submitted slightly
+        fewer orders.
+        """
+        try:
+            response = self._wal.submit(intent, self._broker, now_ns=now_ns)
+        except IntentExpired:
+            self.counts.orders_expired += 1
+            return
+        except RuntimeError:
+            # Already submitted: two decisions in the same nanosecond, on the
+            # same instrument, size and limit, hash to the same client order id.
+            # That is the deterministic id doing its job - blind-retrying an
+            # order whose response was lost is a second order - and it is not a
+            # broker rejection, so it is counted apart.
+            self.counts.orders_duplicate += 1
+            return
+        if response.get("status") == "rejected":
+            self.counts.orders_rejected += 1
+        elif is_exit:
+            self.counts.exits_submitted += 1
+        else:
+            self.counts.orders_submitted += 1
+
     def poll_once(self, now_ns: int) -> tuple:
         """Feed everything newly available, submit, fill, journal. Returns fills."""
         self._assert_not_killed()
@@ -197,33 +246,42 @@ class ForwardEngine:
                 self._journal.record_fill(
                     fill, now_ns=now_ns, strategy=self._strategy.name,
                     makes_edge_claim=self._strategy.makes_edge_claim)
+                if self._exits is not None:
+                    self._exits.on_fill(
+                        venue=fill.venue, symbol=fill.symbol, side=fill.side,
+                        quantity=fill.quantity,
+                        optimistic_price=fill.optimistic_price,
+                        pessimistic_price=fill.pessimistic_price)
+
+            # The bar is shown to the exit manager AFTER fills on it and BEFORE
+            # any new entry, so the path a position is judged on starts at the
+            # bar after its own entry - a position cannot be exited by the print
+            # that opened it.
+            if self._exits is not None:
+                self._exits.observe(
+                    event.venue, event.symbol,
+                    Bar(high=event.market_event.best_ask,
+                        low=event.market_event.best_bid,
+                        close=event.market_event.trade_price))
+                proposal = self._exits.exit_proposal(
+                    event.venue, event.symbol, now_ns)
+                if proposal is not None:
+                    self.counts.exits_proposed += 1
+                    self._submit(proposal.intent, now_ns, is_exit=True)
 
             intent = self._strategy(event, now_ns)
             if intent is None:
                 continue
-            try:
-                response = self._wal.submit(intent, self._broker, now_ns=now_ns)
-            except IntentExpired:
-                self.counts.orders_expired += 1
-                continue
-            except RuntimeError:
-                # Already submitted: two decisions in the same nanosecond, on the
-                # same instrument, size and limit, hash to the same client order
-                # id. That is the deterministic id doing its job - blind-retrying
-                # an order whose response was lost is a second order - and it is
-                # not a broker rejection, so it is counted apart.
-                self.counts.orders_duplicate += 1
-                continue
-            if response.get("status") == "rejected":
-                self.counts.orders_rejected += 1
-            else:
-                self.counts.orders_submitted += 1
+            self._submit(intent, now_ns, is_exit=False)
 
         self._journal.record_heartbeat(
             now_ns=now_ns, strategy=self._strategy.name,
             makes_edge_claim=self._strategy.makes_edge_claim,
             events_fed=self.counts.events_fed,
-            orders_submitted=self.counts.orders_submitted,
+            # Entries plus exits: the heartbeat's "submitted" is how many
+            # orders went out, and an exit is an order.
+            orders_submitted=(self.counts.orders_submitted
+                              + self.counts.exits_submitted),
             orders_rejected=(self.counts.orders_rejected
                              + self.counts.orders_expired
                              + self.counts.orders_duplicate),
@@ -257,7 +315,13 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
         wal=OrderIntentWal(paper_root / "wal"),
         journal=ForwardJournal(paper_root),
         strategy=STRATEGIES[strategy_name](quantity=quantity),
-        kill_root=Path(capture_root) / "ops")
+        kill_root=Path(capture_root) / "ops",
+        # Wired 2026-08-16. Until then the engine had no exit at all: 12,983
+        # fills, 363 open positions and zero closed round trips, because
+        # `plumbing-momentum` rests a bid and never sells. The policy is
+        # `strategy.deterministic_exit`, the P1 fallback every learned exit has
+        # to beat.
+        exits=ExitManager(strategy_name))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1074,6 +1074,16 @@
     "src/strategy/deterministic_exit.py",
     "src/statuswall/evidence.py"
    ]
+  },
+  "paper.exit_manager": {
+   "learning": "n/a: it keeps books and calls a policy. Every threshold belongs to strategy.deterministic_exit, and nothing here is fitted",
+   "reasoning": "pass: it owns NO policy of its own, and that is the main decision. The obvious build tracks the trailing lock incrementally - a running extreme, a running lock, a rail check per bar - which is a SECOND implementation of run_exit_policy in a different shape, and the two would disagree the first time either changed. So this keeps the bar path since entry and calls the policy on it whole. Four more: the rails are computed from the PESSIMISTIC entry price, so a long's stop sits higher and the position is judged against the worse of the two fills it might have got - using the optimistic entry would place every rail where the flattering fill put them, which is the same error as reporting one accounting. The exit is a MARKET order, changed 2026-08-16 at the user's instruction, and it is the correct shape as well as the requested one: a stop resting as a limit AT its own level books the level, which is the one price a real stop reliably does not get, and as a market order the pessimistic side fills at the far touch. A gap BEYOND the bar is still not modelled and slippage_beyond_bar_modelled rides every proposal saying so. Only one exit rests at a time and it is sized at intent time, so it can never exceed the position - entries only add, and the only thing that reduces is this exit. A position cannot be exited by the bar that opened it, because the engine shows the bar to this manager after fills on it. THE DEFECT FOUND BY RUNNING IT END TO END: a position opened before the ATR warmup completed had no rails and, because the ATR was measured only at open, would never get any - it would run unprotected for its whole life. In the test engine that was every position, and the run proposed zero exits. Rails are now set as soon as they are measurable, bars_before_rails records how late, the policy is run only over the path from that bar so an exit is never dated before the protection, and rails_set_late is reported",
+   "depth": "pass: this is the wiring that made the system able to close a trade at all. Before it the forward engine had produced 12,983 fills, 363 open positions and ZERO closed round trips, because plumbing-momentum bought and nothing sold. The master test is met directly by an end-to-end test that drives entry, collapse, stop-out and flat through the real ForwardEngine and asserts a SELL reaches the journal - a proposal nobody submits closes nothing. Exits are counted apart from entries throughout, because lumped together a run that stopped exiting entirely would read as one that submitted slightly fewer orders. It is wired into build_engine, so the supervised process gets it - though only after a restart, since a running Python process holds the module it imported at boot",
+   "evidence": [
+    "tests/test_exit_manager.py",
+    "src/paper/exit_manager.py",
+    "src/paper/forward_engine.py"
+   ]
   }
  }
 }

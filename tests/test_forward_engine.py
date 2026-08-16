@@ -190,7 +190,10 @@ def test_a_journalled_fill_carries_both_accountings_never_one(tmp_path):
     (path,) = list((tmp_path / "paper").glob("fills-*.ndjson"))
     row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert "optimistic_price" in row and "pessimistic_price" in row
-    assert row["optimistic_liquidity"] == "maker"
+    # Both accountings are TAKERS since 2026-08-16: the strategy submits market
+    # orders, and a market order never earned a queue position, so awarding it
+    # maker pricing would be a fee difference invented on every single fill.
+    assert row["optimistic_liquidity"] == "taker"
     assert row["pessimistic_liquidity"] == "taker"
 
 

@@ -21,7 +21,9 @@ class RestingOrder:
     """A limit order sitting in the book, as far as paper can tell."""
 
     side: str
-    limit_price: Decimal
+    # None means a MARKET order: no queue, no participation, crosses on the next
+    # print. See `simulate_market_fills`.
+    limit_price: Decimal | None
     remaining: Decimal
 
     def __post_init__(self) -> None:
@@ -111,13 +113,89 @@ def _crossing_price(order: RestingOrder, event: MarketEvent) -> Decimal:
     better, the order should have crossed rather than rested.
     """
     if order.side.upper() == "BUY":
+        # A market order has no limit to be better than: it pays the touch.
+        if order.limit_price is None:
+            return event.best_ask
         return max(order.limit_price, event.best_ask)
+    if order.limit_price is None:
+        return event.best_bid
     return min(order.limit_price, event.best_bid)
+
+
+def simulate_market_fills(order: RestingOrder,
+                          events: tuple[MarketEvent, ...]) -> FillOutcome:
+    """A market order crossing, under both accountings.
+
+    Added 2026-08-16 at the user's instruction that orders be market orders
+    wherever that is possible. It is possible, and for this system it is the
+    MORE honest of the two paths - which is worth stating, because refusing
+    market orders had a reason and the reason is answered rather than overruled.
+
+    **No participation fraction appears here at all.** That parameter exists
+    because a resting limit order sits in a queue and only some of the printed
+    volume reaches it, and nobody has measured what share - which is why every
+    fill this system has produced carries `uncalibrated=true`. A market order
+    does not queue. It takes what is printed, and the only cap is the print
+    itself.
+
+    **Both accountings are TAKERS**, and neither may claim a maker rebate. The
+    limit path books the optimistic side as a maker because a resting order that
+    is printed through genuinely earned the queue position; a market order never
+    did, and awarding it maker pricing would be the cheapest possible fiction
+    here - it is a fee difference on every single fill.
+
+    * optimistic - the print's own trade price. Generous, and defensible: an
+      order arriving in the same instant as that trade could have got it.
+    * pessimistic - the far touch. A BUY lifts the ask, a SELL hits the bid.
+      That is what crossing means, and it is the model of slippage the limit
+      path could not express: a protective stop resting as a limit AT its level
+      books the level, and a stop that crosses books the touch.
+
+    The original refusal - "filling it at the last touch this broker happened to
+    see prices it at a moment already known to have gone the right way" - was
+    about LOOKAHEAD, and it is answered by ordering rather than by pricing: the
+    engine applies prints to resting orders BEFORE it submits anything from that
+    same print, so an order submitted on bar N is first offered bar N+1. It never
+    fills on the print that caused it.
+    """
+    optimistic: list[PaperFill] = []
+    pessimistic: list[PaperFill] = []
+    remaining = order.remaining
+
+    for event in events:
+        if remaining <= 0:
+            break
+        # Capped by the printed volume. Without a depth snapshot there is no
+        # basis for claiming an order walked further into the book than the
+        # trade that printed, and assuming it did is the flattering direction.
+        quantity = min(remaining, event.trade_quantity)
+        if quantity <= 0:
+            continue
+        remaining -= quantity
+        optimistic.append(PaperFill(quantity=quantity,
+                                    price=event.trade_price, liquidity="taker"))
+        pessimistic.append(PaperFill(quantity=quantity,
+                                     price=_crossing_price(order, event),
+                                     liquidity="taker"))
+
+    return FillOutcome(
+        optimistic=tuple(optimistic), pessimistic=tuple(pessimistic),
+        # A market order has no queue, so no participation rate was assumed and
+        # none is reported. `uncalibrated` is False because nothing here rests
+        # on an uncalibrated number - which is the point of preferring them.
+        participation=Decimal(1), uncalibrated=False)
 
 
 def simulate_fills(order: RestingOrder, events: tuple[MarketEvent, ...], *,
                    participation: Participation) -> FillOutcome:
-    """Fills under both accountings, from the same events."""
+    """Fills under both accountings, from the same events.
+
+    Dispatches on `limit_price`: None is a market order and goes to
+    `simulate_market_fills`, where no participation rate is used. One entry point
+    so a caller cannot pick the wrong path by accident.
+    """
+    if order.limit_price is None:
+        return simulate_market_fills(order, events)
     optimistic: list[PaperFill] = []
     pessimistic: list[PaperFill] = []
     remaining = order.remaining

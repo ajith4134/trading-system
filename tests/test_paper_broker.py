@@ -101,25 +101,68 @@ def test_an_expired_intent_never_reaches_the_broker(tmp_path: Path):
 
 # --- refusals return, so the WAL never claims the venue might hold it --------
 
-def test_a_market_order_is_refused_because_paper_cannot_price_one():
-    response = submit(a_broker(), an_intent(price=None))
-    assert response["status"] == "rejected"
-    assert "market" in response["reason"].lower()
+def test_a_market_order_is_accepted_and_crosses(tmp_path: Path):
+    """Refused until 2026-08-16, then accepted at the user's instruction that
+    orders be market wherever possible.
+
+    The original objection was LOOKAHEAD - filling "at the last touch this
+    broker happened to see prices it at a moment already known to have gone the
+    right way" - and it is answered by ordering rather than by pricing: the
+    engine applies prints to resting orders before submitting anything from that
+    same print, so a market order is first offered the NEXT bar.
+    """
+    broker = a_broker()
+    response = submit(broker, an_intent(price=None))
+
+    assert response["status"] == "resting"
+    assert response["order_type"] == "market"
+    assert response["limit_price"] is None
 
 
 def test_a_refusal_is_returned_not_raised_so_the_wal_records_a_known_outcome(
         tmp_path: Path):
     wal = OrderIntentWal(tmp_path)
-    wal.submit(an_intent(price=None), a_broker(), now_ns=2_000)
+    wal.submit(an_intent(venue="bybit"), a_broker(), now_ns=2_000)
     # unresolved() is the startup work list. A raised refusal would put this
     # order on it forever, and there is no venue to query about it.
     assert wal.unresolved() == []
 
 
-def test_a_reduce_only_order_is_refused_rather_than_silently_ignored():
-    response = submit(a_broker(), an_intent(reduce_only=True))
+def test_a_reduce_only_order_with_nothing_to_reduce_is_refused():
+    """Implemented 2026-08-16, having been refused wholesale until then - which
+    meant every exit was rejected. Accepting it flat would open a position under
+    a flag that says it cannot."""
+    response = submit(a_broker(), an_intent(reduce_only=True, side="SELL"))
+
     assert response["status"] == "rejected"
-    assert "reduce_only" in response["reason"]
+    assert "nothing to reduce" in response["reason"]
+
+
+def test_a_reduce_only_order_larger_than_the_position_is_refused_not_trimmed():
+    """A caller asking to close more than it holds has a different view of the
+    position than this book does, and silently trimming hides the
+    disagreement."""
+    broker = a_broker()
+    broker.optimistic.apply_fill(symbol="BTCUSDT", venue="binance", side="BUY",
+                                 quantity=Decimal("1"), price=Decimal("100"),
+                                 liquidity="taker")
+    response = submit(broker, an_intent(reduce_only=True, side="SELL",
+                                        quantity="5"))
+
+    assert response["status"] == "rejected"
+    assert "refused rather than trimmed" in response["reason"]
+
+
+def test_a_reduce_only_order_against_a_real_position_is_accepted():
+    """The positive case - a rule that refuses everything is not a rule."""
+    broker = a_broker()
+    broker.optimistic.apply_fill(symbol="BTCUSDT", venue="binance", side="BUY",
+                                 quantity=Decimal("5"), price=Decimal("100"),
+                                 liquidity="taker")
+    response = submit(broker, an_intent(reduce_only=True, side="SELL",
+                                        quantity="5", price=None))
+
+    assert response["status"] == "resting"
 
 
 def test_a_venue_with_no_declared_fees_is_refused_at_submit_not_at_first_fill():
@@ -130,7 +173,7 @@ def test_a_venue_with_no_declared_fees_is_refused_at_submit_not_at_first_fill():
 
 def test_a_rejected_order_does_not_rest():
     broker = a_broker()
-    submit(broker, an_intent(price=None))
+    submit(broker, an_intent(venue="bybit"))
     assert broker.open_order_count == 0
 
 
