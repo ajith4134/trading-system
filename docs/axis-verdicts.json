@@ -1094,6 +1094,16 @@
     "src/risk/pre_trade_gate.py",
     "src/statuswall/evidence.py"
    ]
+  },
+  "paper.equity_curve": {
+   "learning": "n/a: it records observations and assembles other modules' verdicts. The one declared constant, MIN_SAMPLES_TO_DERIVE, exists so a caller does not run a bootstrap on four points to be told it cannot",
+   "reasoning": "pass: it holds no policy - the ceiling comes from risk.tail_cap, the adaptive cap from risk.paper_tail_cap, the breach verdict from assess - and three decisions carry it. (1) Equity is tracked under BOTH accountings and never blended; a single curve would have to pick one, which on a strategy whose participation is uncalibrated is picking how good the answer is allowed to look. The cap is derived from and assessed against the PESSIMISTIC curve, because a limit derived from the optimistic one is set around a book that never existed and the whole purpose of a drawdown limit is to bound the bad case. (2) Unrealised P&L is ABSENT rather than assumed zero - an unmarked position has an unknown contribution, folding it in as zero reports a flat book when the truth is an unmeasured one, and unmarked_positions rides every sample so a reader knows they are looking at a realised-only curve. (3) Paper breaches are RECORDED, never enforced: nothing here imports the watchdog or calls enforce, pinned by an AST check, because enforcing would destroy the evidence by preventing the breach it exists to observe. Two honest limits are stated rather than left to be discovered: a poll is not a fixed interval, so a drawdown measured over this series is a drawdown over ACTIVITY rather than over time; and the live ceiling can neither be produced nor read here, which is also pinned. A DEFECT FOUND BY WIRING IT: risk.paper_tail_cap declared MIN_OBSERVATIONS of 100 while the bootstrap it calls requires 250, so between the two a caller cleared this module's threshold and was then refused by machinery it had not called, with a message about a different number. A floor a module cannot honour reads as a decision and is not one; it now IS the bootstrap's floor, imported rather than restated, and a test pins them equal",
+   "depth": "pass: risk.paper_tail_cap was built at the user's request and fed by nothing, and a cap that governs nothing is a cap nobody has to obey. This is what makes it operative: an equity curve the engine can record into, an adaptive cap derived from it, and a would-have-breached count that says whether the run could have lived inside its own ceiling. A paper run that could not has not earned capital, however well it did without one, and that record is the deliverable rather than a halt",
+   "evidence": [
+    "tests/test_equity_curve.py",
+    "src/paper/equity_curve.py",
+    "src/risk/paper_tail_cap.py"
+   ]
   }
  }
 }

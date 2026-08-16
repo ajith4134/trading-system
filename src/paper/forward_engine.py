@@ -39,6 +39,7 @@ from pathlib import Path
 from cost.fee_schedule import FeeRate
 from execution.order_intent_wal import IntentExpired, OrderIntent, OrderIntentWal
 from ops.watchdog import is_killed, kill_reason
+from paper.equity_curve import EquityCurve
 from paper.exit_manager import ExitManager
 from paper.fill_model import Participation
 from paper.forward_journal import ForwardJournal
@@ -47,6 +48,7 @@ from paper.paper_broker import PaperBroker
 from risk.pre_trade_gate import (
     LimitsNotSet, PreTradeGate, read_gate_limits, seed_gate_limits,
 )
+from risk.tail_cap import CeilingNotSet, read_ceiling
 from store.clock_gated_reader import ClockGatedReader
 from strategy.deterministic_exit import Bar
 from validation.holdout_custodian import HoldoutCustodian
@@ -161,7 +163,8 @@ class ForwardEngine:
                  wal: OrderIntentWal, journal: ForwardJournal, strategy,
                  kill_root: Path, exits: ExitManager | None = None,
                  gate: PreTradeGate | None = None,
-                 nav: Decimal | None = None) -> None:
+                 nav: Decimal | None = None,
+                 equity: EquityCurve | None = None) -> None:
         self._replay = replay
         self._broker = broker
         self._wal = wal
@@ -179,6 +182,11 @@ class ForwardEngine:
         # until 2026-08-16, and which produced 363 unbounded positions.
         self._gate = gate
         self._nav = nav
+        # The paper book's equity through time, and the adaptive cap measured
+        # against it. Optional so the engine runs without a live ceiling to
+        # bound against - which is a real state, not a failure - and it says so
+        # rather than inventing one.
+        self._equity = equity
         self.counts = EngineCounts()
 
     def _open_positions(self) -> dict:
@@ -316,6 +324,18 @@ class ForwardEngine:
             self._submit(intent, now_ns, is_exit=False,
                          reference_price=event.market_event.trade_price)
 
+        # Recorded AFTER the poll's fills, so the sample reflects what this poll
+        # did rather than what the last one left behind. Assessed in PAPER mode:
+        # a breach is recorded and nothing is stopped, because enforcing it
+        # would destroy the evidence by preventing the breach it observes.
+        if self._equity is not None:
+            self._equity.record(
+                at_ns=now_ns,
+                realised_optimistic=self._broker.optimistic.realized_pnl_after_fees,
+                realised_pessimistic=self._broker.pessimistic.realized_pnl_after_fees,
+                unmarked_positions=len(self._open_positions()))
+            self._equity.assess_latest()
+
         self._journal.record_heartbeat(
             now_ns=now_ns, strategy=self._strategy.name,
             makes_edge_claim=self._strategy.makes_edge_claim,
@@ -365,6 +385,17 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
         print(f"NO PRE-TRADE GATE: {error}", file=sys.stderr)
         gate, nav = None, None
 
+    # The equity curve, and the adaptive paper cap measured against it. Needs
+    # the live ceiling as the bound the paper cap may not exceed; without one
+    # there is nothing to bound against, so the engine runs without the curve
+    # and says so rather than inventing a ceiling §6 reserves to the user.
+    equity = None
+    if nav is not None:
+        try:
+            equity = EquityCurve(nav=nav, live_ceiling=read_ceiling(risk_root))
+        except CeilingNotSet as error:
+            print(f"NO EQUITY CAP: {error}", file=sys.stderr)
+
     return ForwardEngine(
         replay=MarketReplay(reader=reader, symbols=symbols),
         broker=PaperBroker(participation=participation,
@@ -373,7 +404,7 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
         journal=ForwardJournal(paper_root),
         strategy=STRATEGIES[strategy_name](quantity=quantity),
         kill_root=Path(capture_root) / "ops",
-        gate=gate, nav=nav,
+        gate=gate, nav=nav, equity=equity,
         # Wired 2026-08-16. Until then the engine had no exit at all: 12,983
         # fills, 363 open positions and zero closed round trips, because
         # `plumbing-momentum` rests a bid and never sells. The policy is
@@ -446,8 +477,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"poll {polls}: {engine._replay.watermark_note}; "
               f"{counts.orders_submitted} submitted, "
               f"{counts.orders_rejected} rejected, "
+              f"{counts.orders_gated} blocked by the pre-trade gate, "
               f"{counts.orders_duplicate} refused as duplicates, "
               f"{counts.orders_expired} expired before submission, "
+              # Exits reported on the operator line, not only in the counts.
+              # The engine ran for hours submitting nothing but entries and the
+              # log said "N submitted" either way - a run that has stopped
+              # exiting and one that never started look identical without this.
+              f"{counts.exits_proposed} exit(s) proposed of which "
+              f"{counts.exits_submitted} sent, "
               f"{counts.fills} filled", flush=True)
         if args.polls and polls >= args.polls:
             return 0

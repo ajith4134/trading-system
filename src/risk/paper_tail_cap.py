@@ -86,7 +86,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
-from risk.drawdown_distribution import NotEnoughHistory, block_bootstrap_max_drawdowns
+from risk.drawdown_distribution import (
+    _MIN_OBSERVATIONS as _BOOTSTRAP_MIN_OBSERVATIONS,
+    NotEnoughHistory, block_bootstrap_max_drawdowns,
+)
 from risk.tail_cap import PAPER, TailCap
 
 HISTORY_FILE = "paper-tail-cap-history.ndjson"
@@ -100,10 +103,14 @@ MAX_WIDENING_MULTIPLE = Decimal("3")
 # stretch would halt on the first ordinary day, which teaches nothing.
 MIN_TIGHTENING_MULTIPLE = Decimal("0.25")
 
-# Below this the live ceiling is returned unchanged. Mirrors the bootstrap's own
-# floor and exists for the same reason: resampling a short sample manufactures
-# confidence, and the tidy percentile it produces is what makes it dangerous.
-MIN_OBSERVATIONS = 100
+# Below this the live ceiling is returned unchanged. It IS the bootstrap's own
+# floor, imported rather than restated: this module declared 100 until
+# 2026-08-16 while `block_bootstrap_max_drawdowns` requires 250, so between the
+# two a caller cleared this module's threshold and was then refused by machinery
+# it had not called, with a message about a different number. A floor a module
+# cannot honour is worse than no floor, because it reads as a decision.
+# `test_the_floor_is_the_bootstrap_s_own` pins them equal.
+MIN_OBSERVATIONS = _BOOTSTRAP_MIN_OBSERVATIONS
 
 # Where on the bootstrapped distribution each limit sits. Declared, not searched:
 # a percentile chosen until the cap felt comfortable would be the system setting

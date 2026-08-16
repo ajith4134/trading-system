@@ -225,3 +225,13 @@ def test_the_record_says_whether_a_bound_bit(tmp_path):
 
 def test_an_empty_history_reads_as_empty_rather_than_raising(tmp_path):
     assert read_paper_cap_history(tmp_path) == []
+
+
+def test_the_floor_is_the_bootstrap_s_own():
+    """This module declared 100 while the bootstrap it calls requires 250, so a
+    caller with 150 observations cleared this threshold and was then refused by
+    machinery it had not called, with a message about a different number. A floor
+    a module cannot honour reads as a decision and is not one."""
+    from risk.drawdown_distribution import _MIN_OBSERVATIONS
+
+    assert MIN_OBSERVATIONS == _MIN_OBSERVATIONS
