@@ -1526,6 +1526,92 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_gradient_boosted_trees(facts: SystemFacts) -> ProbeResult:
+    """Can the trained-honestly pipeline still tell signal from noise?
+
+    Trains two LightGBM models on synthetic data on every board pass - one with a
+    real relationship in it, one on random labels - and checks the pipeline
+    separates them. Exercised rather than asserted because every part of this is
+    a behaviour: a purge that stopped purging, a weight vector that stopped being
+    applied, and a bootstrap that lost its studentisation all leave a module that
+    imports, trains, and returns a number.
+
+    The noise case is the one that matters. If a test block's outcome leaks into
+    the fit, a model trained on RANDOM labels scores above the base rate - which
+    is the defect that makes most backtests in this literature look good, and it
+    is invisible from the output of the signal case alone.
+
+    Synthetic on purpose, and the tile says so: there is no labelled dataset in
+    this store yet, because nothing joins the phase-B features to triple-barrier
+    labels. What runs here is the control, not a model being trained on the
+    market.
+    """
+    import tempfile
+
+    import numpy as np
+
+    from features.sample_uniqueness import LabelSpan
+    from models.gradient_boosted_trees import train_gbt
+    from validation.trial_registry import TrialRegistry
+
+    proof = "src/models/gradient_boosted_trees.py"
+    rng = np.random.default_rng(0)
+    n = 240
+    features = rng.normal(size=(n, 4))
+    signal = np.where(features[:, 0] + 0.3 * rng.normal(size=n) > 0, 1, -1)
+    noise = rng.integers(0, 2, size=n) * 2 - 1
+    spans = [LabelSpan(i, min(i + 4, n - 1)) for i in range(n)]
+
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            registry = TrialRegistry(Path(scratch))
+            common = dict(family="microstructure", registry=registry,
+                          boost_rounds=20, n_groups=4, k_test=2)
+            learned = train_gbt(features, signal, spans,
+                                trial_name="probe-signal", **common)
+            unlearned = train_gbt(features, noise, spans,
+                                  trial_name="probe-noise", **common)
+            counted = registry.cumulative_count()
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the training pipeline raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if not learned.beats_majority_class:
+        broken.append(
+            f"a learnable relationship was not found: accuracy "
+            f"{learned.accuracy:.3f} against a {learned.base_rate:.3f} base "
+            f"rate, p={learned.p_value:.3f}")
+    if unlearned.beats_majority_class:
+        broken.append(
+            f"RANDOM LABELS beat the majority class at p={unlearned.p_value:.3f} "
+            f"- a test block's outcome is leaking into the fit, which is the "
+            f"defect that makes a backtest look good")
+    if learned.n_out_of_fold != n:
+        broken.append(
+            f"{learned.n_out_of_fold} scored rows from {n} - CPCV folds are "
+            f"being concatenated rather than averaged, so the bootstrap is "
+            f"seeing every row {learned.paths_per_row:.0f} times")
+    if counted != 2:
+        broken.append(f"{counted} trial(s) registered for 2 fits - N is drifting "
+                      f"below the true trial count")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"signal found ({learned.accuracy:.3f} vs {learned.base_rate:.3f} base "
+        f"rate, p={learned.p_value:.3f}) and noise refused "
+        f"(p={unlearned.p_value:.3f}); both fits registered, "
+        f"{learned.rows_purged} training row(s) purged, effective sample "
+        f"{learned.effective_sample_fraction:.2f} of nominal. Exercised on this "
+        f"pass, on SYNTHETIC data - no labelled dataset exists in the store yet, "
+        f"so this is the control being checked rather than a model trained on "
+        f"the market", proof)
+
+
 def probe_beta_to_btc(facts: SystemFacts) -> ProbeResult:
     from features.beta_to_btc import compute_beta_to_btc
     return _probe_computed_feature(
@@ -2159,6 +2245,9 @@ PROBES = {
     "volatility regime decile": probe_volatility_regime,
     "cross sectional ranking across pairs": probe_cross_sectional,
     "correlation beta to btc": probe_beta_to_btc,
+    # Phase C. Graded on whether the pipeline still separates signal from noise,
+    # not on whether it trains - see `probe_gradient_boosted_trees`.
+    "gradient boosted trees": probe_gradient_boosted_trees,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
     # dummy always returns rows. See `probe_calendar_effects`.

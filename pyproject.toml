@@ -17,6 +17,7 @@ dependencies = [
     # imported by src/" below - so it is promoted here to a declared main
     # dependency rather than left as an unlisted transitive import.
     "statsmodels>=0.14",
+    "lightgbm>=4.7.0",
 ]
 
 [dependency-groups]
