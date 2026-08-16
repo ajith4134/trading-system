@@ -1526,6 +1526,86 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_beta_to_btc(facts: SystemFacts) -> ProbeResult:
+    from features.beta_to_btc import compute_beta_to_btc
+    return _probe_computed_feature(
+        facts, module="features.beta_to_btc", entry_point="compute_beta_to_btc",
+        compute=compute_beta_to_btc,
+        unit="(venue, symbol, horizon) betas to BTC")
+
+
+def probe_meta_labelling(facts: SystemFacts) -> ProbeResult:
+    """Does the grader still follow the SIDE rather than the price?
+
+    Exercised on every pass, not asserted, because the module is one line -
+    `meta_label = 1 if barrier_label == side else 0` - and that line is silent
+    when it is wrong. A version reading the barrier label as the outcome
+    regardless of side produces a perfectly well-formed dataset with a plausible
+    base rate, and the only symptom is a live system that loses money in
+    proportion to its confidence.
+
+    Two checks, both in the flattering direction if they regress: a SHORT into a
+    lower barrier must grade 1, and an unresolved event must be EXCLUDED rather
+    than graded 0 - unresolved events cluster at the newest end of every dataset,
+    so zeroing them teaches a secondary model to veto recent signals as a class.
+
+    There is no live dataset behind this tile and the detail says so: no primary
+    model exists to produce sides. What runs here is the control being checked.
+    """
+    from features.meta_labelling import make_meta_labels
+    from features.triple_barrier import BarrierTouch
+
+    proof = "src/features/meta_labelling.py"
+
+    def touch(index, label):
+        return BarrierTouch(
+            event_index=index, label=label, reason="probe",
+            touched_at_index=None if label is None else index + 1,
+            entry_price=100.0, upper_barrier=102.0, lower_barrier=98.0,
+            is_ambiguous=False)
+
+    try:
+        short_win = make_meta_labels([touch(0, -1)], [-1])
+        long_loss = make_meta_labels([touch(0, -1)], [1])
+        with_unresolved = make_meta_labels([touch(0, 1), touch(1, None)], [1, 1])
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the meta-labeller raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if short_win.events[0].meta_label != 1:
+        broken.append("a SHORT into a lower barrier graded 0 - the grade is "
+                      "following the price instead of the side, which inverts "
+                      "every short the secondary model will ever see")
+    if long_loss.events[0].meta_label != 0:
+        broken.append("a LONG into a lower barrier graded 1")
+    if with_unresolved.graded != 1 or with_unresolved.unresolved != 1:
+        broken.append("an unresolved barrier was graded rather than excluded - "
+                      "the newest end of every dataset would be labelled as the "
+                      "primary having been wrong")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        "grades the side, not the price: a SHORT into a lower barrier scores 1, "
+        "and an unresolved barrier is excluded rather than zeroed. Exercised on "
+        "this pass. No dataset is built - no primary model exists to produce "
+        "sides, so what runs here is the control being checked, not a secondary "
+        "model being trained", proof)
+
+
+def probe_cross_sectional(facts: SystemFacts) -> ProbeResult:
+    from features.cross_sectional import compute_cross_sectional
+    return _probe_computed_feature(
+        facts, module="features.cross_sectional",
+        entry_point="compute_cross_sectional",
+        compute=compute_cross_sectional,
+        unit="(venue, symbol, horizon) cross-sectional ranks")
+
+
 def probe_volatility_regime(facts: SystemFacts) -> ProbeResult:
     from features.volatility_regime import compute_volatility_regime
     return _probe_computed_feature(
@@ -2077,6 +2157,9 @@ PROBES = {
     "fractional differentiation": probe_fractional_differentiation,
     "funding basis spread features": probe_funding_basis,
     "volatility regime decile": probe_volatility_regime,
+    "cross sectional ranking across pairs": probe_cross_sectional,
+    "correlation beta to btc": probe_beta_to_btc,
+    "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
     # dummy always returns rows. See `probe_calendar_effects`.
     "time of day day of week funding hour effects": probe_calendar_effects,
