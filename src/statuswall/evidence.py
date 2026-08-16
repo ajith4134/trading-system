@@ -1526,6 +1526,145 @@ def probe_fractional_differentiation(facts: SystemFacts) -> ProbeResult:
         unit="series differenced at a searched d")
 
 
+def probe_walk_forward(facts: SystemFacts) -> ProbeResult:
+    """Does it still see a decay that a pooled score hides?
+
+    Run on every board pass against a dataset with signal in its first half and
+    noise in its second - pooled accuracy well above the base rate, per window
+    alive then dead. That is the shape a decayed strategy has, and reporting the
+    pooled number is how one survives a review.
+
+    A regression here is silent in the worst way: the windows still come back,
+    the pooled accuracy is still right, and only the decay verdict stops firing.
+    So the probe checks the verdict, not the plumbing.
+    """
+    import tempfile
+
+    import numpy as np
+
+    from models.walk_forward import WindowScheme, walk_forward
+    from validation.trial_registry import TrialRegistry
+
+    proof = "src/models/walk_forward.py"
+    rng = np.random.default_rng(0)
+    n = 1200
+    column = rng.normal(size=n)
+    labels = np.where(np.arange(n) < n // 2, np.sign(column),
+                      rng.integers(0, 2, n) * 2 - 1).astype(int)
+
+    def fit_predict(_train_rows, test_rows):
+        return (column[test_rows] > 0).astype(float)
+
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            registry = TrialRegistry(Path(scratch))
+            result = walk_forward(
+                labels, fit_predict, scheme=WindowScheme.EXPANDING,
+                test_rows=100, initial_train_rows=200, family="microstructure",
+                registry=registry, trial_name="probe-decay")
+            counted = registry.cumulative_count()
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the walk-forward raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if result.decay is None or not result.decay.is_significant:
+        broken.append(
+            "a dataset that is signal then noise was NOT reported as decayed - "
+            "the per-window series is the only thing that shows an edge dying, "
+            "and a pooled score hides it by averaging the good half with the bad")
+    if result.pooled_accuracy <= result.pooled_base_rate:
+        broken.append(
+            f"pooled accuracy {result.pooled_accuracy:.3f} did not exceed the "
+            f"{result.pooled_base_rate:.3f} base rate, so the fixture no longer "
+            f"demonstrates the trap it exists for")
+    if counted != 1:
+        broken.append(
+            f"{counted} trial(s) registered for one walk-forward - ten windows "
+            f"answer one question, and registering ten would inflate N tenfold")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        f"{len(result.windows)} windows; pooled {result.pooled_accuracy:.3f} "
+        f"against a {result.pooled_base_rate:.3f} base rate reads as an edge, "
+        f"and the windows report {result.decay.early_accuracy:.3f} early against "
+        f"{result.decay.late_accuracy:.3f} late (p={result.decay.p_value:.3f}). "
+        f"Exercised on this pass, on a SYNTHETIC decaying series - no strategy is "
+        f"walk-forwarded yet, so this is the detector being checked", proof)
+
+
+def probe_model_registry(facts: SystemFacts) -> ProbeResult:
+    """Does an alias still move without losing where it pointed?
+
+    The registry's one irreplaceable property is that `alias-history.ndjson`
+    answers *what was live when this trade happened*. A pointer file alone knows
+    only now, and the regression that loses the history leaves every other
+    behaviour intact.
+
+    Also checks the artefact verification, which fails in the direction that
+    loads: a registry that stopped re-hashing would serve a corrupted or
+    substituted file without complaint.
+    """
+    import tempfile
+
+    from models.model_registry import ArtifactCorrupt, ModelRegistry
+
+    proof = "src/models/model_registry.py"
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            registry = ModelRegistry(Path(scratch) / "registry")
+            first = registry.register(b"probe-v1", trial_id=1, family="carry",
+                                      name="probe")
+            second = registry.register(b"probe-v2", trial_id=2, family="carry",
+                                       name="probe")
+            registry.assign_alias("production", first.version_id,
+                                  reason="probe")
+            registry.assign_alias("production", second.version_id,
+                                  reason="probe")
+            history = registry.alias_history("production")
+            live_now = registry.resolve("production").version_id
+
+            artefact = (Path(scratch) / "registry" / "models"
+                        / f"{first.version_id}.bin")
+            artefact.write_bytes(b"tampered")
+            try:
+                registry.load(first.version_id)
+                verified = False
+            except ArtifactCorrupt:
+                verified = True
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return ProbeResult(
+            FAILING,
+            f"the registry raised while being exercised "
+            f"({type(exc).__name__}: {exc})", proof)
+
+    broken = []
+    if len(history) != 2 or history[0].version_id != first.version_id:
+        broken.append(
+            "the alias history does not record where production pointed before "
+            "it moved - which is the only question anyone asks after a bad fill")
+    if live_now != second.version_id:
+        broken.append("the alias did not move")
+    if not verified:
+        broken.append(
+            "a tampered artefact loaded without complaint - the hash is no "
+            "longer verified on read, and a corrupted file and a substituted one "
+            "are indistinguishable at that moment")
+    if broken:
+        return ProbeResult(FAILING, "; ".join(broken), proof)
+
+    return ProbeResult(
+        PARTIAL,
+        "an alias moved and both assignments are on the append-only history; a "
+        "tampered artefact was refused on read. Exercised on this pass, in a "
+        "scratch registry - no model is registered for real yet, because nothing "
+        "has been trained on the market", proof)
+
+
 def probe_gradient_boosted_trees(facts: SystemFacts) -> ProbeResult:
     """Can the trained-honestly pipeline still tell signal from noise?
 
@@ -1556,7 +1695,13 @@ def probe_gradient_boosted_trees(facts: SystemFacts) -> ProbeResult:
 
     proof = "src/models/gradient_boosted_trees.py"
     rng = np.random.default_rng(0)
-    n = 240
+    # 480, not 240. The first version of this probe used 240 and the tile went
+    # red on its first live pass: with 4 groups and 2 in test each fold trains on
+    # about 120 rows, `min_data_in_leaf` is 50, and LightGBM makes no split it
+    # will accept - so the model predicts the majority class on every row and the
+    # accuracy equals the base rate exactly. The board was right and the fixture
+    # was wrong, which is the correct way round for that to have been found.
+    n = 480
     features = rng.normal(size=(n, 4))
     signal = np.where(features[:, 0] + 0.3 * rng.normal(size=n) > 0, 1, -1)
     noise = rng.integers(0, 2, size=n) * 2 - 1
@@ -1580,10 +1725,17 @@ def probe_gradient_boosted_trees(facts: SystemFacts) -> ProbeResult:
 
     broken = []
     if not learned.beats_majority_class:
+        # Name the copy case explicitly. A red tile reading only "accuracy 0.525
+        # against a 0.525 base rate" sends a reader to look for a broken model;
+        # "it predicted one class on every row" points at the training set being
+        # too small for `min_data_in_leaf`, which is what it was the first time.
+        diagnosis = (" - it predicted ONE CLASS on every row, so the training "
+                     "folds are too small for min_data_in_leaf to allow a split"
+                     if learned.reproduced_majority_class else "")
         broken.append(
             f"a learnable relationship was not found: accuracy "
             f"{learned.accuracy:.3f} against a {learned.base_rate:.3f} base "
-            f"rate, p={learned.p_value:.3f}")
+            f"rate, p={learned.p_value:.3f}{diagnosis}")
     if unlearned.beats_majority_class:
         broken.append(
             f"RANDOM LABELS beat the majority class at p={unlearned.p_value:.3f} "
@@ -2248,6 +2400,8 @@ PROBES = {
     # Phase C. Graded on whether the pipeline still separates signal from noise,
     # not on whether it trains - see `probe_gradient_boosted_trees`.
     "gradient boosted trees": probe_gradient_boosted_trees,
+    "rolling walk forward retrain": probe_walk_forward,
+    "model registry with aliases": probe_model_registry,
     "meta labelling": probe_meta_labelling,
     # Also graded on the empirical claim rather than on row count - a calendar
     # dummy always returns rows. See `probe_calendar_effects`.

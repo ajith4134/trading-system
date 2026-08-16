@@ -120,6 +120,14 @@ DETERMINISM_PARAMS = {
 # Defaults deliberately small. A 31-leaf tree on a few thousand overlapping
 # financial labels memorises; these are the starting point a caller overrides,
 # and every override lands in the registry as its own trial.
+#
+# The consequence, measured 2026-08-16 and worth knowing before it is diagnosed
+# the hard way: `min_data_in_leaf = 50` means a fold with only ~120 training rows
+# admits no split LightGBM will take, so the model predicts the MAJORITY CLASS on
+# every row and its accuracy equals the base rate exactly. That is not a silent
+# failure here - `reproduced_majority_class` reports it - but it does mean these
+# defaults need a dataset of some hundreds of rows per fold to say anything, and
+# a smaller one wants a smaller `min_data_in_leaf` chosen out loud.
 DEFAULT_PARAMS = {
     "objective": "binary",
     "learning_rate": 0.05,
