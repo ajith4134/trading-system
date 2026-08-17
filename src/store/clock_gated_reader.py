@@ -55,11 +55,21 @@ class ClockGatedReader:
         return self._custodian is not None
 
     def read_as_of(self, sim_clock_ns: int,
-                   symbols: Sequence[str] | None = None) -> pd.DataFrame:
+                   symbols: Sequence[str] | None = None,
+                   not_before_ns: int | None = None) -> pd.DataFrame:
         """Everything knowable at `sim_clock_ns`, and nothing else.
 
         Inclusive at the boundary: a row available exactly at T is usable at T.
         Off by one in this comparison silently drops the newest bar on every read.
+
+        `not_before_ns` narrows the read from BELOW, for a caller that already
+        holds everything older and does not want to materialise it again. It is a
+        bound on availability time, so a correction to an old bar - which carries
+        a later availability time by definition - still arrives. Default None
+        reads exactly what this method read before the parameter existed.
+
+        The clock still wins: a lower bound can never reveal a row that is not
+        yet available, because the upper bound is applied regardless.
 
         Raises `HoldoutSealed` when a custodian is attached and the clock is inside
         its sealed range - checked before reading, so a refused query never loads
@@ -67,7 +77,8 @@ class ClockGatedReader:
         """
         if self._custodian is not None:
             self._custodian.assert_readable(int(sim_clock_ns))
-        frame = read_dataset(self._store_root, self._dataset)
+        frame = read_dataset(self._store_root, self._dataset,
+                             not_before_ns=not_before_ns)
         if frame.empty:
             return frame
 

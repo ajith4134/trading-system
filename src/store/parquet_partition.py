@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 # what happened the last time this project kept three copies of one conversion -
 # each copy had the bug, independently.
 from capture.raw_writer import _fsync_directory
-from store.temporal_schema import SYMBOL, validate_temporal_frame
+from store.temporal_schema import AVAILABILITY_TIME, SYMBOL, validate_temporal_frame
 
 _CHUNK = 1 << 20
 
@@ -163,11 +163,27 @@ def _write_part_atomically(table: pa.Table, folder: Path, target: Path) -> None:
         raise
 
 
-def read_dataset(store_root: Path, dataset: str) -> pd.DataFrame:
+def read_dataset(store_root: Path, dataset: str,
+                 not_before_ns: int | None = None) -> pd.DataFrame:
     """Every part, concatenated. Absent datasets read empty, not as an error.
 
     An empty store is the correct state before the first build, and raising there
     would make "nothing captured yet" indistinguishable from a bug.
+
+    `not_before_ns` pushes a lower bound on AVAILABILITY time into the parquet
+    scan, so a caller that already holds everything older does not pay to
+    materialise it again. Default None reads exactly what this function read
+    before it existed, and every existing caller gets that.
+
+    The bound is on availability rather than event time, and that is the whole
+    reason it is safe: a correction to an old bar carries a LATER availability
+    time by definition, so it still arrives through the bound, while rows already
+    consumed cannot come back. Bounding on event time instead would hide
+    corrections, which is the one thing this store exists to preserve.
+
+    Added 2026-08-17 after the forward paper engine was OOM-killed (exit 137,
+    fourth restart that day): it re-read the whole bars dataset every 60-second
+    poll, holding 5.5 GB, on a 30 GB box with no swap.
     """
     root = Path(store_root) / dataset
     if not root.is_dir():
@@ -202,4 +218,10 @@ def read_dataset(store_root: Path, dataset: str) -> pd.DataFrame:
     unified = pa.unify_schemas([*fragment_schemas, dataset_handle.schema])
     dataset_handle = ds.dataset(root, format="parquet", partitioning="hive",
                                 schema=unified)
-    return dataset_handle.to_table().to_pandas()
+    if not_before_ns is None:
+        return dataset_handle.to_table().to_pandas()
+    # Inclusive at the boundary, matching `read_as_of`'s upper bound. Off by one
+    # in this comparison silently drops a bar on every poll of a caller that
+    # advances its watermark to the newest availability time it has seen.
+    return dataset_handle.to_table(
+        filter=ds.field(AVAILABILITY_TIME) >= int(not_before_ns)).to_pandas()

@@ -261,7 +261,7 @@
     },
     "store.parquet_partition": {
       "learning": "n/a: a writer. Nothing is fitted",
-      "reasoning": "pass: the snapshot id is content-derived, so a rebuild collides by design and a correction is a new snapshot rather than a rewrite",
+      "reasoning": "pass: the snapshot id is content-derived, so a rebuild collides by design and a correction is a new snapshot rather than a rewrite. `not_before_ns` (2026-08-17) pushes a lower availability bound into the parquet scan rather than filtering after materialising. Additive with a None default, so every existing caller reads exactly what it read before - asserted by a test rather than assumed",
       "depth": "pass: schemas are unified across fragments before reading - without it a column added by a later partition is silently dropped, which cost `funding_interval_hours` on 2026-08-09",
       "evidence": [
         "tests/test_parquet_partition.py",
@@ -495,8 +495,8 @@
     },
     "paper.market_replay": {
       "learning": "n/a: it feeds the tape. Nothing is fitted, and a feed that adapted to what it fed would be the leak the clock gate exists to prevent",
-      "reasoning": "pass: replay and forward are the same method called with a different clock rather than two loops that drift apart, and it refuses a reader built without a holdout custodian instead of trusting the caller to have passed one - the holdout's only value is never having been read, and that cannot be checked after the fact",
-      "depth": "pass: it refuses an unguarded reader at construction, refuses a non-positive price on sight, and counts corrections that arrive after their bar was already traded on instead of re-feeding them. Reachable since scripts/paper_supervisor.sh",
+      "reasoning": "pass: replay and forward are the same method called with a different clock rather than two loops that drift apart, and it refuses a reader built without a holdout custodian instead of trusting the caller to have passed one - the holdout's only value is never having been read, and that cannot be checked after the fact. Amended 2026-08-17: reads are now bounded BELOW by an availability watermark, and the choice of availability over event time is the safety argument - a correction to an old bar carries a later availability time by definition, so it still arrives through the bound, while a bound on event time would hide corrections. `mark_seen` marks without constructing a TapeEvent, because `prime` built 2,316,171 of them purely to count them",
+      "depth": "pass: it refuses an unguarded reader at construction, refuses a non-positive price on sight, and counts corrections that arrive after their bar was already traded on instead of re-feeding them. Reachable since scripts/paper_supervisor.sh. The watermark is also what keeps `_emitted` bounded: rows below it are never read again, so the set holds what has ARRIVED rather than everything that exists. `resume_at` documents in its own docstring that the caller must still mark-seen at the bound, because the bound is inclusive and a row sitting exactly on it would otherwise be read with an empty emitted set and TRADED - the 2026-08-15 defect, reachable through the new path if that step were skipped",
       "evidence": [
         "tests/test_market_replay.py",
         "src/paper/market_replay.py"
@@ -847,7 +847,7 @@
     "paper.forward_engine": {
       "learning": "n/a: the engine learns nothing and the one signal it can run is explicitly a plumbing signal. makes_edge_claim is False and is written onto every fill",
       "reasoning": "pass: --strategy and --participation both have NO default. An engine that ran the plumbing signal implicitly would accumulate a P&L series that later reads as a result, and an invented participation rate is the cheapest way to manufacture edge. It also applies fills before the strategy sees a print, so an order cannot fill on the very event that created it",
-      "depth": "pass: it refuses to run under a kill before the journal is touched, so a killed run leaves no record implying it traded - tested",
+      "depth": "pass: it refuses to run under a kill before the journal is touched, so a killed run leaves no record implying it traded - tested. `resume_or_prime` added 2026-08-17 after the process was OOM-killed at 5.5 GB (exit 137, fourth restart that day) re-feeding 2,316,171 archived events it had already seen. Every failure path of the marker returns None and falls back to the full prime: a corrupt marker, a marker for another strategy, an absent one. A slow start is acceptable and a wrong one is not, and the marker is written AFTER each poll so it can never claim progress that did not happen",
       "evidence": [
         "tests/test_forward_engine.py",
         "src/paper/forward_engine.py",

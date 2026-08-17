@@ -88,19 +88,90 @@ class MarketReplay:
         # reported 3,494 corrections where nothing had been corrected at all.
         self._emitted: dict[tuple[str, str, int], int] = {}
 
+        # The highest AVAILABILITY time this feed has read. Every read is bounded
+        # below by it, which is what stops the engine re-materialising the whole
+        # archive on a 60-second cadence.
+        #
+        # Availability, never event time. A correction to an old bar carries a
+        # LATER availability time by definition, so it still arrives through the
+        # bound; a bound on event time would hide corrections, which is the one
+        # thing this store exists to preserve.
+        #
+        # Added 2026-08-17 after the engine was OOM-killed holding 5.5 GB (exit
+        # 137, fourth restart that day) on a 30 GB box with no swap. It is also
+        # what keeps `_emitted` bounded: rows below the watermark are never read
+        # again, so the set only holds what has arrived since.
+        self._availability_watermark = 0
+
         self.events_emitted = 0
         self.corrections_after_emission = 0
         self.refused_invalid_price = 0
         self.refused_no_volume = 0
 
+    @property
+    def availability_watermark(self) -> int:
+        """The highest availability time read. Monotonic, and safe to persist."""
+        return self._availability_watermark
+
+    def resume_at(self, availability_ns: int) -> None:
+        """Start bounded at a watermark recovered from a previous process.
+
+        The caller must still `mark_seen(clock, not_before_ns=availability_ns)`
+        before polling: the bound is inclusive, so rows sitting exactly at the
+        watermark would otherwise be read with an empty emitted set and TRADED.
+        That is the 2026-08-15 defect - 3,494 archived bars became 1,074 fills at
+        prices days old - and it must not be reachable through the resume path.
+        """
+        self._availability_watermark = max(self._availability_watermark,
+                                           int(availability_ns))
+
+    def mark_seen(self, sim_clock_ns: int,
+                  not_before_ns: int | None = None) -> int:
+        """Mark rows as fed WITHOUT building or returning any event.
+
+        `prime()` used to call `len(poll(...))`, which constructed a TapeEvent
+        and a MarketEvent for all 2.3M archived rows purely to count them. The
+        count is the only thing anybody wanted.
+        """
+        frame = self._reader.read_as_of(
+            int(sim_clock_ns), symbols=self._symbols,
+            not_before_ns=self._bound(not_before_ns))
+        if frame.empty:
+            return 0
+
+        marked = 0
+        for row in frame.itertuples(index=False):
+            key = (getattr(row, SYMBOL), getattr(row, VENUE),
+                   int(getattr(row, EVENT_TIME)))
+            available_at = int(getattr(row, AVAILABILITY_TIME))
+            self._emitted[key] = available_at
+            self._advance(available_at)
+            marked += 1
+        return marked
+
+    def _bound(self, not_before_ns: int | None) -> int | None:
+        """The lower bound to read from: the caller's, else the watermark."""
+        if not_before_ns is not None:
+            return int(not_before_ns)
+        return self._availability_watermark or None
+
+    def _advance(self, available_at: int) -> None:
+        if available_at > self._availability_watermark:
+            self._availability_watermark = available_at
+
     def poll(self, sim_clock_ns: int) -> tuple[TapeEvent, ...]:
         """Everything knowable at this clock that has not been fed already.
+
+        Bounded below by the watermark, so a poll costs what ARRIVED rather than
+        what exists. The emitted set still decides what is fed, so the bound is
+        an optimisation and never the correctness argument.
 
         Raises `HoldoutSealed` from the reader when the clock is inside the
         sealed range — before any data is touched, so a refused poll reads
         nothing and `events_emitted` does not move.
         """
-        frame = self._reader.read_as_of(int(sim_clock_ns), symbols=self._symbols)
+        frame = self._reader.read_as_of(int(sim_clock_ns), symbols=self._symbols,
+                                        not_before_ns=self._bound(None))
         if frame.empty:
             return ()
 
@@ -110,6 +181,7 @@ class MarketReplay:
             key = (getattr(row, SYMBOL), getattr(row, VENUE),
                    int(getattr(row, EVENT_TIME)))
             available_at = int(getattr(row, AVAILABILITY_TIME))
+            self._advance(available_at)
             if key in self._emitted:
                 # Seen before. The reader resolves corrections to the newest
                 # visible version, so a LATER availability time means a genuine

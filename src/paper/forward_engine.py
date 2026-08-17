@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import json
+
 from cost.fee_schedule import FeeRate
 from execution.order_intent_wal import IntentExpired, OrderIntent, OrderIntentWal
 from ops.watchdog import is_killed, kill_reason
@@ -207,6 +209,40 @@ class ForwardEngine:
                 f"a kill is in force ({reason}) - refusing to run, before "
                 f"anything is journalled")
 
+    def resume_or_prime(self, now_ns: int, state_dir: Path) -> int:
+        """Skip the full prime when a watermark from a previous run survives.
+
+        Measured 2026-08-17: a cold start re-fed 2,316,171 archived events before
+        the first poll, ~11 minutes with nothing trading, and the process was
+        OOM-killed at 5.5 GB (exit 137, fourth restart that day). None of that
+        work was new - the previous process had already done it.
+
+        The bounded mark-seen still runs, and it is not optional: the watermark
+        bound is inclusive, so rows sitting exactly at it would otherwise be read
+        with an empty emitted set and TRADED. It is cheap, because it reads only
+        from the watermark forward.
+
+        A marker for another strategy, or an unreadable one, falls back to the
+        full prime. A slow start is an acceptable cost; a wrong one is not - the
+        2026-08-15 defect turned 3,494 archived bars into 1,074 fills at prices
+        days old, and that direction of failure must stay unreachable.
+        """
+        marker = read_prime_marker(state_dir, strategy=self._strategy.name)
+        if marker is None:
+            return self.prime(now_ns)
+
+        self._assert_not_killed()
+        self._replay.resume_at(marker)
+        marked = self._replay.mark_seen(now_ns, not_before_ns=marker)
+        self._journal.record_heartbeat(
+            now_ns=now_ns, strategy=self._strategy.name,
+            makes_edge_claim=self._strategy.makes_edge_claim,
+            events_fed=0, orders_submitted=0, orders_rejected=0, fills=0,
+            open_orders=0, last_event_time_ns=None,
+            detail=f"resumed at availability watermark {marker}; {marked} row(s) "
+                   f"at or after it marked as seen without trading")
+        return marked
+
     def prime(self, now_ns: int) -> int:
         """Mark everything already in the store as fed, WITHOUT trading it.
 
@@ -221,7 +257,10 @@ class ForwardEngine:
         whole reason there is one method.
         """
         self._assert_not_killed()
-        fed = len(self._replay.poll(now_ns))
+        # `mark_seen`, not `len(poll(...))`. The old form built a TapeEvent and a
+        # MarketEvent for every archived row purely to count them - 2,316,171 of
+        # them on 2026-08-17, at 5.5 GB, on a box with no swap.
+        fed = self._replay.mark_seen(now_ns)
         self.counts.primed_events += fed
         self._journal.record_heartbeat(
             now_ns=now_ns, strategy=self._strategy.name,
@@ -422,6 +461,55 @@ def build_engine(*, store_root: Path, capture_root: Path, strategy_name: str,
         exits=ExitManager(strategy_name))
 
 
+_MARKER_NAME = "prime-marker.json"
+
+
+def write_prime_marker(state_dir: Path, last_availability_ns: int,
+                       strategy: str = "") -> Path:
+    """Record how far the archive was primed, so a restart resumes.
+
+    An AVAILABILITY time, not an event time. The engine's contract is that it
+    never trades a row it has already seen, and availability is the clock the
+    store is gated on; stamping the event time would let a late-arriving
+    correction to an old bar look like something new.
+
+    The strategy is part of the marker because a different strategy has NOT seen
+    this archive, and resuming from its neighbour's watermark would silently skip
+    every row it should have primed on - producing an engine that looks healthy
+    and is trading a tape it never read the start of.
+    """
+    marker = Path(state_dir) / _MARKER_NAME
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "last_availability_ns": int(last_availability_ns),
+        "strategy": strategy,
+    }))
+    return marker
+
+
+def read_prime_marker(state_dir: Path, strategy: str = "") -> int | None:
+    """The watermark to resume from, or None meaning prime the whole archive.
+
+    Every failure path returns None. A corrupt, foreign or absent marker must
+    cost a slow start, never a wrong one: the 2026-08-15 defect turned 3,494
+    archived bars into 1,074 forward fills at prices days old, and that is the
+    direction this must never fail in.
+    """
+    marker = Path(state_dir) / _MARKER_NAME
+    if not marker.is_file():
+        return None
+    try:
+        held = json.loads(marker.read_text())
+    except (ValueError, OSError):
+        return None
+    if not isinstance(held, dict):
+        return None
+    if strategy and held.get("strategy", "") != strategy:
+        return None
+    value = held.get("last_availability_ns")
+    return int(value) if isinstance(value, int) else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="paper.forward_engine",
@@ -455,6 +543,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--holdout-end-ns", type=int, default=2_100_000_000_000_000_000)
     args = parser.parse_args(argv)
 
+    # The same directory `build_engine` puts the journal in - the marker is
+    # state about this journal's progress and belongs beside it, so a journal
+    # moved or archived takes its watermark with it rather than leaving one
+    # behind for the next run to resume from.
+    state_dir = Path(args.capture_root) / "paper" / "forward"
+
     engine = build_engine(
         store_root=Path(args.store_root), capture_root=Path(args.capture_root),
         strategy_name=args.strategy,
@@ -471,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
           f"calibrated={args.participation_calibrated}", flush=True)
 
     if not args.replay_archive_on_start:
-        primed = engine.prime(time.time_ns())
+        primed = engine.resume_or_prime(time.time_ns(), state_dir)
         print(f"primed: {primed} archived event(s) marked as seen without "
               f"trading; forward operation starts now", flush=True)
 
@@ -479,6 +573,11 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         engine.poll_once(time.time_ns())
         polls += 1
+        # Written AFTER the poll, never before: a marker ahead of the work it
+        # claims would let the next start skip rows nothing has fed, and those
+        # rows would then be invisible forever rather than merely re-read.
+        write_prime_marker(state_dir, engine._replay.availability_watermark,
+                           strategy=args.strategy)
         counts = engine.counts
         # orders_expired is printed because it was INVISIBLE on the first live
         # run: 3,494 events fed, 0 submitted, and nothing said that every single
