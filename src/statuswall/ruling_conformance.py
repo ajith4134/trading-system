@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -215,7 +216,11 @@ def probe_authority_chain_consistent(repo: Path = REPO) -> ProbeResult:
     goal = (repo / "docs" / "superpowers" / "specs"
             / "2026-08-08-final-project-goal-design.md")
     superseded = old.is_file() and "SUPERSEDED" in old.read_text().upper()
-    records_ruling = goal.is_file() and "3b" in goal.read_text()
+    # The HEADING, not the string. A bare "3b" appears in unrelated prose - the
+    # goal document cites `ARCHITECTURE.md §3b` about coinbase - and the loose
+    # version of this check reported the section present before it was written.
+    records_ruling = goal.is_file() and bool(
+        re.search(r"^##\s+3b\.", goal.read_text(), re.MULTILINE))
     detail = (f"old plan marked superseded: {superseded}, "
               f"goal records §3b: {records_ruling}")
     proof = f"{old.name}, {goal.name}"
@@ -229,8 +234,63 @@ def probe_authority_chain_consistent(repo: Path = REPO) -> ProbeResult:
         proof)
 
 
+def probe_reconciliation_sweeps(spine: Path = SPINE) -> ProbeResult:
+    """RL-021: a sweep that does not run cannot report anything skipped.
+
+    PARTIAL while members remain unassigned, which is the honest reading today
+    and for a long time: 2,738 corpus members against 13 plan rows. OK would
+    require every member assigned, declined or written off as prose.
+    """
+    from plan.cli import read_decisions
+    from plan.reconcile_sources import (
+        read_catalogue_rows, read_design_sections, read_ledger_rows, reconcile,
+    )
+    if not spine.is_file():
+        return ProbeResult(NOT_MEASURED, "no plan document to sweep against",
+                           str(spine))
+    try:
+        members = (read_ledger_rows(Path.home() / "research" / "ledger" / "merged")
+                   + read_catalogue_rows(Path.home() / "research" / "FEATURES.md")
+                   + read_design_sections([Path.home() / "research",
+                                           REPO / "docs" / "superpowers"]))
+        resolutions = reconcile(members, read_master_plan(spine), read_decisions())
+    except Exception as failure:
+        return ProbeResult(DEGRADED, f"the sweep failed: {failure!r}", str(spine))
+    unassigned = sum(1 for r in resolutions if r.outcome == "unassigned")
+    detail = f"{len(resolutions)} members swept, {unassigned} unassigned"
+    proof = "plan.reconcile_sources over ledger, catalogue and design sections"
+    return ProbeResult(OK if unassigned == 0 else PARTIAL, detail, proof)
+
+
+def _board_freshness(name: str, out_dir: Path) -> ProbeResult:
+    """A generated board is only evidence while it is recent."""
+    page = out_dir / name
+    if not page.is_file():
+        return ProbeResult(NOT_MEASURED, f"{name} has never been generated", str(page))
+    age_s = time.time() - page.stat().st_mtime
+    detail = f"{name} generated {age_s / 60:.0f} min ago, {page.stat().st_size} bytes"
+    if age_s > 24 * 3600:
+        return ProbeResult(DEGRADED, detail + " — the generator has stopped", str(page))
+    return ProbeResult(OK, detail, str(page))
+
+
+def probe_plan_board_rendered(
+        out_dir: Path = Path.home() / "research" / "dashboard") -> ProbeResult:
+    """RL-012: the board is a display of measured state, so it must exist."""
+    return _board_freshness("ajit-master-plan.html", out_dir)
+
+
+def probe_ruling_conformance(
+        out_dir: Path = Path.home() / "research" / "dashboard") -> ProbeResult:
+    """RL-021: a conformance board nobody renders measures nothing."""
+    return _board_freshness("ruling-conformance.html", out_dir)
+
+
 PROBES = {
     "probe_store_offloaded": probe_store_offloaded,
+    "probe_reconciliation_sweeps": probe_reconciliation_sweeps,
+    "probe_plan_board_rendered": probe_plan_board_rendered,
+    "probe_ruling_conformance": probe_ruling_conformance,
     "probe_memory_reachable": probe_memory_reachable,
     "probe_paper_engine_running": probe_paper_engine_running,
     "probe_enforcement_live": probe_enforcement_live,

@@ -1145,7 +1145,7 @@
     "plan.rulings": {
       "learning": "n/a: a reader over a hand-written register. Nothing is fitted",
       "reasoning": "pass: it refuses ambiguity by name rather than guessing past it - a missing `probe` field is rejected while an explicit null is accepted, because an absent field is indistinguishable from an oversight and a null is a decision; an unknown scope is rejected naming the offending value, since a fifth scope would have no arithmetic in scope_coverage and would count as resolved the moment one row existed anywhere; and a `status` field is rejected outright, which is the one refusal the whole design rests on",
-      "depth": "fail: unreachable. Nothing outside tests imports it yet - statuswall.ruling_conformance is the caller and does not exist at this commit. `tail_specs()` is this repo's named trap and this module is currently in it. Flips when the conformance board lands",
+      "depth": "pass: reachable - plan.cli reads the register on every boards pass, and it changes behaviour when wrong rather than degrading quietly. A missing `probe` field, an unknown scope, a duplicate id and a `status` field each RAISE with the offending value named, instead of loading a register nobody can trust",
       "evidence": [
         "tests/test_rulings_register.py",
         "src/plan/rulings.py",
@@ -1155,7 +1155,7 @@
     "plan.master_plan": {
       "learning": "n/a: a parser. Nothing is fitted",
       "reasoning": "pass: it distinguishes a MEASUREMENT from a DECISION, which is the distinction the two-artefact design rests on. `measured by <probe>` parses; the status wall's whole vocabulary is refused by name including when hidden behind the prefix, so `measured by BUILT` is caught; and BLOCKED and DECLINED are allowed through because they are the user's decisions about a row rather than claims about running code. It also refuses a row missing any of eight fields rather than accepting a half-specified contract",
-      "depth": "fail: unreachable. Only tests import it at this commit; statuswall.master_plan_board is the caller and does not exist yet. Recorded as unreachable rather than described as complete",
+      "depth": "pass: reachable through plan.cli, and its refusals are the point. A typed state raises rather than being accepted, including `measured by BUILT` which wears the right prefix; a row missing any of eight fields raises naming the missing ones. The document it parses is the one every future session reads, so a parser that shrugged would put the project back where it started",
       "evidence": [
         "tests/test_master_plan_spine.py",
         "src/plan/master_plan.py"
@@ -1164,7 +1164,7 @@
     "plan.scope_coverage": {
       "learning": "n/a: arithmetic over a parsed document. Nothing is fitted",
       "reasoning": "pass: the denominator comes from the ruling's scope rather than from the sweep, which is the difference between 'assigned somewhere' and 'delivered everywhere'. It counts DISTINCT slice keys so two rows for one bot is still one bot, and counts what a row CLAIMS to satisfy rather than what it sits near - both traps are pinned by tests. The failure it exists to prevent is measured: the examination-hall ruling of 2026-08-02 produced ~140 lines of goal §5a and zero rows of work",
-      "depth": "fail: unreachable. Only tests import it at this commit. The board that consumes it is not written yet",
+      "depth": "pass: reachable through plan.cli and the conformance board. It changes what the board says when coverage is partial - RL-009 renders 0/4 and names the missing segments rather than reading resolved off one row - which is the exact failure it was written for",
       "evidence": [
         "tests/test_scope_coverage.py",
         "src/plan/scope_coverage.py"
@@ -1173,10 +1173,37 @@
     "plan.reconcile_sources": {
       "learning": "n/a: readers and a classifier over fixed rules. Nothing is fitted",
       "reasoning": "pass: it matches on a word boundary rather than a substring, so a row citing FE-014 does not satisfy FE-01 - over-matching reports coverage that does not exist, which is the same lie as under-sweeping and harder to notice. `prose, no work implied` is accepted only when WRITTEN and never inferred, because inferring it is the exact failure being fixed. It reuses statuswall.catalogue rather than parsing FEATURES.md a second time, after a private parser counted 201 rows against the catalogue's 192",
-      "depth": "fail: unreachable. Only tests import it at this commit. Its own first draft silently dropped 424 of the ledger's rows because they carry no ID column - a sweep built to stop things being dropped was dropping them - and that is fixed by synthesising an identifier and skipping only rows followed by a table separator, both verified against the real corpus",
+      "depth": "pass: reachable through plan.cli. Two defects in its own first draft were found by measuring rather than reading: it swept 1,067 of the ledger's 1,491 rows because the two PARTIAL-* slices carry no ID column, and it counted table HEADERS as members once un-identified rows were admitted. Fixed by synthesising identifiers and by identifying a header as the row followed by a `|---|` separator. It now sweeps 2,738 members and reports 2,728 unassigned rather than a comfortable number",
       "evidence": [
         "tests/test_reconcile_sources.py",
         "src/plan/reconcile_sources.py"
+      ]
+    },
+    "plan.cli": {
+      "learning": "n/a: an orchestrator. Nothing is fitted",
+      "reasoning": "pass: it runs in its own short-lived process on purpose rather than inside statuswall.cli, and the reason is measured - statuswall.cli holds 4.8 GB while capture holds ~9 GB on a 30 GB box with no swap, and the kernel OOM-killed the forward paper engine at 09:49:54Z on 2026-08-17 (exit 137 after 7,183s). A tidier boards pass is not worth raising the OOM risk on the process the system exists to run",
+      "depth": "pass: reachable - boards_supervisor.sh invokes it every regeneration cycle, and a failure there is recorded WITHOUT breaking the wall's own loop, because the plan board failing must not stop the status wall regenerating. Every probe it runs returns NOT MEASURED on error rather than propagating, so one broken probe cannot blank the board",
+      "evidence": [
+        "src/plan/cli.py",
+        "scripts/boards_supervisor.sh"
+      ]
+    },
+    "statuswall.ruling_conformance": {
+      "learning": "n/a: probes and a renderer. Nothing is fitted",
+      "reasoning": "pass: it keeps COVERAGE and STATE apart, which are different questions - whether the plan has rows for a ruling, and whether the running system does it. A ruling can be fully covered and still fail its probe, and collapsing the two is how a plan starts vouching for a system. Every probe measures the running box rather than whether a test passed, and probe_authority_chain_consistent was tightened after its loose form reported goal §3b present because the bare string '3b' appears in unrelated prose",
+      "depth": "pass: reachable through plan.cli, and it changes behaviour under error in the direction that matters. A ruling naming no probe renders NOT MEASURED and can never be green; a probe that RAISES renders NOT MEASURED with the exception named rather than taking the board down, because a board that fails to render tells the reader less than a board carrying one dark row - pinned by a test that injects a deliberately broken probe",
+      "evidence": [
+        "tests/test_ruling_conformance.py",
+        "src/statuswall/ruling_conformance.py"
+      ]
+    },
+    "statuswall.master_plan_board": {
+      "learning": "n/a: a renderer over measurements made elsewhere. Nothing is fitted",
+      "reasoning": "pass: it refuses the two renderings that would flatter. An EMPTY slice renders 0 / 0 and is treated as the ACTIVE slice once the one above it is built - empty means unplanned, not finished, and four of six slices are empty today. A row with no probe result renders NOT MEASURED and is never counted as built, so the default is dark rather than green",
+      "depth": "pass: reachable through plan.cli. It publishes the unassigned count rather than summarising it away - 2,728 of 2,738 corpus members at this commit - and carries no date, no effort estimate and no percentage complete, because an estimate here would be a guess presented as a number. A test asserts those words stay off the page",
+      "evidence": [
+        "tests/test_master_plan_board.py",
+        "src/statuswall/master_plan_board.py"
       ]
     }
   }

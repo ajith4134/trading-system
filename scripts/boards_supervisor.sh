@@ -146,6 +146,18 @@ supervise() {
           echo "wall regeneration failed; see $GENERATOR_LOG" >&2
           break
         fi
+        # The plan and ruling-conformance boards, in their OWN short-lived
+        # process rather than inside `statuswall.cli`. Measured 2026-08-17:
+        # statuswall.cli holds 4.8 GB while capture holds ~9 GB on a 30 GB box
+        # with no swap, and the kernel OOM-killed the forward paper engine at
+        # 09:49:54Z (exit 137). Folding a 2,738-member corpus sweep into that
+        # same process would buy a tidier pass at the cost of the thing the
+        # system exists to run. A failure here is recorded and does NOT break
+        # the loop: the wall must keep regenerating even if the plan board
+        # cannot.
+        if ! "$PYTHON" -m plan.cli --out-dir "$BOARDS_DIR" >> "$GENERATOR_LOG" 2>&1; then
+          echo "plan board regeneration failed; see $GENERATOR_LOG" >&2
+        fi
         sleep "$REGENERATE_INTERVAL"
       done &
       generator_pid=$!
