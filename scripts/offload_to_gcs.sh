@@ -79,9 +79,26 @@ done < <(cd "$RAW_ROOT" && find . -mindepth 2 -maxdepth 2 -type d | sed 's|^\./|
 # The ledger and the universe record are small and are the only way to know
 # later what the archive was missing and who was listed when. They belong with
 # the data they describe.
-for extra in ledger universe; do
+#
+# `store` is here and not only `raw` because funding has NO RAW COUNTERPART:
+# it is polled directly into store/funding, so `raw/binance-funding` does not
+# exist and a raw-only backup omits it entirely. That dataset's start date is
+# the clock every promotion waits on, and `funding_reconstructed` cannot stand
+# in - its availability times are the fetch, which is deliberately what makes
+# it safe for research and useless for a backtest. Measured 2026-08-17: the
+# bucket held raw/, ledger/ and universe/ and nothing else, so the observed
+# record existed on exactly one disk.
+#
+# The exclude is the store's version of the `.writing` rule at the top of this
+# file. Datasets are appended live and a part being written is named
+# `.writing-part-<id>.parquet`; copying one lands a truncated parquet that
+# reads as a complete dataset. Unlike the raw path's rejected `--exclude`
+# experiment, this is one fixed pattern rather than ~1,750 alternations, so it
+# cannot over-match a different partition.
+for extra in ledger universe store; do
   [ -d "$CAPTURE_ROOT/$extra" ] || continue
-  gcloud storage rsync -r "$CAPTURE_ROOT/$extra" "${BUCKET}/${extra}" >/dev/null 2>&1 \
+  gcloud storage rsync -r -x '.*\.writing-part-.*' \
+      "$CAPTURE_ROOT/$extra" "${BUCKET}/${extra}" >/dev/null 2>&1 \
     || { echo "FAILED: $extra" >&2; failed=$((failed + 1)); }
 done
 
