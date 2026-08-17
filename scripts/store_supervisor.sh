@@ -68,9 +68,13 @@ while true; do
   yesterday=$(date -u -d 'yesterday' +%F)
 
   for day in "$yesterday" "$today"; do
+    # `option_chain deribit` is the options segment, added 2026-08-16 in the same
+    # session as its capture. Building it here rather than leaving it for later
+    # is the whole point: a captured tape no builder reads is this codebase's
+    # named failure, and it has happened twice.
     for spec in "funding binance" "funding hyperliquid" "funding bybit" \
                 "dated_futures bybit" "book binance" "book binance-spot" \
-                "book coinbase"; do
+                "book coinbase" "option_chain deribit"; do
       set -- $spec
       # Every polled dataset reads its universe off the archive now, depth
       # included. Depth is still core-only in FACT - only the core subscribes a

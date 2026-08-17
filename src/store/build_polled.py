@@ -37,6 +37,7 @@ from store.funding_rates import (
     build_funding_frame, extract_bybit_funding, extract_funding,
     extract_hyperliquid_funding,
 )
+from store.option_chain import build_option_frame, extract_option_quotes
 from store.parquet_partition import append_partition, read_dataset
 from store.temporal_schema import AVAILABILITY_TIME, VENUE
 
@@ -78,6 +79,11 @@ DATASETS: dict[str, tuple[str, Callable, Callable]] = {
     # calendar contract, a rate is a perpetual.
     "dated_futures": ("linearTickers", extract_bybit_dated_future,
                       build_dated_futures_frame),
+    # Options, from 2026-08-16. Built the same day the capture was added, and
+    # deliberately not later: this codebase's recorded failure is capturing a
+    # tape and never building it - 99.6% of the binance tape, and coinbase for a
+    # day with a working extractor the builder could not reach.
+    "option_chain": ("optionChain", extract_option_quotes, build_option_frame),
 }
 
 # Where a venue's raw stream is named differently from the dataset's default, or

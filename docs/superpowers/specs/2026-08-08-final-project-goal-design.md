@@ -375,8 +375,32 @@ not repeal that evidence. It raises the stakes on measuring it honestly.
    **options** still has no venue to build from (item 2), and **hyperliquid**
    subscribes `trades_*` for only BTC/ETH/SOL, so 174 of its 177 symbols in the
    store are a week old — a capture-breadth gap that belongs with item 2.
-2. **Capture an options venue** — the segment has no data, and no options feature
-   can be built or probed against nothing.
+2. **Capture an options venue** — **CAPTURE DONE 2026-08-16**,
+   `capture.venues.deribit`, commit `1e68b85`. Running under
+   `capture_supervisor.sh` and in the instance metadata.
+
+   Measured against the live venue: **BTC 818 option instruments and ETH 684**,
+   and **zero for the other 49 currencies Deribit lists**. One keyless request
+   returns a currency's whole chain — 363 KB in 0.36s — against 1,502 websocket
+   channels for the same data, so it is polled at 60s and fans out into one file
+   per instrument. First run: 1,502 files, 3,822 records, 0 dropped, 0 malformed.
+
+   **The reason it could not wait:** the chain cannot be backfilled. The endpoint
+   ignores a `timestamp` parameter and returns the current chain, and no public
+   historical chain endpoint exists. DVOL *is* backfillable and is deliberately
+   not captured.
+
+   **Still open, and it is the trap this codebase names:** the tape is captured
+   and **no builder reads it yet**. Coinbase was captured for a day with a working
+   extractor the builder could not reach, and 99.6% of the binance tape was
+   archived and never became a bar. An options *store dataset* — chain snapshots
+   with bitemporal stamps, and the greeks computed here rather than taken from a
+   venue field — is the next piece, and until it exists no §5b feature can read
+   any of this.
+
+   A related capture-breadth gap belongs here rather than with item 1:
+   **hyperliquid subscribes `trades_*` for only BTC, ETH and SOL**, so 174 of its
+   177 symbols in the store are a week stale.
 3. **Re-run the cost gate as a feasibility question**, per segment and per
    holding period, and write down what survives. If most of the universe cannot
    clear 24 bps intraday, that is the finding and it belongs on the board.
