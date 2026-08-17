@@ -1,0 +1,26 @@
+{
+  "_what_this_is": "Written resolutions for source members that are NOT assigned to a plan row. Only three outcomes may appear here - declined, blocked, prose - because 'assigned' is measured from the spine and 'unassigned' is what is left over. Typing either of those would be asserting a reconciliation instead of performing one.",
+
+  "_why_prose_is_written_and_never_inferred": "A design section that implies no module is a real and common answer: §0 Prime directive is an objective, a Provenance section is a record of how a document was made. But inferring it silently is exactly the failure this whole sweep exists to fix. On 2026-08-17 the examination-hall framing - the user's own ruling, roughly 140 lines of goal §5a - had produced zero rows of work, and any mechanism willing to guess 'that section was just prose' would have hidden it. So each one is written down by name and is reviewable.",
+
+  "_how_to_add_one": "Key on the member's identifier exactly as the sweep reports it: `<filename>#<heading>` for a design section, the bare id for a ledger row, `FEATURES §<section> <name>` for a catalogue row. Value is [outcome, reason]. A decline without a reason is a forget wearing better clothes.",
+
+  "decisions": {
+    "2026-08-08-final-project-goal-design.md#0. Prime directive": [
+      "prose",
+      "an objective, not a module. §0 states what the system is for; every row in the plan serves it and none implements it"
+    ],
+    "2026-08-08-final-project-goal-design.md#Provenance": [
+      "prose",
+      "a record of how the document was made"
+    ],
+    "2026-08-17-ajit-master-plan-design.md#Provenance": [
+      "prose",
+      "a record of how the design was interviewed and what was measured on the day"
+    ],
+    "2026-08-17-ajit-master-plan-design.md#0. Why this exists — the measured failure it answers": [
+      "prose",
+      "the argument for the plan, discharged by the plan existing. Its measurements are cited from the rows that act on them"
+    ]
+  }
+}
