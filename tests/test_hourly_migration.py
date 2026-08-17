@@ -23,8 +23,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from store.hourly_migration import (
-    LEGACY_SUFFIX, MigrationRefused, _read_consumed, migrate_dataset_to_hourly,
-    swap_in_migrated_dataset,
+    COPY_CLAIM, FOLD_CLAIM, LEGACY_SUFFIX, MigrationRefused, _read_consumed,
+    migrate_dataset_to_hourly, swap_in_migrated_dataset,
 )
 from store.parquet_partition import (
     append_partition, clear_schema_cache, read_dataset, select_fragments,
@@ -45,9 +45,10 @@ def _isolated_cache():
     clear_schema_cache()
 
 
-def _legacy_part(store, symbol: str, rows: list[dict], snapshot: str) -> None:
+def _legacy_part(store, symbol: str, rows: list[dict], snapshot: str,
+                 dataset: str = DATASET) -> None:
     """Write a part in the pre-SL-15 layout: symbol at the top, no hour anywhere."""
-    folder = store / DATASET / f"symbol={symbol}"
+    folder = store / dataset / f"symbol={symbol}"
     folder.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows).drop(columns=[SYMBOL]).reset_index(drop=True)
     pq.write_table(pa.Table.from_pandas(frame, preserve_index=False),
@@ -309,3 +310,124 @@ def test_an_already_hourly_dataset_is_refused_rather_than_migrated_twice(tmp_pat
 def test_an_absent_dataset_is_refused(tmp_path):
     with pytest.raises(MigrationRefused, match="no dataset"):
         migrate_dataset_to_hourly(tmp_path, "never_written")
+
+
+# --- folding stragglers into a live dataset ----------------------------------
+#
+# The swap is two renames, and capture never stops. Parts written to the old
+# directory between the last migration pass and the rename are stranded there:
+# nothing is lost, but they are outside what readers now open. Measured on the
+# live bars store 2026-08-17 - 16,517 such parts, about 56 minutes of bars
+# across 2,235 symbols. Folding them in is the repair, and it is a different
+# operation from the migration that preceded it, because its target is alive.
+
+
+def _swapped(store):
+    """The state a fold starts from: migrated, renamed, capture still running."""
+    _stocked(store)
+    report = migrate_dataset_to_hourly(store, DATASET)
+    retired, live = swap_in_migrated_dataset(store, DATASET, report)
+    return retired.name, live.name
+
+
+def test_the_manifest_survives_the_dataset_being_renamed(tmp_path):
+    """The swap renames the directory the manifest names. Keyed on the store
+    root, every entry would then miss and the next pass would re-migrate all
+    93,588 parts - writing every row a second time under a fresh snapshot id,
+    a duplication that reads as real volume. Keyed on the dataset, they match."""
+    retired, live = _swapped(tmp_path)
+    consumed = _read_consumed(tmp_path, live)
+
+    assert consumed, "the manifest did not survive the rename"
+    assert not any(entry.startswith(f"{DATASET}/") for entry in consumed), \
+        "entries are still store-relative and will miss after any rename"
+    assert all(entry.split("/")[0].count("=") for entry in consumed), \
+        "every entry should start at a partition directory"
+
+
+def test_a_fold_carries_stragglers_in_without_rewriting_what_is_there(tmp_path):
+    """The straggler's rows arrive; the 5 rows already folded are not written
+    a second time."""
+    retired, live = _swapped(tmp_path)
+    before = len(read_dataset(tmp_path, live))
+    _legacy_part(tmp_path, "BTCUSDT",
+                 [_row("BTCUSDT", MIDNIGHT_NS + 4 * HOUR_NS, close=42.0)],
+                 "straggler", dataset=retired)
+    clear_schema_cache()
+
+    report = migrate_dataset_to_hourly(tmp_path, retired, into=live)
+
+    folded = read_dataset(tmp_path, live)
+    assert len(folded) == before + 1, "the straggler's row is missing, or rows doubled"
+    assert sorted(folded["close"]) == sorted([0.0, 1.0, 2.0, 9.0, 5.0, 42.0])
+    assert report.building_dataset == live
+    assert report.verified, report.mismatched_groups
+
+
+def test_a_fold_accepts_rows_the_retired_layout_never_held(tmp_path):
+    """A live dataset grows while the fold runs. Under the migration's own
+    contract - the target is a pure copy of the source - every such row is a
+    mismatch, so a fold could never verify. The claim a fold makes is weaker
+    and is named as such: every group of the retired layout is present in the
+    live one with at least its row count."""
+    retired, live = _swapped(tmp_path)
+    fresh = _row("SOLUSDT", MIDNIGHT_NS + 5 * HOUR_NS, close=77.0)
+    frame = pd.DataFrame([fresh]).astype({EVENT_TIME: "int64",
+                                          INGESTION_TIME: "int64",
+                                          AVAILABILITY_TIME: "int64"})
+    append_partition(tmp_path, live, frame, "snap-after-the-swap")
+    _legacy_part(tmp_path, "BTCUSDT",
+                 [_row("BTCUSDT", MIDNIGHT_NS + 4 * HOUR_NS, close=42.0)],
+                 "straggler", dataset=retired)
+    clear_schema_cache()
+
+    report = migrate_dataset_to_hourly(tmp_path, retired, into=live)
+
+    assert report.verified, report.mismatched_groups
+    assert report.claim == FOLD_CLAIM
+    assert 77.0 in set(read_dataset(tmp_path, live)["close"])
+
+
+def test_a_fold_still_refuses_a_group_the_live_layout_is_missing(tmp_path):
+    """The weaker claim is not no claim. A retired group absent from the live
+    dataset is the failure a fold exists to catch, and it must still fail."""
+    retired, live = _swapped(tmp_path)
+    _legacy_part(tmp_path, "BTCUSDT",
+                 [_row("BTCUSDT", MIDNIGHT_NS + 4 * HOUR_NS, close=42.0)],
+                 "straggler", dataset=retired)
+    clear_schema_cache()
+    report = migrate_dataset_to_hourly(tmp_path, retired, into=live)
+    assert report.verified
+
+    for part in (tmp_path / live).glob(f"*=*/symbol=BTCUSDT/*.parquet"):
+        part.unlink()
+    clear_schema_cache()
+
+    again = migrate_dataset_to_hourly(tmp_path, retired, into=live)
+    assert not again.verified, "a missing group passed a fold's verification"
+    assert any("BTCUSDT" in row for row in again.mismatched_groups), \
+        again.mismatched_groups
+
+
+def test_a_fold_report_is_refused_by_the_swap(tmp_path):
+    """A fold's building dataset IS the live one. Renaming it aside would move
+    the live store out from under every reader and leave nothing in its place -
+    the single worst outcome this module can produce."""
+    retired, live = _swapped(tmp_path)
+    _legacy_part(tmp_path, "BTCUSDT",
+                 [_row("BTCUSDT", MIDNIGHT_NS + 4 * HOUR_NS, close=42.0)],
+                 "straggler", dataset=retired)
+    clear_schema_cache()
+    report = migrate_dataset_to_hourly(tmp_path, retired, into=live)
+
+    with pytest.raises(MigrationRefused, match="fold"):
+        swap_in_migrated_dataset(tmp_path, retired, report)
+
+
+def test_a_migration_still_makes_the_stronger_claim(tmp_path):
+    """The fold's weaker claim must not leak into the ordinary path, or SL-15's
+    acceptance sentence would be quietly downgraded for every dataset."""
+    _stocked(tmp_path)
+    report = migrate_dataset_to_hourly(tmp_path, DATASET)
+    assert report.claim == COPY_CLAIM
+    assert report.verified

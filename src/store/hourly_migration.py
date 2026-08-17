@@ -49,6 +49,15 @@ REPORT_PREFIX = "migration-report-"
 # being discovered as a malformed parquet part and failing every read.
 MANIFEST_FILE = ".migrated-parts.json"
 
+# What a report is entitled to say. A migration builds a copy nothing else
+# writes to, so it can claim equality. A fold's target is the LIVE dataset,
+# which capture keeps appending to while the fold runs, so rows the source
+# never held are expected rather than a fault - and the claim has to be weaker
+# by exactly that much, in writing, or a fold report reads as a migration one.
+COPY_CLAIM = "every legacy row is present in the new layout, and no other row is"
+FOLD_CLAIM = ("every group of the retired layout is present in the live one with "
+              "at least its row count; the live layout may hold newer rows besides")
+
 
 class MigrationRefused(RuntimeError):
     """The migration will not run, or its result will not be swapped in."""
@@ -74,6 +83,9 @@ class MigrationReport:
     columns_lost: tuple[str, ...]
     mismatched_groups: tuple[str, ...]
     verified: bool
+    # Defaulted so a report written before folds existed still loads. The
+    # default is the stronger claim, which is the one those reports made.
+    claim: str = COPY_CLAIM
 
 
 def _legacy_symbol_folders(root: Path) -> list[Path]:
@@ -128,8 +140,26 @@ def _read_legacy_parts(folder: Path, parts: list[Path]) -> pd.DataFrame:
     return frame
 
 
+def _dataset_relative(entry: str) -> str:
+    """An entry keyed on the store root, re-keyed on the dataset root.
+
+    The swap renames the directory the manifest names. Keyed on the store root
+    every entry would then miss, and the next pass would re-migrate all 93,588
+    parts - writing every row a second time under a fresh content-derived
+    snapshot id, a duplication that reads as real volume rather than as an
+    error. Keyed on the dataset, a rename costs nothing.
+
+    A first component with no `=` is a dataset directory: hive partition
+    directories always carry one, and no dataset in this store has one in its
+    name. So the rule is decidable from the entry alone, which is what lets an
+    old manifest and a new one live in the same file.
+    """
+    head, _, rest = entry.partition("/")
+    return rest if rest and "=" not in head else entry
+
+
 def _read_consumed(store_root: Path, building: str) -> set[str]:
-    """Legacy parts an earlier pass already migrated, by path relative to the store.
+    """Legacy parts an earlier pass already migrated, by path relative to the dataset.
 
     A manifest rather than "has a part for this symbol been written": capture
     keeps appending to the legacy layout while the migration runs, so a second
@@ -150,7 +180,7 @@ def _read_consumed(store_root: Path, building: str) -> set[str]:
     stripped = text.lstrip()
     if stripped.startswith("["):
         try:
-            return set(json.loads(text))
+            return {_dataset_relative(entry) for entry in json.loads(text)}
         except ValueError:
             return set()
     # One path per line. A truncated final line is a crash mid-append and is
@@ -160,9 +190,9 @@ def _read_consumed(store_root: Path, building: str) -> set[str]:
     for line in text.splitlines():
         entry = line.strip()
         if entry:
-            consumed.add(entry)
+            consumed.add(_dataset_relative(entry))
     if text and not text.endswith("\n"):
-        consumed.discard(text.splitlines()[-1].strip())
+        consumed.discard(_dataset_relative(text.splitlines()[-1].strip()))
     return consumed
 
 
@@ -194,8 +224,23 @@ def _record_consumed(store_root: Path, building: str, fresh: list[str]) -> None:
         os.fsync(handle.fileno())
 
 
-def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport:
-    """Build the hour-partitioned copy beside the legacy one. Swaps nothing."""
+def migrate_dataset_to_hourly(store_root: Path, dataset: str,
+                              into: str | None = None) -> MigrationReport:
+    """Build the hour-partitioned copy beside the legacy one. Swaps nothing.
+
+    `into` names an existing dataset to fold the rows into instead of building
+    a fresh copy, and it exists because the swap is two renames while capture
+    never stops. Parts written to the old directory between the last pass and
+    the rename are stranded there - measured on the live bars store 2026-08-17,
+    16,517 parts, about 56 minutes of bars across 2,235 symbols. Nothing is
+    lost, but they sit outside what readers now open, and only a fold puts them
+    where the readers are.
+
+    A fold is a genuinely weaker operation and the report says so: see
+    FOLD_CLAIM. `swap_in_migrated_dataset` refuses a fold report outright,
+    because a fold's "building" dataset is the live one and renaming that aside
+    would move the store out from under every reader.
+    """
     store_root = Path(store_root)
     root = store_root / dataset
     if not root.is_dir():
@@ -210,7 +255,7 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
     if not folders:
         raise MigrationRefused(f"no dataset partitions under {root}")
 
-    building = f"{dataset}{BUILDING_SUFFIX}"
+    building = into or f"{dataset}{BUILDING_SUFFIX}"
     consumed = _read_consumed(store_root, building)
     legacy_parts = migrated_parts = legacy_rows = 0
     hours: set[str] = set()
@@ -237,7 +282,7 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
                 expected[(hour, symbol)] = expected.get((hour, symbol), 0) + len(group)
 
         fresh = [part for part in parts
-                 if str(part.relative_to(store_root)) not in consumed]
+                 if str(part.relative_to(root)) not in consumed]
         if not fresh:
             continue
         frame = _read_legacy_parts(folder, fresh)
@@ -251,7 +296,7 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
             # them. The snapshot id is content-derived, so the file already on
             # disk holds exactly these rows; recording it now is the repair.
             pass
-        newly = [str(part.relative_to(store_root)) for part in fresh]
+        newly = [str(part.relative_to(root)) for part in fresh]
         consumed |= set(newly)
         _record_consumed(store_root, building, newly)
 
@@ -269,7 +314,7 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
         legacy_columns |= set(rows.columns) | {SYMBOL}
         hours.add(hour)
         expected[(hour, symbol)] = expected.get((hour, symbol), 0) + len(rows)
-        key = str(part.relative_to(store_root))
+        key = str(part.relative_to(root))
         if key not in consumed:
             _link_into_building(store_root, dataset, building, part)
             migrated_parts += 1
@@ -278,7 +323,8 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
     _record_consumed(store_root, building, linked)
 
     report = _verify(store_root, dataset, building, legacy_parts, migrated_parts,
-                     legacy_rows, len(folders), len(hours), expected, legacy_columns)
+                     legacy_rows, len(folders), len(hours), expected, legacy_columns,
+                     exact=into is None)
     _record_report(store_root, report)
     return report
 
@@ -286,12 +332,20 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
 def _verify(store_root: Path, dataset: str, building: str, legacy_parts: int,
             migrated_parts: int, legacy_rows: int, symbols: int, hours: int,
             expected: dict[tuple[str, str], int],
-            legacy_columns: set[str]) -> MigrationReport:
+            legacy_columns: set[str], exact: bool = True) -> MigrationReport:
     """Compare the built dataset against the legacy one on content.
 
     Group counts rather than a single total: two errors of opposite sign net to
     zero in a total, and "the numbers matched" would then be the last thing said
     before the store was swapped.
+
+    `exact` is the difference between a migration and a fold. A migration owns
+    its target, so a group the target holds and the source does not is a fault.
+    A fold's target is live and capture is still appending to it, so the same
+    observation is expected - and under the strict rule no fold could ever
+    verify, which would make the check something to be worked around instead of
+    obeyed. What a fold still refuses is the failure it exists to catch: a group
+    of the source missing, or short, in the target.
     """
     migrated = read_dataset(store_root, building)
     mismatched: list[str] = []
@@ -304,20 +358,24 @@ def _verify(store_root: Path, dataset: str, building: str, legacy_parts: int,
                    .assign(**{HOUR_KEY: migrated[AVAILABILITY_TIME].map(floor_to_hour)})
                    .groupby([HOUR_KEY, SYMBOL]).size().to_dict())
         for key, rows in sorted(expected.items()):
-            if counted.get(key, 0) != rows:
+            short = counted.get(key, 0) != rows if exact else counted.get(key, 0) < rows
+            if short:
                 mismatched.append(f"{key[0]}/{key[1]}: {rows} legacy row(s), "
                                   f"{counted.get(key, 0)} migrated")
-        for key in sorted(set(counted) - set(expected)):
-            mismatched.append(f"{key[0]}/{key[1]}: {counted[key]} row(s) the legacy "
-                              f"layout does not have")
+        if exact:
+            for key in sorted(set(counted) - set(expected)):
+                mismatched.append(f"{key[0]}/{key[1]}: {counted[key]} row(s) the legacy "
+                                  f"layout does not have")
 
     lost = tuple(sorted(legacy_columns - observed_columns))
+    counts_agree = len(migrated) == legacy_rows if exact else len(migrated) >= legacy_rows
     return MigrationReport(
         dataset=dataset, building_dataset=building, legacy_parts=legacy_parts,
         migrated_parts=migrated_parts, legacy_rows=legacy_rows,
         migrated_rows=int(len(migrated)), symbols=symbols, hours=hours,
         columns_lost=lost, mismatched_groups=tuple(mismatched),
-        verified=(not lost and not mismatched and len(migrated) == legacy_rows))
+        verified=(not lost and not mismatched and counts_agree),
+        claim=COPY_CLAIM if exact else FOLD_CLAIM)
 
 
 def _record_report(store_root: Path, report: MigrationReport) -> None:
@@ -335,6 +393,13 @@ def swap_in_migrated_dataset(store_root: Path, dataset: str,
     legacy directory stays until a human retires it - the plan row says "before
     the old is retired", and retiring is not this function's decision.
     """
+    if report.claim == FOLD_CLAIM:
+        raise MigrationRefused(
+            f"refusing to swap a fold report: its building dataset is "
+            f"{report.building_dataset}, which is live. Renaming a live "
+            f"dataset aside would move the store out from under every reader "
+            f"and leave nothing in its place. A fold has already put its rows "
+            f"where the readers are - there is nothing left to swap")
     if not report.verified:
         raise MigrationRefused(
             f"refusing to swap an unverified migration of {dataset}: "
@@ -375,13 +440,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset", required=True,
                         help="dataset directory name, e.g. bars_60000000000ns")
     parser.add_argument("--store-root", default=str(Path.home() / "capture" / "store"))
+    parser.add_argument("--into",
+                        help="fold the rows into this EXISTING dataset instead of "
+                             "building a fresh copy. For stragglers written to the "
+                             "old directory between the last pass and the swap. The "
+                             "report then makes the weaker fold claim, and --swap "
+                             "refuses it")
     parser.add_argument("--swap", action="store_true",
                         help="after a VERIFIED build, rename the legacy layout "
                              "aside and the new one into place. Nothing is deleted")
     args = parser.parse_args(argv)
 
     try:
-        report = migrate_dataset_to_hourly(Path(args.store_root), args.dataset)
+        report = migrate_dataset_to_hourly(Path(args.store_root), args.dataset,
+                                           into=args.into)
     except MigrationRefused as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
@@ -396,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         for line in report.mismatched_groups[:20]:
             print(f"  {line}", file=sys.stderr)
         return 1
-    print("verified: every legacy row is present in the new layout", file=sys.stderr)
+    print(f"verified: {report.claim}", file=sys.stderr)
 
     if args.swap:
         retired, live = swap_in_migrated_dataset(Path(args.store_root), args.dataset,

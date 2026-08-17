@@ -259,6 +259,36 @@ its own plan when slice 1's row inventory is reviewed.
 > one new module, `store/hourly_migration.py`, and changes the layout knowledge already held by
 > `store/parquet_partition.py`, `store/cli.py` and `statuswall/evidence.py`.
 
+> **The swap ran 2026-08-17 16:17, and the two things it left behind are part of this row.**
+> `bars_60000000000ns` is now the hour layout; the symbol layout is retained at
+> `bars_60000000000ns.legacy-symbol-layout` and is not deleted by this row.
+>
+> **1. Stragglers.** The swap is two renames and capture never stops, so parts written to the old
+> directory between the last migration pass (15:21) and the rename (16:17) are stranded in the
+> retired copy: **16,517 parts, about 56 minutes of bars across 2,235 symbols.** Nothing is lost -
+> they are on disk and in GCS - but they sit outside what readers open, so this row is not done
+> until they are folded in. `migrate_dataset_to_hourly(..., into=<live dataset>)` is that fold.
+>
+> **A fold makes a weaker claim than a migration, and the report says which one it made.** A
+> migration owns its target and can claim equality: every legacy row present, and no other row. A
+> fold's target is the LIVE dataset, which capture keeps appending to while the fold runs, so rows
+> the source never held are expected rather than a fault - under the strict rule no fold could ever
+> verify, and a check nothing can pass becomes a check that gets worked around. `FOLD_CLAIM` is
+> therefore *every group of the retired layout is present in the live one with at least its row
+> count*. It still refuses the failure it exists to catch: a source group missing or short in the
+> target. `swap_in_migrated_dataset` refuses a fold report outright, because a fold's building
+> dataset IS the live one and renaming that aside would move the store out from under every reader.
+>
+> **2. The writers still have to be restarted, and until they are, pruning cannot switch on.**
+> OUTSTANDING as of 2026-08-17 16:20. `store.live_bars` pids 1489 and 1491 have been up since the
+> 07:50 boot, holding the pre-SL-15 `append_partition` in memory, and they created nine fresh
+> top-level `symbol=` directories in the live dataset at 16:20 - after the swap. Hour pruning is
+> disabled while any top-level `symbol=` directory remains (§15.6, and deliberately so), so **the
+> swap buys nothing until those two processes are replaced by ones running the current code**, and
+> folding the stragglers before then only opens a fresh straggler window. A layout change is not
+> delivered when the code lands; it is delivered when every long-lived writer has been restarted
+> onto it, and this row is not measured until `probe_poll_scan_cost` says so.
+
 > **The 2026-08-17 11:19 diagnosis in this row was wrong, and the correction matters more than the
 > fix.** That note named the schema walk as the hot spot, from a read filtered to zero rows that
 > had not finished in 10 minutes. Re-measured at 11:50 on the live bars dataset, now **52,487
