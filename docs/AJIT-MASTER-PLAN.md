@@ -219,11 +219,29 @@ its own plan when slice 1's row inventory is reviewed.
 > ~5,000 MB, and a resumed start skips the prime entirely — while the IO cost did not, and it grows
 > every day as new snapshots append.
 >
-> Three candidate fixes, none of them free, and the choice is the user's because it changes the
-> store's shape: partition by availability date as well as symbol; have the engine record which
-> snapshot ids it has consumed; or prune fragments by file mtime. The last is cheapest and is the
-> one to be careful about — mtime is not a data property, and a restore from GCS would reset it and
-> silently skip real rows.
+> **The hot spot is named, and it is not the filter.** `read_dataset` builds
+> `[f.physical_schema for f in dataset_handle.get_fragments()]` before it scans anything — that
+> opens all 49,100 files to read metadata, and the scan then opens them again. Measured 2026-08-17:
+> a read filtered to return ZERO rows did not complete in 10 minutes, which isolates the cost to
+> the file walk rather than to any row work.
+>
+> That schema unification is not removable as it stands and must not be casually removed: its own
+> comment records why it exists, and the reason is severe — without it pyarrow infers the schema
+> from the first fragment and **silently drops** columns added by later partitions. On 2026-08-09
+> `funding_interval_hours` vanished from every read that way, and annualising a 4-hourly rate as
+> 8-hourly is wrong by a factor of two. Any fix here has to keep that property.
+>
+> **Not a regression from SL-12.** `prime()` performs an UNFILTERED read in both the old and the
+> new code, and it went from ~11 minutes to ~26 minutes across the same change — a path the filter
+> does not touch, slowing by the same rough factor. The cause is fragment growth plus box load
+> (load average 14.6, capture and two builders running), not the pushdown.
+>
+> Four candidate fixes, none free, and the choice is the user's because each changes the store's
+> shape or its read contract: partition by availability date as well as symbol; have the engine
+> record which snapshot ids it has consumed; cache the unified schema per dataset generation so the
+> fragment walk happens once rather than per read; or prune fragments by file mtime. The last is
+> cheapest and the most dangerous — mtime is not a data property, and a restore from GCS would
+> reset it and silently skip real rows.
 >
 > Recorded as a row rather than remembered, which is the whole point of this file.
 
