@@ -201,6 +201,32 @@ its own plan when slice 1's row inventory is reviewed.
               in the user's own words
   state:      measured by probe_authority_chain_consistent
 
+### SL-14
+  slice:      slice-0
+  does:       prune parquet FRAGMENTS from a poll, not only rows
+  satisfies:  RL-020 RL-018 RL-005
+  sources:    ~/research/DECISIONS.md#15.3 The paper engine was killing itself
+  depends on: SL-12
+  probe:      probe_poll_scan_cost
+  accepts:    a poll opens a number of fragments proportional to what arrived
+              since its watermark, not to the size of the archive
+  state:      BLOCKED - needs a store design decision, see the note below
+
+> **SL-14 is BLOCKED on a decision, not on work.** Measured 2026-08-17: the bars dataset holds
+> **49,100 parquet fragments across 2,229 symbol partitions**, and every poll opens all of them.
+> `not_before_ns` (SL-12) filters ROWS after the scan; it cannot prune FILES, because the partition
+> key is `symbol` and availability is not part of the path. So the memory cost fell — 7,321 MB to
+> ~5,000 MB, and a resumed start skips the prime entirely — while the IO cost did not, and it grows
+> every day as new snapshots append.
+>
+> Three candidate fixes, none of them free, and the choice is the user's because it changes the
+> store's shape: partition by availability date as well as symbol; have the engine record which
+> snapshot ids it has consumed; or prune fragments by file mtime. The last is cheapest and is the
+> one to be careful about — mtime is not a data property, and a restore from GCS would reset it and
+> silently skip real rows.
+>
+> Recorded as a row rather than remembered, which is the whole point of this file.
+
 ---
 
 ## SLICE spot-bot — SPOT BOT
