@@ -15,13 +15,15 @@ has never been observed at all.
 """
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from store.hourly_migration import (
-    LEGACY_SUFFIX, MigrationRefused, migrate_dataset_to_hourly,
+    LEGACY_SUFFIX, MigrationRefused, _read_consumed, migrate_dataset_to_hourly,
     swap_in_migrated_dataset,
 )
 from store.parquet_partition import (
@@ -202,6 +204,35 @@ def test_a_second_pass_migrates_only_what_arrived_since_the_first(tmp_path):
     migrated = read_dataset(tmp_path, second.building_dataset)
     assert len(migrated[migrated["close"] == 0.0]) == 1, "an old row was migrated twice"
     assert len(migrated[migrated["close"] == 7.0]) == 1, "the new row is missing"
+
+
+def test_a_manifest_written_by_the_first_version_is_still_read(tmp_path):
+    """The manifest was a JSON array before it became one path per line, and one
+    such file exists from the live migration that was mid-flight when the format
+    changed. Failing to read it would mean re-migrating 62,000 parts that are
+    already on disk and correct."""
+    _stocked(tmp_path)
+    first = migrate_dataset_to_hourly(tmp_path, DATASET)
+    manifest = tmp_path / first.building_dataset / ".migrated-parts.json"
+    entries = sorted(manifest.read_text().split())
+    manifest.write_text(json.dumps(entries, indent=0) + "\n")
+
+    second = migrate_dataset_to_hourly(tmp_path, DATASET)
+    assert second.verified and second.migrated_parts == 0, \
+        "a legacy-format manifest was ignored and the parts were migrated again"
+
+
+def test_a_torn_final_line_is_dropped_rather_than_trusted(tmp_path):
+    """A crash mid-append leaves half a path. Re-migrating that part is
+    wasteful; trusting the fragment would skip a part nothing migrated."""
+    _stocked(tmp_path)
+    first = migrate_dataset_to_hourly(tmp_path, DATASET)
+    manifest = tmp_path / first.building_dataset / ".migrated-parts.json"
+    entries = manifest.read_text().split()
+    manifest.write_text("\n".join(entries[:-1]) + "\n" + entries[-1][:12])
+
+    assert entries[-1] not in _read_consumed(tmp_path, first.building_dataset)
+    assert set(entries[:-1]) <= _read_consumed(tmp_path, first.building_dataset)
 
 
 def test_running_it_twice_changes_nothing(tmp_path):

@@ -140,24 +140,58 @@ def _read_consumed(store_root: Path, building: str) -> set[str]:
     """
     manifest = Path(store_root) / building / MANIFEST_FILE
     try:
-        return set(json.loads(manifest.read_text(encoding="utf-8")))
-    except (OSError, ValueError):
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
         return set()
+    # A JSON array is the format the first version wrote, and one such manifest
+    # exists from the live bars migration that was already running when this
+    # changed. Reading it is three lines; orphaning it would mean re-migrating
+    # 62,000 parts that are already on disk and correct.
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        try:
+            return set(json.loads(text))
+        except ValueError:
+            return set()
+    # One path per line. A truncated final line is a crash mid-append and is
+    # dropped rather than trusted: re-migrating a part is wasteful, whereas
+    # trusting a half-written name could skip a part nothing migrated.
+    consumed = set()
+    for line in text.splitlines():
+        entry = line.strip()
+        if entry:
+            consumed.add(entry)
+    if text and not text.endswith("\n"):
+        consumed.discard(text.splitlines()[-1].strip())
+    return consumed
 
 
-def _record_consumed(store_root: Path, building: str, consumed: set[str]) -> None:
-    """Written after the parts it names, never before.
+def _record_consumed(store_root: Path, building: str, fresh: list[str]) -> None:
+    """APPEND the paths just migrated. Written after the parts, never before.
 
     A manifest ahead of the write it claims would make the next pass skip parts
-    nothing migrated, and those rows would then be invisible in the new layout
-    rather than merely migrated twice.
+    nothing migrated, and those rows would be missing from the new layout rather
+    than merely migrated twice.
+
+    Append rather than rewrite, and this is not micro-optimisation. The first
+    version wrote the whole set after every symbol, so by symbol 2,000 it
+    rewrote a 60,000-entry JSON document each time. Measured on the live bars
+    migration: **7.8 GB written for a 538 MB dataset**, and a tail that crawled
+    because each remaining symbol paid for every symbol before it. Quadratic IO
+    in a routine whose whole purpose is to stop paying per-file costs.
+
+    `fsync` on each append: the manifest's only job is to be true after a crash,
+    and an entry sitting in the page cache when the box dies claims work that
+    the next pass will then skip.
     """
     folder = Path(store_root) / building
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / MANIFEST_FILE
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(sorted(consumed), indent=0) + "\n", encoding="utf-8")
-    temporary.replace(target)
+    if not fresh:
+        return
+    with (folder / MANIFEST_FILE).open("a", encoding="utf-8") as handle:
+        handle.write("".join(f"{entry}\n" for entry in sorted(fresh)))
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport:
@@ -217,13 +251,15 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
             # them. The snapshot id is content-derived, so the file already on
             # disk holds exactly these rows; recording it now is the repair.
             pass
-        consumed |= {str(part.relative_to(store_root)) for part in fresh}
-        _record_consumed(store_root, building, consumed)
+        newly = [str(part.relative_to(store_root)) for part in fresh]
+        consumed |= set(newly)
+        _record_consumed(store_root, building, newly)
 
     # Parts the live writers already put in the new layout. They are carried
     # across unchanged rather than rewritten: their path already says which hour
     # they belong to, and rewriting them would change a snapshot id that answers
     # "which data produced this".
+    linked: list[str] = []
     for part in already_hourly:
         hour = part.parent.parent.name.removeprefix(f"{HOUR_KEY}=")
         symbol = part.parent.name.removeprefix("symbol=")
@@ -238,8 +274,8 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str) -> MigrationReport
             _link_into_building(store_root, dataset, building, part)
             migrated_parts += 1
             consumed.add(key)
-    if already_hourly:
-        _record_consumed(store_root, building, consumed)
+            linked.append(key)
+    _record_consumed(store_root, building, linked)
 
     report = _verify(store_root, dataset, building, legacy_parts, migrated_parts,
                      legacy_rows, len(folders), len(hours), expected, legacy_columns)
