@@ -3,7 +3,6 @@
   "_why_it_exists": "Ruling RL-019 was given on 2026-08-17 after the user found that a design they had settled on 2026-08-03 was only 2/22 built. The pattern behind it: rulings were recorded as prose inside whichever document was open at the time, or not at all, so nothing could enumerate them and nothing could measure whether the running system honoured them. Section 3a of the goal document is the counter-example that worked - the ruling was written verbatim the moment it was given.",
   "_how_status_is_decided": "It is NOT decided here. No row carries a status field on purpose. Each row names a probe; statuswall.ruling_conformance runs it and the board renders what it measured. A ruling with probe:null renders NOT MEASURED, never green (Rule 8). Typing a status into this file would be exactly the fiction the board exists to prevent.",
   "_source_note": "Rows sourced 'transcript' were recovered on 2026-08-17 from ~/.claude/projects/**/*.jsonl by reading every user message in the project's history. Verbatim text is reproduced as typed, including typos - it is the user's wording, not a cleaned-up paraphrase, because a paraphrase is how the meaning drifts.",
-
   "rulings": [
     {
       "id": "RL-001",
@@ -12,7 +11,10 @@
       "source": "transcript",
       "verbatim": "tis is new server i need you to makesure to creat some perminet rules wic is followed trou out tis entire process till te end",
       "means": "A standing rule set binds every session in every directory until the user changes it.",
-      "recorded_in": ["~/.claude/CLAUDE.md"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md"
+      ],
       "probe": "probe_permanent_rules_present"
     },
     {
@@ -22,7 +24,11 @@
       "source": "transcript",
       "verbatim": "wen usin aents for online researc readin code,editin code insted of usin te bie modeles wit i token consumption i need you to yse models wic ave similare reselts and bit cost less tokens",
       "means": "Subagents run on the lightest model that gives comparable results for the task type.",
-      "recorded_in": ["~/.claude/CLAUDE.md#rule-1", "~/.claude/skills/model-selection/SKILL.md"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-1",
+        "~/.claude/skills/model-selection/SKILL.md"
+      ],
       "probe": null
     },
     {
@@ -32,7 +38,10 @@
       "source": "transcript",
       "verbatim": "if something needs installing if tha there are option that required to install domething then say and installe never skip them just because they need installations",
       "means": "Never drop an option because it needs installing. Name it, install it, verify it.",
-      "recorded_in": ["~/.claude/CLAUDE.md#rule-3"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-3"
+      ],
       "probe": null
     },
     {
@@ -42,7 +51,11 @@
       "source": "transcript",
       "verbatim": "instead of treating this a simple project or a hobby treat it as we are creating a advanced institutional project with high complexity and production garde code for the complex and advanced feature and like example windows software or other paid advanced ai bots which have thousands to millions of loc instead of tobo simple design which doesn't worked this the quality grade of code I need",
       "means": "Institutional production-grade code, not a hobby build. Depth over simplicity where the problem is genuinely complex.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a", "~/research/ADVANCED-INTELLIGENT-CODE.md"],
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
+        "~/research/ADVANCED-INTELLIGENT-CODE.md"
+      ],
       "probe": "probe_axis_verdicts_present"
     },
     {
@@ -52,7 +65,10 @@
       "source": "transcript",
       "verbatim": "afirst paper tradin wit full expiriment wit out any restriction open to all kind of experimenrts and savin te tins tat ets profits and use tem on live tradin or repeatin tem in",
       "means": "Paper trading is the unrestricted experimentation ground. What earns in paper is what graduates to live. No shadow-mode half-measures.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-paper-execution-engine-design.md"],
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-paper-execution-engine-design.md"
+      ],
       "probe": "probe_paper_engine_running"
     },
     {
@@ -62,7 +78,11 @@
       "source": "transcript",
       "verbatim": "in crypto we ave sements lie spot ,futures and options and i need a real workin deatiled production rade ai aents two for futures and options put and call and lon and sort a endt tat works and researcs ater informations and find if te price increses like lon or call and oter ai aent wit same features wic does on proce decrese on put and sort and futures and spot ave marins",
       "means": "The three instrument segments are named by the user: spot, futures, options. Within them, two directional agents - one that only argues up (long/call), one that only argues down (short/put).",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5", "~/research/dual-agent-spec.md"],
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5",
+        "~/research/dual-agent-spec.md"
+      ],
       "probe": "probe_segments_captured"
     },
     {
@@ -72,7 +92,10 @@
       "source": "transcript",
       "verbatim": "ok in order wit out skippin",
       "means": "Work proceeds in the declared order and nothing in it is skipped.",
-      "recorded_in": ["docs/superpowers/plans/2026-08-09-full-build-master-plan.md"],
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
+      ],
       "probe": "probe_build_order_current"
     },
     {
@@ -82,7 +105,10 @@
       "source": "transcript",
       "verbatim": "new rules on namin t efiles and funtion names relevento its funtions",
       "means": "Files and functions are named for what they do. A name is a contract.",
-      "recorded_in": ["~/.claude/CLAUDE.md#rule-7"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-7"
+      ],
       "probe": null
     },
     {
@@ -91,8 +117,11 @@
       "session": "0a15b275",
       "source": "transcript",
       "verbatim": "instead of picking symbols from its univers and tradings them and skipping the rest when they have potential to make profit instead I need the brain to act as a teacher in a examination hall with all the students of the class like that only top students pass and the teacher tries to help and pass all the students like this brain keeps track of full universe symbols in each segment and the passing criteria is the profit making environment for that symbol as every student has potential to pass every symbol has potential to make profit and the brain waits for that exact setup",
-      "means": "Universe-wide scanning is a property of the system, not a strategy. Every symbol in every segment is watched continuously; the system waits for each one's setup rather than pre-selecting a shortlist.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a"],
+      "means": "Universe-wide scanning is a property of EACH SEGMENT BOT, not a strategy and not a shared service. Every symbol in that bot's segment is watched continuously on that segment's own data, and the bot waits for each symbol's setup rather than pre-selecting a shortlist. Amended 2026-08-17 by RL-019: the goal document's §5a calls this 'a property of the system' and the user ruled it is a property of each bot. Measured the same day: src/strategy/ holds two modules and neither is an opportunity monitor, so this is 0/4.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a"
+      ],
       "probe": "probe_universe_breadth"
     },
     {
@@ -102,7 +131,11 @@
       "source": "transcript",
       "verbatim": "I need more features on advanced ai like having real intelligence actual real intelleence not jut a code that follows only instructions, features related to knowledge,features related to its autonomy of its opening browser and searching for data it needs for learning or trading etc finding the pattern in it's knowledge",
       "means": "Real intelligence, not instruction-following. Autonomous knowledge acquisition, including reaching the internet for what it needs, and finding pattern in what it knows.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a", "~/research/IDEAS-INTELLIGENCE.md"],
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
+        "~/research/IDEAS-INTELLIGENCE.md"
+      ],
       "probe": "probe_intelligence_axes"
     },
     {
@@ -112,7 +145,11 @@
       "source": "transcript",
       "verbatim": "instead of ai or the bot deciding which side or direction to trade after selecting a symbol of any segment I need 2 ai features one ai feature is on increase direction or bet on increase trades like buy or long like that other ai feature is on the decreasing side bets like put or short like that and inter if these being a feature it should be a other bots with it's own deep architecture, data , features etc and the ai feature is profit tail gating this ai also a complete other bot with its dedicated features , data etc deep arctechee and thing of The's three other deep and advanced project bots inside this bot",
       "means": "BULL, BEAR and PROFIT-TAIL are three independent bots inside the main bot - each with its own data pipeline, its own features, its own deep architecture, its own training and its own validation history. Not three model heads sharing a pipeline.",
-      "recorded_in": ["~/research/bull-bear-profit-agents-spec.md", "docs/superpowers/plans/2026-08-09-full-build-master-plan.md#D"],
+      "scope": "per-brain",
+      "recorded_in": [
+        "~/research/bull-bear-profit-agents-spec.md",
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md#D"
+      ],
       "probe": "probe_three_bots"
     },
     {
@@ -122,7 +159,10 @@
       "source": "transcript",
       "verbatim": "Dash board should be like a tv that shows how every feature is working or behaving so any problems are coloured by me visually",
       "means": "The dashboard shows how every feature is actually behaving, with problems visible as colour. It is a display of measured state.",
-      "recorded_in": ["~/.claude/CLAUDE.md#rule-8"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-8"
+      ],
       "probe": "probe_board_generated"
     },
     {
@@ -132,7 +172,10 @@
       "source": "transcript",
       "verbatim": "I need the bots to have real intelligence real ai in the code not some hard coded values or instructions I need real intelligence fo read book or articles or research papers to understand what differentiate between the code you write and the real advanced intuition grade code which haves depth and real reasoning and intelligence",
       "means": "The intelligence standard is judged on three separate axes - learning, reasoning, depth - and each is tested mechanically rather than asserted.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a"],
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a"
+      ],
       "probe": "probe_intelligence_axes"
     },
     {
@@ -142,7 +185,10 @@
       "source": "transcript",
       "verbatim": "insted of picking and selecting few and trying to get a profit trade from them my idea of considering all trades that exist in all segments like in spot we have like 300+ symbols , in futures we have 500+ symbols and same in options the project where we find opportunities or environment where every segments symbol has a opportunity for openings for profit trades so we watch all the symbols in all the segments",
       "means": "Universe-wide, per segment, at the stated scale: 300+ spot, 500+ futures, and options. Not a shortlist.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a.1"],
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a.1"
+      ],
       "probe": "probe_universe_breadth"
     },
     {
@@ -152,7 +198,10 @@
       "source": "transcript",
       "verbatim": "I don't want to wait weeks I need the full project complet with all plans , ideas, features , goals all completed and start papper trading after full project is completed",
       "means": "Everything, then paper. Strict order, paper last.",
-      "recorded_in": ["docs/superpowers/plans/2026-08-09-full-build-master-plan.md"],
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
+      ],
       "probe": "probe_build_order_current",
       "superseded_by": "RL-017"
     },
@@ -163,7 +212,11 @@
       "source": "transcript",
       "verbatim": "alyas in tervie me if you need any clarifications insted of askin qutions ans forettin and you assumin",
       "means": "Ask the question and wait for the answer. An open question must never quietly become an assumption.",
-      "recorded_in": ["~/.claude/CLAUDE.md#rule-6", "~/.claude/projects/-home-anushadudekula71/memory/interview-instead-of-assuming.md"],
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-6",
+        "~/.claude/projects/-home-anushadudekula71/memory/interview-instead-of-assuming.md"
+      ],
       "probe": "probe_memory_reachable"
     },
     {
@@ -173,7 +226,10 @@
       "source": "transcript",
       "verbatim": "i need you to keep inmind te new rule tat is implementin te projiect feature by feature so find ow many features or ideas toatl completed and start implementin and ive me das board link and wy te papper tradin still did not started",
       "means": "Implement feature by feature, and paper trading starts now rather than after everything. This reverses the ordering of RL-015 - recorded as a new ruling rather than an edit, because the master plan is the record of what was decided then.",
-      "recorded_in": ["~/research/DECISIONS.md#14"],
+      "scope": "system",
+      "recorded_in": [
+        "~/research/DECISIONS.md#14"
+      ],
       "probe": "probe_paper_engine_running"
     },
     {
@@ -183,7 +239,10 @@
       "source": "transcript",
       "verbatim": "our entire trading crypto bot is intraday on all segments spot, futures, options.",
       "means": "The holding period is intraday on every segment. This removes the latency-immunity property that made funding carry the earnings core by right.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3a"],
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3a"
+      ],
       "probe": "probe_intraday_data_lag"
     },
     {
@@ -194,7 +253,10 @@
       "verbatim": "each segment are like there own bots with its own architecture, data features etc like this so make sure you do not assume and build different from what we discussed and fixed before",
       "clarified_as": "Fully separate bots: spot / perpetual futures / dated futures / options each get their own engine process, own feature set, own models, own risk gate, own paper journal, own board tile. They share only the store and the cost engine. Four supervisors, four P&L curves.",
       "means": "Segment is a bot boundary, not a config flag. This is the same pattern as RL-011 applied to the instrument axis: RL-011 splits by DIRECTION (bull/bear/profit-tail), RL-019 splits by SEGMENT (spot/perp/dated/options). Both axes are real and they compose.",
-      "recorded_in": ["docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3b"],
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3b"
+      ],
       "probe": "probe_segment_bots"
     },
     {
@@ -204,7 +266,10 @@
       "source": "transcript",
       "verbatim": "Yes - keep it on 24/7",
       "means": "The instance stays up continuously. Crypto never closes and an intraday bot that is off part of the week cannot be honestly judged. The cold-start cost of the paper engine is to be cut so a restart is not a long prime.",
-      "recorded_in": ["~/research/DECISIONS.md#15"],
+      "scope": "shared",
+      "recorded_in": [
+        "~/research/DECISIONS.md#15"
+      ],
       "probe": "probe_uptime_continuous"
     },
     {
@@ -215,8 +280,13 @@
       "verbatim": "save in some files make it a auto matic rule or anything that makes you look for all this plans, ideas, etc we discussed and not skipped or assumed",
       "clarified_as": "All four: a hook that blocks on unrecorded rulings; this rulings file, appended the moment a ruling is given; a conformance probe on the board; and session-start injection of the plan index.",
       "means": "Remembering the plan is not left to discipline. It is enforced by the hook layer, recorded in a file, measured on a board, and injected into every session.",
-      "recorded_in": ["docs/rulings.json", "src/statuswall/ruling_conformance.py"],
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "src/statuswall/ruling_conformance.py"
+      ],
       "probe": "probe_enforcement_live"
     }
-  ]
+  ],
+  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
 }

@@ -44,6 +44,7 @@ build-backend = "hatchling.build"
 # whose phase-B probes all raise on import, and the tests would not have caught it
 # because pytest runs off `pythonpath = ["src"]` rather than off an install.
 packages = ["src/capture", "src/statuswall", "src/store", "src/cost", "src/ops",
+            "src/plan",
             "src/execution", "src/validation", "src/paper", "src/features",
             "src/models", "src/risk", "src/integrity", "src/strategy"]
 
