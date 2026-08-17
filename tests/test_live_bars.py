@@ -75,8 +75,8 @@ def test_availability_is_derived_from_the_data_not_the_wall_clock(tmp_path):
                     [_SYMBOL], now=now)
 
     frame = pd.concat([pd.read_parquet(p) for p in
-                       (tmp_path / "store" / DATASET / f"symbol={_SYMBOL}"
-                        ).glob("*.parquet")])
+                       (tmp_path / "store" / DATASET
+                        ).glob(f"*/symbol={_SYMBOL}/*.parquet")])
     wall_clock_ns = int(now.timestamp() * 1e9)
     assert (frame.availability_time_ns < wall_clock_ns).all(), (
         "a stamp at or after the pass clock means wall-clock stamping is back")

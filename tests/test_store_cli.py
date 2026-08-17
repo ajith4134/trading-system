@@ -242,7 +242,8 @@ def test_a_batched_run_builds_every_symbol_without_holding_them_all(tmp_path, mo
     assert code == 0
     assert largest_batch == [1, 1]
     dataset = tmp_path / "store" / "bars_60000000000ns"
-    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+    assert sorted({p.parent.name for p in dataset.glob("*/symbol=*/*.parquet")}) \
+        == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
 
 
 def _record_quote_assets(tmp_path, venue, symbols, ts_ns=1785600000_000_000_000):
@@ -299,7 +300,8 @@ def test_a_batch_already_built_does_not_stop_the_batches_after_it(tmp_path, monk
     assert store_cli.main([*common, "--symbols", "BTCUSDT,ETHUSDT"]) == 0
 
     dataset = tmp_path / "store" / "bars_60000000000ns"
-    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+    assert sorted({p.parent.name for p in dataset.glob("*/symbol=*/*.parquet")}) \
+        == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
 
 
 def test_a_run_whose_every_batch_was_already_built_still_reports_it(tmp_path, monkeypatch):
@@ -823,8 +825,8 @@ def test_spot_is_a_venue_the_builder_can_read(tmp_path, monkeypatch):
         date="2026-08-02", symbols=["BTCUSDT"], interval_ns=MINUTE_NS)
 
     assert summary["bars"] == 1
-    stored = tmp_path / "store" / "bars_60000000000ns" / "symbol=BTCUSDT"
-    assert stored.is_dir()
+    stored = tmp_path / "store" / "bars_60000000000ns"
+    assert any(stored.glob("*/symbol=BTCUSDT/*.parquet"))
 
 
 def test_all_enumerates_every_captured_symbol_and_no_other_stream(tmp_path):
@@ -937,7 +939,8 @@ def test_all_builds_every_captured_symbol_without_being_told_their_names(tmp_pat
 
     assert code == 0
     dataset = tmp_path / "store" / "bars_60000000000ns"
-    assert sorted(p.name for p in dataset.iterdir()) == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
+    assert sorted({p.parent.name for p in dataset.glob("*/symbol=*/*.parquet")}) \
+        == ["symbol=BTCUSDT", "symbol=ETHUSDT"]
 
 
 def test_a_live_hour_in_the_days_own_folder_is_skipped_and_named_not_read_empty(tmp_path):
@@ -1073,7 +1076,8 @@ def _mixed_currency_capture(tmp_path, monkeypatch, symbols, quote_assets):
 
 def _built_symbols(tmp_path):
     dataset = tmp_path / "store" / "bars_60000000000ns"
-    return sorted(p.name.removeprefix("symbol=") for p in dataset.iterdir())
+    return sorted({p.parent.name.removeprefix("symbol=")
+                   for p in dataset.glob("*/symbol=*/*.parquet")})
 
 
 def test_all_does_not_build_a_pair_quoted_in_lira(tmp_path, monkeypatch):

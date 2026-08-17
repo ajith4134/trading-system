@@ -6,6 +6,7 @@ feature as fine when nothing measured it.
 from __future__ import annotations
 
 import datetime as dt
+import shutil
 import time
 from pathlib import Path
 
@@ -614,6 +615,26 @@ def test_a_store_covering_a_fraction_of_the_captured_tape_is_degraded(tmp_path):
         _facts(capture_root=tmp_path, venues=["binance"], latest_capture_date="2026-08-03"))
     assert result.state == DEGRADED
     assert "1 of 50" in result.detail, result.detail
+
+
+def test_the_retired_and_half_built_copies_of_a_dataset_are_not_counted(tmp_path):
+    """SL-15's migration leaves two more directories starting "bars_", both full
+    of real parquet: the copy being built and the layout it replaced. Counting
+    them would report the same symbol two and three times, and would grade the
+    wall on a dataset nothing writes to any more - a tile going stale because the
+    store it names was deliberately retired."""
+    from statuswall.evidence import _bar_datasets, _store_symbols
+    from store.hourly_migration import BUILDING_SUFFIX, LEGACY_SUFFIX
+
+    _bars_partition(tmp_path, "snap1", symbol="BTCUSDT")
+    live = tmp_path / "store" / "bars_60000000000ns"
+    for suffix in (BUILDING_SUFFIX, LEGACY_SUFFIX):
+        copy = live.with_name(live.name + suffix)
+        shutil.copytree(live, copy)
+
+    datasets = _bar_datasets(_facts(capture_root=tmp_path))
+    assert [p.name for p in datasets] == ["bars_60000000000ns"]
+    assert _store_symbols(datasets) == 1
 
 
 def test_coverage_that_cannot_be_measured_is_named_not_assumed(tmp_path):

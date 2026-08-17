@@ -931,9 +931,15 @@ def _refuse_if_already_built(store_root: Path, interval_ns: int,
     append-only guarantee is worth more than a tidy exit code.
     """
     dataset = f"bars_{interval_ns}ns"
-    targets = [Path(store_root) / dataset / f"symbol={symbol}" / f"part-{snapshot_id}.parquet"
+    root = Path(store_root) / dataset
+    # The hour a part landed in is not knowable from the snapshot id - it comes
+    # from the rows - so the question "is this symbol's part already written" is
+    # asked of every hour directory rather than of one computed path. Glob rather
+    # than a walk: the hour directories are the only level above symbol, and
+    # readdir does not open a parquet file.
+    targets = [any(root.glob(f"*/symbol={symbol}/part-{snapshot_id}.parquet"))
                for symbol in symbols]
-    if targets and all(target.exists() for target in targets):
+    if targets and all(targets):
         raise PartitionExistsError(
             f"every part for snapshot {snapshot_id!r} already exists under "
             f"{Path(store_root) / dataset} for {len(targets)} symbol(s); this exact "

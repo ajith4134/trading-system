@@ -52,6 +52,7 @@ from risk.pre_trade_gate import (
 )
 from risk.tail_cap import CeilingNotSet, read_ceiling
 from store.clock_gated_reader import ClockGatedReader
+from store.parquet_partition import count_fragment_schema_reads
 from strategy.deterministic_exit import Bar, CorruptBar
 from validation.holdout_custodian import HoldoutCustodian
 
@@ -317,6 +318,15 @@ class ForwardEngine:
         self._assert_not_killed()
         self.counts.polls += 1
 
+        # SL-14: what this poll costs to READ, recorded beside what it found.
+        # The engine polls every 60 seconds against a store that grew to 52,381
+        # parquet fragments by 2026-08-17, and the cost of deciding which of
+        # them hold new rows is invisible in fills, orders or events - the poll
+        # simply takes longer until the box kills it. Measured here so a board
+        # can show it before that.
+        poll_started = time.monotonic()
+        footers_before = count_fragment_schema_reads()
+
         produced = []
         for event in self._replay.poll(now_ns):
             self.counts.events_fed += 1
@@ -399,7 +409,9 @@ class ForwardEngine:
             fills=self.counts.fills,
             open_orders=self._broker.open_order_count,
             last_event_time_ns=self.counts.last_event_time_ns,
-            detail=self._replay.watermark_note)
+            detail=self._replay.watermark_note,
+            fragment_schema_reads=count_fragment_schema_reads() - footers_before,
+            poll_seconds=time.monotonic() - poll_started)
         return tuple(produced)
 
 

@@ -85,24 +85,33 @@ def test_a_refusal_cannot_be_mistaken_for_a_cost():
         float(refusal)
 
 
-def test_holding_a_position_across_settlements_is_refused_until_funding_exists():
+def test_holding_a_position_across_settlements_is_refused_until_funding_exists(tmp_path):
     """Funding is not yet a clock-gated dataset. A carry quote that quietly
     omitted it would understate the cost of exactly the family the prime
-    directive rests on."""
+    directive rests on.
+
+    `store_root=tmp_path` because without it this test read the OPERATOR'S live
+    funding store. It passed for months and then stopped finishing: measured
+    2026-08-17, that dataset had grown to 39,446 parquet fragments and the read
+    exceeded a 240s timeout, hanging the whole suite. A test whose runtime
+    depends on how long the machine has been capturing is not a test of this
+    code."""
     result = quote_round_trip_cost("binance", "BTCUSDT", Decimal("10000"),
                                    order_type="taker", at_ns=AT_NS,
                                    instrument_kind="perp",
-                                   holding_ns=24 * 3_600_000_000_000)
+                                   holding_ns=24 * 3_600_000_000_000,
+                                   store_root=tmp_path)
     assert isinstance(result, CostRefused)
     assert "funding" in result.reason.lower()
 
 
-def test_an_intraday_quote_does_not_need_funding():
+def test_an_intraday_quote_does_not_need_funding(tmp_path):
     """Held across no settlement, so there is nothing to refuse over."""
     result = quote_round_trip_cost("binance", "BTCUSDT", Decimal("10000"),
                                    order_type="taker", at_ns=AT_NS,
                                    instrument_kind="perp",
-                                   holding_ns=60_000_000_000)
+                                   holding_ns=60_000_000_000,
+                                   store_root=tmp_path)
     assert isinstance(result, CostQuote)
 
 

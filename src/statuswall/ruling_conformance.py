@@ -29,6 +29,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from paper.forward_journal import read_heartbeat
 from plan.master_plan import PlanSlice, read_master_plan
 from plan.rulings import Ruling
 from plan.scope_coverage import Coverage, cover_ruling
@@ -119,6 +120,54 @@ def probe_paper_engine_running(
     if not beat.get("makes_edge_claim", False):
         return ProbeResult(PARTIAL, detail, str(heartbeat))
     return ProbeResult(OK, detail, str(heartbeat))
+
+
+def probe_poll_scan_cost(
+    state_dir: Path = Path.home() / "capture" / "paper" / "forward",
+    dataset: Path = Path.home() / "capture" / "store" / "bars_60000000000ns",
+    poll_interval_s: float = 60.0,
+) -> ProbeResult:
+    """SL-14, RL-020: a 24/7 engine has to poll faster than it is asked to.
+
+    Read cost is invisible in fills, orders or events. The engine goes on
+    reporting a healthy heartbeat while each poll takes longer than the interval
+    between polls, until the box kills it - which is what happened on 2026-08-17
+    (exit 137, fourth restart that day). So the cost is journalled beside the
+    findings and graded here.
+
+    NOT MEASURED when the heartbeat predates the fields. Absent is not zero, and
+    zero footers opened is the healthy answer.
+    """
+    beat = read_heartbeat(state_dir)
+    if beat is None:
+        return ProbeResult(NOT_MEASURED, "no heartbeat written",
+                           str(state_dir / "heartbeat.json"))
+    if beat.poll_seconds is None or beat.fragment_schema_reads is None:
+        return ProbeResult(
+            NOT_MEASURED,
+            "the last heartbeat carries no cost fields - written by an engine "
+            "from before they were recorded",
+            str(state_dir / "heartbeat.json"))
+
+    fragments = sum(1 for _ in dataset.rglob("*.parquet")) if dataset.is_dir() else 0
+    share = (f"{beat.fragment_schema_reads}/{fragments} fragment footers"
+             if fragments else f"{beat.fragment_schema_reads} fragment footers")
+    detail = f"last poll {beat.poll_seconds:.1f}s, opened {share}"
+    proof = f"{state_dir / 'heartbeat.json'} and {dataset}"
+
+    if beat.poll_seconds > poll_interval_s:
+        return ProbeResult(
+            DEGRADED,
+            f"{detail} - a poll costs more than the {poll_interval_s:.0f}s "
+            f"between polls, so the engine is falling behind the tape",
+            proof)
+    # A tenth of the archive re-walked on a routine poll means the cache is not
+    # holding, and the cost grows with every fragment written from here on.
+    if fragments and beat.fragment_schema_reads > fragments // 10:
+        return ProbeResult(DEGRADED,
+                           f"{detail} - cost is scaling with the archive rather "
+                           f"than with what arrived", proof)
+    return ProbeResult(OK, detail, proof)
 
 
 def probe_enforcement_live(
@@ -293,6 +342,7 @@ PROBES = {
     "probe_ruling_conformance": probe_ruling_conformance,
     "probe_memory_reachable": probe_memory_reachable,
     "probe_paper_engine_running": probe_paper_engine_running,
+    "probe_poll_scan_cost": probe_poll_scan_cost,
     "probe_enforcement_live": probe_enforcement_live,
     "probe_rulings_register_loads": probe_rulings_register_loads,
     "probe_spine_parses": probe_spine_parses,

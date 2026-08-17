@@ -203,47 +203,100 @@ its own plan when slice 1's row inventory is reviewed.
 
 ### SL-14
   slice:      slice-0
-  does:       prune parquet FRAGMENTS from a poll, not only rows
+  does:       walk each parquet fragment's schema once per store generation, not once per read
   satisfies:  RL-020 RL-018 RL-005
   sources:    ~/research/DECISIONS.md#15.3 The paper engine was killing itself
   depends on: SL-12
   probe:      probe_poll_scan_cost
-  accepts:    a poll opens a number of fragments proportional to what arrived
-              since its watermark, not to the size of the archive
-  state:      BLOCKED - needs a store design decision, see the note below
+  accepts:    a poll opens fragment footers proportional to what arrived since
+              the last read, and the heartbeat carries what the poll cost
+  state:      measured by probe_poll_scan_cost
 
-> **SL-14 is BLOCKED on a decision, not on work.** Measured 2026-08-17: the bars dataset holds
-> **49,100 parquet fragments across 2,229 symbol partitions**, and every poll opens all of them.
-> `not_before_ns` (SL-12) filters ROWS after the scan; it cannot prune FILES, because the partition
-> key is `symbol` and availability is not part of the path. So the memory cost fell — 7,321 MB to
-> ~5,000 MB, and a resumed start skips the prime entirely — while the IO cost did not, and it grows
-> every day as new snapshots append.
+### SL-15
+  slice:      slice-0
+  does:       partition the store by availability hour, and compact a sealed hour to one part per symbol
+  satisfies:  RL-020 RL-018 RL-005
+  sources:    ~/research/DECISIONS.md#15.5 The scan is the hot spot, not the walk
+  depends on: SL-14
+  probe:      probe_poll_scan_cost
+  accepts:    a 60-second poll opens the fragments of at most two hour
+              directories however long capture has been running, and every row
+              of the old layout is present in the new one before the old is
+              retired
+  state:      measured by probe_poll_scan_cost
+
+> **Hour, not date, and the file count is why.** Measured 2026-08-17: 538 MB across 52,487 files
+> is an average of **10 KB per file**, roughly 6,000 new files a day over 2,230 symbol directories.
+> A date-grained path leaves a mature day's directory holding every file written that day, so an
+> evening poll re-walks ~6,000 fragments and that number grows with the universe. An hour-grained
+> path bounds a 60-second poll at the hour directories it actually needs, and the bound does not
+> move as the archive grows.
 >
-> **The hot spot is named, and it is not the filter.** `read_dataset` builds
-> `[f.physical_schema for f in dataset_handle.get_fragments()]` before it scans anything — that
-> opens all 49,100 files to read metadata, and the scan then opens them again. Measured 2026-08-17:
-> a read filtered to return ZERO rows did not complete in 10 minutes, which isolates the cost to
-> the file walk rather than to any row work.
+> **Measured on a real 60-symbol slice of the live bars dataset, 2026-08-17.** A one-hour bound
+> selects **59 of 1,805 fragments** under the hour layout and **1,587 of 1,587** under the legacy
+> one, returning byte-identical rows. That is the whole row in one number.
 >
-> That schema unification is not removable as it stands and must not be casually removed: its own
-> comment records why it exists, and the reason is severe — without it pyarrow infers the schema
-> from the first fragment and **silently drops** columns added by later partitions. On 2026-08-09
-> `funding_interval_hours` vanished from every read that way, and annualising a 4-hourly rate as
-> 8-hourly is wrong by a factor of two. Any fix here has to keep that property.
+> **The file count goes UP, not down, and the earlier claim of a ~20x cut was wrong.** Compaction
+> merges every legacy part for one (hour, symbol) into one — but these writers already snapshot
+> about hourly, so there is little to merge, and a legacy part spanning more than one hour is SPLIT
+> across hour directories instead. Measured: bars 1,587 parts → 1,805, `dated_futures` 680 → 1,472.
+> The saving is pruning, never fewer files, and a plan that promised both would have been checked
+> against only the half that was true.
 >
-> **Not a regression from SL-12.** `prime()` performs an UNFILTERED read in both the old and the
-> new code, and it went from ~11 minutes to ~26 minutes across the same change — a path the filter
-> does not touch, slowing by the same rough factor. The cause is fragment growth plus box load
-> (load average 14.6, capture and two builders running), not the pushdown.
+> Decision taken by the user 2026-08-17: hour grain, migrate the existing archive, compact sealed
+> hours. The old layout stays on disk and in GCS until the new one verifies row for row.
 >
-> Four candidate fixes, none free, and the choice is the user's because each changes the store's
-> shape or its read contract: partition by availability date as well as symbol; have the engine
-> record which snapshot ids it has consumed; cache the unified schema per dataset generation so the
-> fragment walk happens once rather than per read; or prune fragments by file mtime. The last is
-> cheapest and the most dangerous — mtime is not a data property, and a restore from GCS would
-> reset it and silently skip real rows.
+> **The writers deployed themselves, and that is now a fact this plan has to hold.** Minutes after
+> the new `append_partition` was saved, the live bars dataset held 4,595 hour-partitioned parts
+> beside 2,231 legacy `symbol=` directories — the supervisors restart their child on a loop and a
+> restarted child imports whatever is on disk. Hive partitioning gives the legacy parts a NULL
+> hour, so an hour-bounded read dropped every one of them: 1 of 6 rows in the reproduction. Hour
+> pruning is therefore enabled only when NO top-level `symbol=` directory remains, which makes a
+> half-migrated dataset correct-but-slow rather than fast-and-wrong, and turns pruning back on by
+> itself when the migration finishes. See `~/research/DECISIONS.md` §15.6.
 >
-> Recorded as a row rather than remembered, which is the whole point of this file.
+> Design: `docs/superpowers/specs/2026-08-17-hourly-store-partitioning-design.md`. The row builds
+> one new module, `store/hourly_migration.py`, and changes the layout knowledge already held by
+> `store/parquet_partition.py`, `store/cli.py` and `statuswall/evidence.py`.
+
+> **The 2026-08-17 11:19 diagnosis in this row was wrong, and the correction matters more than the
+> fix.** That note named the schema walk as the hot spot, from a read filtered to zero rows that
+> had not finished in 10 minutes. Re-measured at 11:50 on the live bars dataset, now **52,487
+> fragments across 2,230 symbol partitions**, each part timed separately:
+>
+> | part of a poll | cold | warm |
+> |---|---|---|
+> | dataset discovery | 0.6s | 0.6s |
+> | schema walk, every fragment footer | 8.3s | — |
+> | schema walk, cached (SL-14) | — | **8 footers, 1.7s** |
+> | scan filtered to match NOTHING | **185.6s** | 8.8s |
+>
+> So the walk was ~8s of a ~195s read. **The scan is the hot spot**, and it is cold-cache IO: the
+> same zero-row scan costs 185.6s cold and 8.8s warm, which is why it read as unbounded on a box at
+> load 27 with 22 of 29 GB in use and the page cache being evicted under it. The earlier 10-minute
+> observation was real; the attribution was not.
+>
+> **SL-14 is still worth having and is now built** — it removes a duplicate walk of the whole
+> archive per read, and it makes the cost measurable per poll rather than inferable after an OOM.
+> It is not sufficient, and this file should not have implied it would be.
+>
+> **SL-15 is the fix.** The partition key is `symbol` and availability is not in the path, so
+> `not_before_ns` (SL-12) filters ROWS after the scan and can never prune FILES. Only a date in the
+> path lets pyarrow skip directories before opening anything.
+>
+> **The property both rows must keep.** The schema walk cannot simply be deleted: without it
+> pyarrow infers the dataset schema from the first fragment and **silently drops** columns added by
+> later partitions. On 2026-08-09 `funding_interval_hours` vanished from every read that way, and
+> annualising a 4-hourly rate as 8-hourly is wrong by a factor of two. SL-14 keeps it by caching
+> rather than skipping, and `tests/test_schema_cache.py` asserts the column survives a warm cache
+> and that a disappearing fragment forces a full rebuild.
+>
+> **Rejected, and why.** *Prune fragments by file mtime* — cheapest and the most dangerous: mtime
+> is not a data property, and a restore from GCS resets it, so the store would silently skip real
+> rows. *Have the engine record consumed snapshot ids* — fixes one reader; the boards generator,
+> which stalled from 09:41 to 11:51 on 2026-08-17, is a second reader and would need its own.
+>
+> Decision taken by the user 2026-08-17: cache now, repartition next.
 
 ---
 

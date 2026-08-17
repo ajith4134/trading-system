@@ -95,9 +95,14 @@ done < <(cd "$RAW_ROOT" && find . -mindepth 2 -maxdepth 2 -type d | sed 's|^\./|
 # reads as a complete dataset. Unlike the raw path's rejected `--exclude`
 # experiment, this is one fixed pattern rather than ~1,750 alternations, so it
 # cannot over-match a different partition.
+# `.hourly-building` is excluded for the same reason and one level up: SL-15's
+# migration builds a second copy of a dataset beside the live one, and a
+# half-built copy in the bucket is a dataset that looks whole and is missing
+# whatever had not been written when the pass ran. It is uploaded once it has
+# been verified and renamed into place, which is the only state worth keeping.
 for extra in ledger universe store; do
   [ -d "$CAPTURE_ROOT/$extra" ] || continue
-  gcloud storage rsync -r -x '.*\.writing-part-.*' \
+  gcloud storage rsync -r -x '.*\.writing-part-.*|.*\.hourly-building/.*' \
       "$CAPTURE_ROOT/$extra" "${BUCKET}/${extra}" >/dev/null 2>&1 \
     || { echo "FAILED: $extra" >&2; failed=$((failed + 1)); }
 done

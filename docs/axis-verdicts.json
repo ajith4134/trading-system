@@ -1,6 +1,6 @@
 {
   "_note": [
-    "§1a.6: no module ships without a learning / reasoning / depth verdict, each",
+    "\u00a71a.6: no module ships without a learning / reasoning / depth verdict, each",
     "pass or fail with the evidence named. `n/a` is a first-class answer - a",
     "Parquet writer does not reason - but it must be stated, not left blank.",
     "",
@@ -17,8 +17,8 @@
   ],
   "modules": {
     "validation.breadth": {
-      "learning": "pass: no constant in the decision path is typed. The trigger threshold is a percentile of each symbol's OWN history (L1), and the collapse band 5-15 is quoted from §5a.4 rather than chosen here - a gate that picked its own threshold would be grading itself against a number selected to pass",
-      "reasoning": "pass: it distinguishes clustered arrivals from correlated outcomes and says which it found. The first draft read §5a.4's 'cluster AND correlate' as a disjunction and would have reported REDESIGN on data the spec does not call one; the conjunction is now pinned by a test",
+      "learning": "pass: no constant in the decision path is typed. The trigger threshold is a percentile of each symbol's OWN history (L1), and the collapse band 5-15 is quoted from \u00a75a.4 rather than chosen here - a gate that picked its own threshold would be grading itself against a number selected to pass",
+      "reasoning": "pass: it distinguishes clustered arrivals from correlated outcomes and says which it found. The first draft read \u00a75a.4's 'cluster AND correlate' as a disjunction and would have reported REDESIGN on data the spec does not call one; the conjunction is now pinned by a test",
       "depth": "pass: changes behaviour when wrong. REDESIGN is a reachable verdict that stops Phase 4, and INCONCLUSIVE is returned rather than a number whenever the sample cannot support one",
       "evidence": [
         "tests/test_breadth_gate.py",
@@ -36,7 +36,7 @@
     },
     "risk.tail_cap": {
       "learning": "pass: the operating ladder is derived from a block-bootstrapped drawdown distribution rather than from the single realised maximum (VX-011), and the ceiling is read from a file the user owns rather than fitted at all",
-      "reasoning": "pass: it separates what it may change from what it may not. Every derived rung is clamped to the user's ceiling and the clamping is recorded - §6's line made mechanical rather than checked",
+      "reasoning": "pass: it separates what it may change from what it may not. Every derived rung is clamped to the user's ceiling and the clamping is recorded - \u00a76's line made mechanical rather than checked",
       "depth": "pass: a missing ceiling FAILS rather than being skipped, and paper breaches are recorded as `would_have_breached` instead of being silently unenforced",
       "evidence": [
         "tests/test_tail_cap.py",
@@ -773,7 +773,7 @@
       ]
     },
     "features.fractional_differentiation": {
-      "learning": "pass: d is not typed. Each row's order comes from an ascending ADF search over a declared grid (`_D_GRID`, 0.05 steps) that stops at the first candidate rejecting the unit-root null at 5% - the grid, the significance level, the weight-truncation threshold and the minimum differenced sample are the declared fixed structure, and the ANSWER (d, the ADF statistic and p-value that justified it, and the correlation with the raw level that survived) is fitted per series and carried on every row. A synthetic random walk and an already-stationary series over the identical window length are told apart on the numbers alone: the walk needs d≈0.3, the series that needed nothing gets d=0.0",
+      "learning": "pass: d is not typed. Each row's order comes from an ascending ADF search over a declared grid (`_D_GRID`, 0.05 steps) that stops at the first candidate rejecting the unit-root null at 5% - the grid, the significance level, the weight-truncation threshold and the minimum differenced sample are the declared fixed structure, and the ANSWER (d, the ADF statistic and p-value that justified it, and the correlation with the raw level that survived) is fitted per series and carried on every row. A synthetic random walk and an already-stationary series over the identical window length are told apart on the numbers alone: the walk needs d\u22480.3, the series that needed nothing gets d=0.0",
       "reasoning": "pass: it distinguishes a series that genuinely needs differencing from one that was already stationary, and refuses rather than forcing an answer when nothing in the grid works - an explosive (compounding-growth) series stays non-stationary through every candidate up to and including d=1 and is refused as `no_stationary_d_found`, rather than reported at the top of the grid as though reaching d=1 were itself a finding",
       "depth": "fail: nothing consumes a fractionally-differenced value yet. It is built and tested but has no caller in any model, sizer or signal path, so by the master test it cannot yet change what the system does when it is wrong - the same shape as `features.peg_monitor` and `features.volume_quality`, and recorded as a fail for the same reason rather than deferred",
       "evidence": [
@@ -1094,7 +1094,7 @@
     },
     "strategy.deterministic_exit": {
       "learning": "n/a: the absence is the module's purpose. This is the BASELINE a learned exit policy has to beat - bull-bear-profit-agents-spec.md section 4: 'Mandatory baseline it must beat: immediate entry, fixed triple-barrier, ATR trailing stop. Beat that out-of-sample or it does not get capital.' A baseline whose parameters were fitted is not a baseline, it is a competitor that got to look at the data first, so every constant here is declared and none is searched: ATR_PERIOD 14, the four ATR multiples on ExitPolicy, and a SIMPLE mean rather than Wilder's smoothing specifically because the smoothed version has a decay constant and a decay constant is a parameter. The ordering is forced rather than chosen - PROFIT-TAIL is a model of when to exit and needs a dataset of exits with their outcomes, which does not exist until something has been exiting and recording why",
-      "reasoning": "pass: the precedence is total, declared, and it is the policy. Two rails can fire on the same bar and which one wins changes the reported P&L of every trade, so the order is stated - hard stop, then profit lock, then profit target, then vertical barrier - with the reason for each position: the hard stop is first because it is the only rule that bounds a loss rather than shaping a gain (section 3b: 'the hard stop overrides PROFIT-TAIL absolutely… its mandate to close in profit is an objective, not a veto'), and the vertical barrier is last because it is the only rule that fires on nothing having happened. AMBIGUITY INSIDE A BAR IS RESOLVED AGAINST THE POSITION: a bar whose high touched the target and whose low touched the stop contains both outcomes in an unknown order, because a one-minute bar is a summary and not a path, and assuming the favourable one is worth between a few basis points and the whole trade on exactly the bars that matter most - the same posture features.triple_barrier takes on the same question, deliberately the same rule rather than a second opinion about it. THE RATCHET IS MONOTONE BY CONSTRUCTION, not by assertion: max on the favourable side, min on the other, and no branch through which it can widen, which is stronger than a check that it did not. Three more: the ATR is measured ONCE at entry and does not follow the position, because a distance that re-measured every bar would tighten into a volatility collapse and loosen into a spike, which is a second undeclared policy riding inside the first; the lock is updated AFTER the exit checks, because a lock cannot be hit by the bar that created it without reading that bar's high as though it happened before its low; and a path that runs out returns STILL_OPEN rather than the last close, because reporting a close as an exit invents a trade that never closed. Every distance is a MULTIPLE of measured volatility rather than a price or a percent, so one policy applies identically to BTC and to a token priced in cents - the same rule strategy.funding_carry follows, and for the same reason",
+      "reasoning": "pass: the precedence is total, declared, and it is the policy. Two rails can fire on the same bar and which one wins changes the reported P&L of every trade, so the order is stated - hard stop, then profit lock, then profit target, then vertical barrier - with the reason for each position: the hard stop is first because it is the only rule that bounds a loss rather than shaping a gain (section 3b: 'the hard stop overrides PROFIT-TAIL absolutely\u2026 its mandate to close in profit is an objective, not a veto'), and the vertical barrier is last because it is the only rule that fires on nothing having happened. AMBIGUITY INSIDE A BAR IS RESOLVED AGAINST THE POSITION: a bar whose high touched the target and whose low touched the stop contains both outcomes in an unknown order, because a one-minute bar is a summary and not a path, and assuming the favourable one is worth between a few basis points and the whole trade on exactly the bars that matter most - the same posture features.triple_barrier takes on the same question, deliberately the same rule rather than a second opinion about it. THE RATCHET IS MONOTONE BY CONSTRUCTION, not by assertion: max on the favourable side, min on the other, and no branch through which it can widen, which is stronger than a check that it did not. Three more: the ATR is measured ONCE at entry and does not follow the position, because a distance that re-measured every bar would tighten into a volatility collapse and loosen into a spike, which is a second undeclared policy riding inside the first; the lock is updated AFTER the exit checks, because a lock cannot be hit by the bar that created it without reading that bar's high as though it happened before its low; and a path that runs out returns STILL_OPEN rather than the last close, because reporting a close as an exit invents a trade that never closed. Every distance is a MULTIPLE of measured volatility rather than a price or a percent, so one policy applies identically to BTC and to a token priced in cents - the same rule strategy.funding_carry follows, and for the same reason",
       "depth": "pass: the wall exercises both properties on every board pass and fails on either. The ratchet tile drives a falling-then-rising candidate sequence on both sides and goes FAILING if the lock ever moves away from the position - the way that property dies is a helpful branch added later, and a lock that widened once on one path leaves no trace in any output. The policy tile drives all four rails and fails if any stops firing, because a rail nothing can trigger is a rail that is not in the policy, and separately fails if the ambiguous bar stops resolving against the position - which would read as a better result. What is deliberately absent is recorded rather than implied: MD-018 requires the lock to rest at the exchange as a reduce-only stop, because a lock held only in memory protects nothing during a crash, deploy or partition - exactly the events it exists for - and that needs an order path this system does not have. A test asserts this module imports nothing from execution or paper, so the absence cannot erode into a half-built one. Nothing routes live positions through it yet, so the tile is PARTIAL and says no exit record has been generated from the market",
       "evidence": [
         "tests/test_deterministic_exit.py",
@@ -1163,7 +1163,7 @@
     },
     "plan.scope_coverage": {
       "learning": "n/a: arithmetic over a parsed document. Nothing is fitted",
-      "reasoning": "pass: the denominator comes from the ruling's scope rather than from the sweep, which is the difference between 'assigned somewhere' and 'delivered everywhere'. It counts DISTINCT slice keys so two rows for one bot is still one bot, and counts what a row CLAIMS to satisfy rather than what it sits near - both traps are pinned by tests. The failure it exists to prevent is measured: the examination-hall ruling of 2026-08-02 produced ~140 lines of goal §5a and zero rows of work",
+      "reasoning": "pass: the denominator comes from the ruling's scope rather than from the sweep, which is the difference between 'assigned somewhere' and 'delivered everywhere'. It counts DISTINCT slice keys so two rows for one bot is still one bot, and counts what a row CLAIMS to satisfy rather than what it sits near - both traps are pinned by tests. The failure it exists to prevent is measured: the examination-hall ruling of 2026-08-02 produced ~140 lines of goal \u00a75a and zero rows of work",
       "depth": "pass: reachable through plan.cli and the conformance board. It changes what the board says when coverage is partial - RL-009 renders 0/4 and names the missing segments rather than reading resolved off one row - which is the exact failure it was written for",
       "evidence": [
         "tests/test_scope_coverage.py",
@@ -1190,7 +1190,7 @@
     },
     "statuswall.ruling_conformance": {
       "learning": "n/a: probes and a renderer. Nothing is fitted",
-      "reasoning": "pass: it keeps COVERAGE and STATE apart, which are different questions - whether the plan has rows for a ruling, and whether the running system does it. A ruling can be fully covered and still fail its probe, and collapsing the two is how a plan starts vouching for a system. Every probe measures the running box rather than whether a test passed, and probe_authority_chain_consistent was tightened after its loose form reported goal §3b present because the bare string '3b' appears in unrelated prose",
+      "reasoning": "pass: it keeps COVERAGE and STATE apart, which are different questions - whether the plan has rows for a ruling, and whether the running system does it. A ruling can be fully covered and still fail its probe, and collapsing the two is how a plan starts vouching for a system. Every probe measures the running box rather than whether a test passed, and probe_authority_chain_consistent was tightened after its loose form reported goal \u00a73b present because the bare string '3b' appears in unrelated prose",
       "depth": "pass: reachable through plan.cli, and it changes behaviour under error in the direction that matters. A ruling naming no probe renders NOT MEASURED and can never be green; a probe that RAISES renders NOT MEASURED with the exception named rather than taking the board down, because a board that fails to render tells the reader less than a board carrying one dark row - pinned by a test that injects a deliberately broken probe",
       "evidence": [
         "tests/test_ruling_conformance.py",
@@ -1204,6 +1204,16 @@
       "evidence": [
         "tests/test_master_plan_board.py",
         "src/statuswall/master_plan_board.py"
+      ]
+    },
+    "store.hourly_migration": {
+      "learning": "n/a: a one-shot rewrite of where bytes live. Nothing is fitted, and nothing about the data's meaning changes",
+      "reasoning": "pass: it verifies on per-(hour, symbol) row counts rather than on a total, because two errors of opposite sign net to zero in a total and 'the numbers matched' would then be the last thing said before the store was swapped. It also refuses its own swap on an unverified report rather than trusting its caller",
+      "depth": "pass: the failing path is reachable and exercised - `swap_in_migrated_dataset` raises on an unverified report, and a second pass over a store capture is still writing to migrates only the parts that arrived since the first. Without that manifest the same rows are written twice and read as real volume, which is a defect that raises nothing; the test for it fails when the manifest is removed",
+      "evidence": [
+        "tests/test_hourly_migration.py",
+        "src/store/hourly_migration.py",
+        "docs/superpowers/specs/2026-08-17-hourly-store-partitioning-design.md"
       ]
     }
   }

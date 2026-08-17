@@ -23,6 +23,7 @@ from capture.capture_health import (
     build_report, classify_runway, compute_runway_days, measure_daily_bytes,
 )
 from statuswall.catalogue import Feature, normalise_key
+from store.hourly_migration import BUILDING_SUFFIX, LEGACY_SUFFIX
 
 # Ordered worst-first: this is the order the wall sorts by, so what is broken
 # arrives at the top of the board without anyone scrolling.
@@ -723,7 +724,14 @@ def _bar_datasets(facts: SystemFacts) -> list[Path]:
     root = _store_root(facts)
     if not root.is_dir():
         return []
-    return sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("bars_"))
+    # The migration of SL-15 leaves two more directories whose names begin
+    # "bars_": the half-built copy and the retired layout kept beside it. Both
+    # hold real parquet, so a prefix match alone would count the same symbols
+    # twice and grade the wall on a dataset nothing writes to any more - a tile
+    # going stale because the store it names was deliberately retired.
+    return sorted(p for p in root.iterdir()
+                  if p.is_dir() and p.name.startswith("bars_")
+                  and not p.name.endswith((BUILDING_SUFFIX, LEGACY_SUFFIX)))
 
 
 # Bars build closed days only, so the newest partition legitimately trails the tape
@@ -737,9 +745,16 @@ _STORE_COVERAGE_FLOOR = 0.9
 
 
 def _store_symbols(datasets: list[Path]) -> int:
-    """Symbols the store holds bars for, counted from its own partition layout."""
-    return len({part.name for dataset in datasets for part in dataset.iterdir()
-                if part.is_dir() and part.name.startswith("symbol=")})
+    """Symbols the store holds bars for, counted from its own partition layout.
+
+    `symbol=` sits one level below the availability hour since SL-15, so the
+    count is over directory names at any depth rather than at the top: a
+    top-level count would have silently become zero the moment the layout
+    changed, and a store tile reading "0 symbols" is the sort of wrong that
+    looks like a data loss.
+    """
+    return len({part.name for dataset in datasets for part in dataset.glob("*/symbol=*")
+                if part.is_dir()})
 
 
 def _captured_symbols_on(facts: SystemFacts) -> int | None:

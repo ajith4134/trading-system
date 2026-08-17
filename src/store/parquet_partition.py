@@ -10,9 +10,11 @@ columnar float data is worth more than the CPU at this volume.
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Sequence
 
@@ -31,6 +33,11 @@ from store.temporal_schema import AVAILABILITY_TIME, SYMBOL, validate_temporal_f
 
 _CHUNK = 1 << 20
 
+# The hive key that carries availability into the path. Reading it back is
+# pyarrow's job; no caller ever sees it - `read_dataset` drops it, because the
+# partition key is an index and the frame's shape is a contract.
+HOUR_KEY = "availability_hour"
+
 # pyarrow's dataset discovery skips names beginning with "." or "_", so an
 # in-progress part is invisible to `read_dataset` even while it is being written,
 # and stays invisible if a crash strands it. Without the dot the stranded file is
@@ -38,9 +45,190 @@ _CHUNK = 1 << 20
 # rename is here to prevent.
 _PARTIAL_PREFIX = ".writing-part-"
 
+# The unified schema of each dataset, and the exact set of fragment paths it was
+# built from. Keyed by dataset root, because two datasets share nothing.
+#
+# Reading a fragment's `physical_schema` opens its file to read the footer, and
+# `read_dataset` did that for every fragment on every call. Measured 2026-08-17
+# on the live bars dataset: 49,100 fragments over 2,229 symbol partitions, a
+# read filtered to return ZERO rows still unfinished after 10 minutes, and the
+# boards generator stalled for 1h50m holding 5.3 GB. The walk is unavoidable -
+# see the comment in `read_dataset` for the column it exists to save - but doing
+# it again for a fragment already read is not.
+#
+# The path set is the generation marker, and it is deliberately not an mtime: a
+# restore from GCS rewrites every mtime while the data is unchanged, so an
+# mtime-keyed cache would rebuild pointlessly, and an mtime-keyed *skip* would
+# omit real rows. A path either was folded in or was not, and that survives a
+# restore, a reboot and a copy.
+_UNIFIED_SCHEMAS: dict[Path, tuple[frozenset[str], pa.Schema]] = {}
+_SCHEMA_CACHE_LOCK = threading.Lock()
+_FRAGMENT_SCHEMA_READS = 0
+
+
+def count_fragment_schema_reads() -> int:
+    """How many fragment footers this process has opened for their schema.
+
+    The number SL-14 is accepted on. It has to grow with what arrived since the
+    last read rather than with the size of the archive, and a test that asserts
+    that is the only thing standing between here and the 49,100-file walk
+    reappearing the next time someone edits the read path.
+    """
+    return _FRAGMENT_SCHEMA_READS
+
+
+def clear_schema_cache() -> None:
+    """Forget every cached schema. For tests, and for a caller that must not
+    inherit a generation observed before some external change to the store."""
+    global _FRAGMENT_SCHEMA_READS
+    with _SCHEMA_CACHE_LOCK:
+        _UNIFIED_SCHEMAS.clear()
+        _FRAGMENT_SCHEMA_READS = 0
+
+
+def unify_dataset_schema(root: Path, dataset_handle: ds.Dataset) -> pa.Schema | None:
+    """The union of every fragment's schema, reading each fragment once.
+
+    Returns None for a dataset with no fragments, which is "nothing captured
+    yet" rather than an error.
+
+    Incremental because union is associative: a schema already unified stays
+    valid when new fragments are unified onto it, so an append costs only the
+    appended files. It is also MONOTONIC, which is the dangerous half - union
+    can only add columns, so a cache that only ever grew would keep reporting a
+    column whose only source file had been removed by a compaction or a partial
+    restore, and a long-lived process would disagree with a fresh one about what
+    the dataset holds. A path that has disappeared therefore forces a full
+    rebuild rather than an incremental step.
+    """
+    global _FRAGMENT_SCHEMA_READS
+    fragments = {fragment.path: fragment for fragment in dataset_handle.get_fragments()}
+    if not fragments:
+        with _SCHEMA_CACHE_LOCK:
+            _UNIFIED_SCHEMAS.pop(root, None)
+        return None
+    present = frozenset(fragments)
+
+    with _SCHEMA_CACHE_LOCK:
+        cached = _UNIFIED_SCHEMAS.get(root)
+    if cached is not None and cached[0] <= present:
+        known, unified = cached
+        unread = [fragments[path] for path in present - known]
+    else:
+        unified, unread = None, list(fragments.values())
+
+    schemas = []
+    for fragment in unread:
+        schemas.append(fragment.physical_schema)
+        _FRAGMENT_SCHEMA_READS += 1
+    if schemas or unified is None:
+        # `dataset_handle.schema` is unioned back in because `physical_schema`
+        # is what is IN each file, which excludes the hive partition column:
+        # `symbol` lives in the directory name, not in the parquet, and it is a
+        # required column here.
+        unified = pa.unify_schemas(
+            [*([unified] if unified is not None else []), *schemas,
+             dataset_handle.schema])
+
+    with _SCHEMA_CACHE_LOCK:
+        _UNIFIED_SCHEMAS[root] = (present, unified)
+    return unified
+
 
 class PartitionExistsError(FileExistsError):
     """A part with this snapshot id is already on disk."""
+
+
+def floor_to_hour(availability_ns: int) -> str:
+    """The partition value for an availability time: `2026-08-17T11`, UTC.
+
+    ONE key rather than a date key and an hour key: one added column, one
+    directory level, and a fixed-width string whose lexicographic order IS its
+    chronological order - so `>=` on the path segment is a correct time bound
+    with no parsing on the read side.
+
+    FLOORED, never rounded. Flooring includes the partly-consumed hour a
+    watermark sits in, and the exact row filter then removes the rows already
+    seen. Rounding up would skip the rest of that hour permanently: a later poll
+    carries a later watermark, so nothing ever reaches back for them.
+
+    UTC because the store is UTC everywhere else, and a local-time path would
+    silently reorder itself across a daylight-saving boundary.
+    """
+    # Integer division, never `ns / 1e9`. A float carries 53 bits of mantissa and
+    # an epoch nanosecond needs 61, so the division rounds - measured here, an
+    # availability time one nanosecond before 06:00 floored to 06 instead of 05,
+    # which would file a row under an hour it did not happen in and let a poll
+    # bounded at 06:00 skip it. The failure is silent and the row never returns.
+    moment = dt.datetime.fromtimestamp(int(availability_ns) // 1_000_000_000, dt.UTC)
+    return moment.strftime("%Y-%m-%dT%H")
+
+
+def _availability_bound(not_before_ns: int | None, *, partitioned_by_hour: bool):
+    """The read filter for a lower bound on availability, or None for no bound.
+
+    Two conditions doing different jobs. The hour condition is answered from the
+    PATH, so pyarrow skips whole directories without opening a file - that is
+    the entire point of the layout, and the reason a poll's cost stopped growing
+    with the archive. The row condition is the exact bound, applied inside the
+    few files that survive.
+
+    `partitioned_by_hour` is asked of the dataset rather than assumed, and that
+    is not defensive tidiness: naming a field a dataset does not have makes
+    pyarrow raise `ArrowInvalid: No match for FieldRef.Name(availability_hour)`
+    and take the whole read down. Every dataset is in the old layout until its
+    migration has run, the paper engine polls with a bound every 60 seconds, and
+    a store that only reads correctly after a migration nobody has run yet is a
+    store that stops the moment this lands.
+    """
+    if not_before_ns is None:
+        return None
+    row_bound = ds.field(AVAILABILITY_TIME) >= int(not_before_ns)
+    if not partitioned_by_hour:
+        return row_bound
+    return (ds.field(HOUR_KEY) >= floor_to_hour(not_before_ns)) & row_bound
+
+
+def _is_partitioned_by_hour(root: Path, dataset_handle: ds.Dataset) -> bool:
+    """True only when EVERY fragment carries an hour in its path.
+
+    The schema alone is not enough, and getting this wrong loses rows silently.
+    A dataset part-way through its migration holds both layouts: legacy parts at
+    `symbol=<S>/`, new ones at `availability_hour=<H>/symbol=<S>/`. Hive
+    partitioning gives the legacy parts a NULL hour, `NULL >= '2026-08-17T12'`
+    is null rather than true, and every legacy row is therefore dropped from
+    every bounded read - no error, no warning, just a smaller answer.
+
+    Measured 2026-08-17: the live bars dataset entered exactly that state within
+    minutes of this code landing, because the store supervisors reload their
+    child on restart and a builder wrote 4,595 hour-partitioned parts beside
+    2,231 legacy symbol directories.
+
+    So the presence of a top-level `symbol=` directory disables hour pruning for
+    the whole dataset. Reads stay correct and merely lose the speed-up until the
+    migration finishes, at which point no such directory remains and pruning
+    turns itself back on.
+    """
+    if HOUR_KEY not in dataset_handle.schema.names:
+        return False
+    return not any(root.glob("symbol=*"))
+
+
+def select_fragments(store_root: Path, dataset: str,
+                     not_before_ns: int | None = None) -> list[str]:
+    """The fragment paths a read with this bound would open. Opens none of them.
+
+    Exists to be measured. "The poll got faster" is an assertion; "the poll
+    selected 2 of 52,487 fragments" is a measurement, and SL-15's acceptance is
+    written in those terms.
+    """
+    root = Path(store_root) / dataset
+    if not root.is_dir():
+        return []
+    handle = ds.dataset(root, format="parquet", partitioning="hive")
+    bound = _availability_bound(
+        not_before_ns, partitioned_by_hour=_is_partitioned_by_hour(root, handle))
+    return [fragment.path for fragment in handle.get_fragments(filter=bound)]
 
 
 def compute_snapshot_id(paths: Sequence[Path],
@@ -81,23 +269,30 @@ def _digest_file(path: Path) -> str:
 
 def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
                      snapshot_id: str) -> list[Path]:
-    """Write one part per symbol. Never touches an existing file."""
+    """Write one part per availability hour per symbol. Never touches an existing file.
+
+    Grouped by (hour, symbol) rather than by symbol alone because a frame is not
+    one hour: a builder handing over three hours of bars for one symbol has to
+    land in three directories, or the hour in the path would be a lie and the
+    pruning built on it would skip real rows.
+    """
     # Validated before any directory is created so a refused write leaves no trace
     # and cannot be mistaken for a partial success.
     validate_temporal_frame(frame)
     if frame.empty:
         return []
 
-    groups = list(frame.groupby(SYMBOL, sort=True))
+    hours = frame[AVAILABILITY_TIME].map(floor_to_hour)
+    groups = list(frame.groupby([hours.rename(HOUR_KEY), SYMBOL], sort=True))
 
     # Every target is checked before any part is written. Checking and writing
-    # symbol-by-symbol in one pass would let a frame with N symbols write the first
+    # group-by-group in one pass would let a frame with N groups write the first
     # N-1 parts and only then discover the Nth collides, leaving those N-1 behind as
     # a half-written snapshot - exactly the partial state this store promises never
     # to hold, and the promise Task 4's reader is built on.
     plan: list[tuple[str, pd.DataFrame, Path, Path]] = []
-    for symbol, group in groups:
-        folder = Path(store_root) / dataset / f"symbol={symbol}"
+    for (hour, symbol), group in groups:
+        folder = Path(store_root) / dataset / f"{HOUR_KEY}={hour}" / f"symbol={symbol}"
         target = folder / f"part-{snapshot_id}.parquet"
         if target.exists():
             raise PartitionExistsError(
@@ -207,21 +402,24 @@ def read_dataset(store_root: Path, dataset: str,
     #
     # A column absent from an older partition reads as null there, which is the
     # honest answer - it was not recorded then.
-    # `physical_schema` is what is IN each file, which excludes the hive
-    # partition column - `symbol` lives in the directory name, not the parquet.
-    # Unifying those alone and handing the result back as the dataset schema
-    # therefore loses the partition field, which is a required column here.
-    # The inferred schema is unioned back in to keep it.
-    fragment_schemas = [f.physical_schema for f in dataset_handle.get_fragments()]
-    if not fragment_schemas:
+    # Each fragment's footer is opened once per generation, not once per read -
+    # see `unify_dataset_schema`, and `count_fragment_schema_reads` for the
+    # measurement that keeps it that way.
+    unified = unify_dataset_schema(root, dataset_handle)
+    if unified is None:
         return pd.DataFrame()
-    unified = pa.unify_schemas([*fragment_schemas, dataset_handle.schema])
     dataset_handle = ds.dataset(root, format="parquet", partitioning="hive",
                                 schema=unified)
-    if not_before_ns is None:
-        return dataset_handle.to_table().to_pandas()
     # Inclusive at the boundary, matching `read_as_of`'s upper bound. Off by one
     # in this comparison silently drops a bar on every poll of a caller that
     # advances its watermark to the newest availability time it has seen.
-    return dataset_handle.to_table(
-        filter=ds.field(AVAILABILITY_TIME) >= int(not_before_ns)).to_pandas()
+    table = dataset_handle.to_table(
+        filter=_availability_bound(
+            not_before_ns,
+            partitioned_by_hour=_is_partitioned_by_hour(root, dataset_handle)))
+    # The hour key is an index, not data. Dropping it here keeps the frame's
+    # shape a contract: no caller learns that the store gained a partition key,
+    # and a reader written before this change sees exactly what it saw before.
+    if HOUR_KEY in table.column_names:
+        table = table.drop_columns([HOUR_KEY])
+    return table.to_pandas()

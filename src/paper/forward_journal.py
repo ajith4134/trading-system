@@ -60,6 +60,13 @@ class Heartbeat:
     open_orders: int
     last_event_time_ns: int | None
     detail: str
+    # What the poll COST, as opposed to what it found. `None` on a heartbeat
+    # written before these were recorded, and None is not zero: zero means the
+    # poll opened no fragment footers, which is the healthy answer, and reading
+    # an absent measurement as the healthy answer is the exact failure Rule 8
+    # exists to prevent.
+    fragment_schema_reads: int | None = None
+    poll_seconds: float | None = None
 
     def age_ns(self, now_ns: int) -> int:
         return int(now_ns) - self.written_at_ns
@@ -110,7 +117,9 @@ class ForwardJournal:
                          makes_edge_claim: bool, events_fed: int,
                          orders_submitted: int, orders_rejected: int,
                          fills: int, open_orders: int,
-                         last_event_time_ns: int | None, detail: str) -> None:
+                         last_event_time_ns: int | None, detail: str,
+                         fragment_schema_reads: int | None = None,
+                         poll_seconds: float | None = None) -> None:
         """Write the engine's liveness. Called on EVERY poll, findings or not.
 
         Written whole to a temp file and renamed, so a reader never sees a
@@ -124,6 +133,8 @@ class ForwardJournal:
             "orders_rejected": orders_rejected, "fills": fills,
             "open_orders": open_orders,
             "last_event_time_ns": last_event_time_ns, "detail": detail,
+            "fragment_schema_reads": fragment_schema_reads,
+            "poll_seconds": poll_seconds,
         }
         target = self._root / HEARTBEAT_FILE
         tmp = target.with_suffix(".json.tmp")
@@ -154,7 +165,15 @@ def read_heartbeat(root: Path) -> Heartbeat | None:
             open_orders=int(payload["open_orders"]),
             last_event_time_ns=(None if payload.get("last_event_time_ns") is None
                                 else int(payload["last_event_time_ns"])),
-            detail=payload.get("detail", ""))
+            detail=payload.get("detail", ""),
+            # `.get` rather than `[...]`: a heartbeat written before these
+            # existed is still a valid heartbeat, and refusing it would grade a
+            # running engine as dead over a field about its cost.
+            fragment_schema_reads=(
+                None if payload.get("fragment_schema_reads") is None
+                else int(payload["fragment_schema_reads"])),
+            poll_seconds=(None if payload.get("poll_seconds") is None
+                          else float(payload["poll_seconds"])))
     except (KeyError, TypeError, ValueError):
         # A heartbeat we cannot parse is not a heartbeat. Reporting it as absent
         # makes the wall say NOT MEASURED, which is true; inventing defaults for

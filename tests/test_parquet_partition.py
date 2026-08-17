@@ -52,7 +52,7 @@ def test_snapshot_id_is_order_independent(tmp_path):
 def test_rows_are_partitioned_by_symbol(tmp_path):
     append_partition(tmp_path, "bars_1m", _frame("BTCUSDT"), "snap1")
     append_partition(tmp_path, "bars_1m", _frame("ETHUSDT"), "snap1")
-    symbols = {p.name for p in (tmp_path / "bars_1m").iterdir()}
+    symbols = {p.parent.name for p in (tmp_path / "bars_1m").glob("*/symbol=*/*.parquet")}
     assert symbols == {"symbol=BTCUSDT", "symbol=ETHUSDT"}
 
 
@@ -76,7 +76,7 @@ def test_a_partial_collision_leaves_no_part_behind(tmp_path):
     mixed = pd.concat([_frame("BTCUSDT"), _frame("ETHUSDT")], ignore_index=True)
     with pytest.raises(PartitionExistsError, match="snap1"):
         append_partition(tmp_path, "bars_1m", mixed, "snap1")
-    assert not (tmp_path / "bars_1m" / "symbol=BTCUSDT").exists(), (
+    assert not any((tmp_path / "bars_1m").glob("*/symbol=BTCUSDT")), (
         "the non-colliding symbol's part must not be written when another symbol in "
         "the same frame collides")
 
@@ -137,8 +137,7 @@ def test_a_crash_mid_write_leaves_the_whole_dataset_readable(tmp_path, monkeypat
     survivors = read_dataset(tmp_path, "bars_1m")
     assert list(survivors[SYMBOL]) == ["BTCUSDT"], "the crash cost more than its own part"
 
-    folder = tmp_path / "bars_1m" / "symbol=ETHUSDT"
-    leftovers = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+    leftovers = sorted(p.name for p in (tmp_path / "bars_1m").glob("*/symbol=ETHUSDT/*"))
     assert leftovers == [], f"a partial part survived the crash: {leftovers}"
 
 
