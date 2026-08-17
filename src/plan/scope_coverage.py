@@ -1,0 +1,74 @@
+"""Per-scope coverage - the arithmetic that stops 'assigned' meaning 'done'.
+
+A cross-cutting capability assigned to one slice reads as fully resolved while
+three of four bots silently never receive it. That is the failure this whole
+plan exists to prevent, reproduced inside the plan, and it is not
+hypothetical: the user's examination-hall ruling of 2026-08-02 became roughly
+140 lines of design in the goal document and zero rows of work, and a sweep
+that only asked "is it assigned anywhere" would have called it covered.
+
+So the denominator comes from the scope, not from the sweep. Coverage counts
+DISTINCT slice keys, not rows - two rows for the spot bot is still one bot -
+and it counts what a row CLAIMS to satisfy, never what it happens to sit near.
+
+Coverage is not the same question as state, and the board shows both. Coverage
+asks whether the plan has rows for a ruling; state asks whether the running
+system does it. A ruling can be fully covered and still fail its probe. That is
+not a contradiction, it is the difference between planned and true.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from plan.master_plan import PlanSlice
+from plan.rulings import Ruling
+
+# The bot boundary is the segment (goal document §3b, RL-019). Four bots.
+SEGMENTS = ("spot-bot", "perp-bot", "dated-bot", "options-bot")
+
+# Three brains inside each (RL-011). The two axes compose rather than multiply
+# into twelve separate bots: the user chose the nested reading on 2026-08-17.
+DIRECTIONS = ("BULL", "BEAR", "PROFIT-TAIL")
+BRAINS = tuple(f"{segment}/{direction}"
+               for segment in SEGMENTS for direction in DIRECTIONS)
+
+
+@dataclass(frozen=True)
+class Coverage:
+    subject: str
+    scope: str
+    have: int
+    need: int
+    missing: tuple[str, ...]
+
+    @property
+    def resolved(self) -> bool:
+        return self.have >= self.need
+
+
+def _keys_claiming(subject: str, slices: list[PlanSlice]) -> set[str]:
+    """Distinct slice keys holding a row that claims to satisfy `subject`."""
+    return {row.slice_key
+            for plan_slice in slices
+            for row in plan_slice.rows
+            if subject in row.satisfies}
+
+
+def cover_ruling(ruling: Ruling, slices: list[PlanSlice]) -> Coverage:
+    """How much of a ruling the plan's rows actually cover, per its scope."""
+    claimed = _keys_claiming(ruling.id, slices)
+
+    if ruling.scope == "per-segment":
+        missing = tuple(s for s in SEGMENTS if s not in claimed)
+        return Coverage(ruling.id, ruling.scope,
+                        len(SEGMENTS) - len(missing), len(SEGMENTS), missing)
+
+    if ruling.scope == "per-brain":
+        missing = tuple(b for b in BRAINS if b not in claimed)
+        return Coverage(ruling.id, ruling.scope,
+                        len(BRAINS) - len(missing), len(BRAINS), missing)
+
+    # shared and system: one row anywhere is the whole requirement.
+    have = 1 if claimed else 0
+    return Coverage(ruling.id, ruling.scope, have, 1,
+                    () if have else ("no row anywhere",))
