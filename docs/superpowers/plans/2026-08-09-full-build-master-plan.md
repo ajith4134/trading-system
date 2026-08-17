@@ -1,7 +1,19 @@
 # FULL BUILD — master plan
 
 Date: 2026-08-09
-Status: **ACTIVE. Decided by the user, over the phased-with-paper-first alternative.**
+Status: **SUPERSEDED 2026-08-17 by `docs/AJIT-MASTER-PLAN.md`.**
+
+> **Do not follow this file.** It is retained as the record of what was decided on 2026-08-09, not
+> as a plan to work from. Its phase J puts paper trading last; paper trading has been running since
+> 2026-08-15 under RL-017, so this document has not described the order of work for two days and
+> nothing said so — which is the same defect `DECISIONS.md` §13 records about itself, where the one
+> section whose job is to say what to do next had been wrong for six days.
+>
+> Read `docs/AJIT-MASTER-PLAN.md` for what to build next. Its slices replace phases A–J: the order
+> is now one segment bot at a time, each slice ending with a bot that trades, rather than all of
+> one layer before any of the next.
+
+Status when active: **Decided by the user, over the phased-with-paper-first alternative.**
 Authority: order of work only. The goal stays `2026-08-08-final-project-goal-design.md`;
 structure stays `ARCHITECTURE.md`; capability list stays `FEATURES.md`.
 

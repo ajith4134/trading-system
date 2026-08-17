@@ -8,7 +8,9 @@ things get quietly re-derived wrong.
 
 | Document | What it settles |
 |---|---|
-| `docs/superpowers/specs/2026-08-08-final-project-goal-design.md` | **The goal.** Prime directive, the three human-settled rulings, definition of done, and **§1a — the intelligence standard with its 23 mechanical tests** |
+| **`docs/AJIT-MASTER-PLAN.md`** | **The order.** What to build next, its slices, its gates, and every ruling. **Top of the authority chain** — where any document below disagrees with it about the order of work, it wins. Measured state: `~/research/dashboard/ajit-master-plan.html` |
+| **`docs/rulings.json`** | **What the user settled**, verbatim and dated. 21 rulings, each with a scope and a probe. Recorded the moment a ruling is given, before other work continues |
+| `docs/superpowers/specs/2026-08-08-final-project-goal-design.md` | **The goal.** Prime directive, the human-settled rulings including **§3a** (intraday on all segments) and **§3b** (each segment is its own bot), definition of done, and **§1a — the intelligence standard with its 23 mechanical tests** |
 | `~/research/ADVANCED-INTELLIGENT-CODE.md` | **Why §1a says what it says.** The consolidated evidence on learning, reasoning, depth and evolved-program search, with every claim traced to a primary source |
 | `~/research/IDEAS-INTELLIGENCE.md` | The corpus's own answer — 12 capability areas, the ten to build first, and the master test |
 | `~/research/ledger/` | **1,485 rows.** Every feature, constraint and idea from the corpus, eight prior repos and seven video breakdowns. Rebuild the index: `python3 ~/research/scripts/build_ledger_index.py` |

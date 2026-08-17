@@ -408,6 +408,68 @@ not repeal that evidence. It raises the stakes on measuring it honestly.
    latency-immune families, and that marking was reasoned from the property this
    ruling removes.
 
+## 3b. Each segment is its own bot — user ruling, 2026-08-17
+
+> **"each segment are like there own bots with its own architecture, data features etc like this so
+> make sure you do not assume and build different from what we discussed and fixed before"**
+
+Recorded verbatim, the same day it was given. Clarified with the user in the same session:
+**fully separate bots.**
+
+Spot, perpetual futures, dated futures and options each get their own engine process, own feature
+set, own models, own risk gate, own paper journal, own board tile and own on/off switch. They share
+only the store, the clock-gated reader, the cost engine and the promotion pipeline — those are
+venue-neutral, and four copies would produce four subtly different truths about the same tape. The
+single copy has already caught three defects.
+
+### This composes with §9's ruling rather than replacing it
+
+`DECISIONS.md` §9 and `bull-bear-profit-agents-spec.md` record the 2026-08-03 ruling (RL-011):
+BULL, BEAR and PROFIT-TAIL are three independent bots, each with its own data pipeline, features,
+architecture, training and validation history. That ruling splits by **direction**. This one splits
+by **segment**. Taken as a product they are twelve independent bots; the user chose the nested
+reading:
+
+```
+SPOT BOT            PERP BOT           DATED BOT          OPTIONS BOT
+  data: spot          data: perp         data: dated        data: chain + greeks
+  ├ BULL brain        ├ BULL brain       ├ BULL brain       ├ BULL brain
+  ├ BEAR brain        ├ BEAR brain       ├ BEAR brain       ├ BEAR brain
+  └ PROFIT-TAIL       └ PROFIT-TAIL      └ PROFIT-TAIL      └ PROFIT-TAIL
+  own risk gate       own risk gate      own risk gate      own risk gate
+  own journal         own journal        own journal        own journal
+  own on/off switch   own on/off switch  own on/off switch  own on/off switch
+
+shared: store · clock-gated reader · cost engine · promotion pipeline · validation
+```
+
+**The bot boundary is the segment.** Four processes, twelve brains, four P&L curves. The three
+brains inside a bot are independent of each other in features and architecture and share that
+segment's data pipeline — spot ticks and an options chain are genuinely different data, and
+BULL-on-spot has nothing to learn from BEAR-on-options.
+
+### The intelligence standard binds per brain
+
+Each of the twelve carries its own verdict on all three axes of §1a — learning, reasoning, depth.
+**36 verdicts.** Reading **0/36** on 2026-08-17. This is what stops a hardcoded rule wearing the
+word "brain", which is the substitution the user has ruled against three times (2026-08-01,
+2026-08-02, 2026-08-08).
+
+### The switch is a third control, not one of the two that exist
+
+A file on disk holds one line per segment bot plus an ALL master, set only by the user. A bot reads
+it every poll and stops **opening** on off; existing positions are still managed to exit, because
+abandoning open risk is not what "off" should mean. It is distinct from §6's kill switch, which
+means *something is wrong, stop*, and from the capital feasibility gate, which disables families by
+itself when the dial is too small. Conflating them would make a deliberate pause look like a fault.
+
+### Where this is tracked
+
+Order of work, gates, row inventory and reconciliation: **`docs/AJIT-MASTER-PLAN.md`**, which is the
+top authority for what to build next. Measured state: `~/research/dashboard/ajit-master-plan.html`.
+
+---
+
 ## 4. Capital is a dial
 
 The user sets it. Anywhere from roughly **$2k to $100k+**. It may be changed at any time and the
@@ -460,6 +522,21 @@ price, carrying no key or execution risk. **Deferred:** Bybit. **Options:** Deri
 ---
 
 ## 5a. Universe-wide scanning — a property of the system, not a strategy
+
+> **Amended 2026-08-17 by RL-019 — it is a property of EACH SEGMENT BOT.** This section's heading
+> and its argument below call universe-wide scanning a property of *the system*. The user ruled that
+> each segment bot runs its own monitor over its own universe on its own data, and does not receive
+> candidates from a shared screener. Everything below about the mechanism, the gate, the rules it
+> imposes and the risks it creates stands unchanged — only the level it lives at moves.
+>
+> Scope in `docs/rulings.json` is therefore **`per-segment`**, and the plan's reconciliation reports
+> RL-009 and RL-014 as **0/4** until all four bots have a row for it.
+>
+> This matters because of what happened to it. The examination-hall ruling of 2026-08-02 is the
+> user's own idea, argued through, and written up here as ~140 lines of design — and measured on
+> 2026-08-17 it had produced **zero rows of work** and appears in **zero rows of the 1,491-row
+> ledger**. `src/strategy/` holds two modules and neither is an opportunity monitor. A design that
+> reaches a document and stops there is the failure `AJIT-MASTER-PLAN.md` exists to make visible.
 
 **Full analysis: `~/research/DESIGN-NOTE-universe-wide-scanning.md`, rated 8/10 conditional on the
 gate in §5a.4.**
