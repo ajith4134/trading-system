@@ -330,10 +330,186 @@ its own plan when slice 1's row inventory is reviewed.
 
 ---
 
+## SLICE bot-framework — SHARED LIVE BOT FRAMEWORK
+
+**Written 2026-08-18 under RL-024 and RL-023.** slice-0 deliberately left the shared bot framework
+out, to be planned when a segment slice needed it. All four segment slices need it at once, and two
+rulings given on 2026-08-18 fixed its shape before it was built.
+
+**RL-024 moved the market data path.** Every row below reads a LIVE venue feed. The parquet store
+stays the research and training corpus and is never the trading clock. Measured 2026-08-18: the
+running engine had been up 14 minutes without completing one poll, in uninterruptible IO, on a store
+whose cold filtered scan measured 185.6s the day before; the raw tape behind that store flushes a
+zstd frame every 30s. Neither is a live price, and a bot polling either is backtesting on a delay
+while carrying the name paper trading.
+
+**RL-023 fixed the brain count at three.** BULL, BEAR and PROFIT-TAIL. The arbiter is the selection
+step that consumes all three, not a third brain. PROFIT-TAIL's expectancy and tail estimates are
+inputs the arbiter consumes and never a veto; it owns entry timing and the whole position after fill;
+it can neither reject a selected trade nor refuse to close a loser; the hard stop overrides it
+absolutely.
+
+### BF-01
+  slice:      bot-framework
+  does:       hold one live websocket feed per venue and hand each bot the ticks that arrived
+              since its last poll, with the age of the newest tick
+  satisfies:  RL-024 RL-018 RL-020
+  sources:    ~/research/bull-bear-profit-agents-spec.md#2. Authority map
+  depends on: none
+  probe:      probe_live_feed_fresh
+  accepts:    a bot's poll returns ticks whose newest is seconds old rather than hours, a feed
+              that has gone quiet is reported as quiet rather than as an empty market, and no
+              bot ever reads a price from the parquet store
+  state:      measured by probe_live_feed_fresh
+
+### BF-02
+  slice:      bot-framework
+  does:       compute the live feature frame per symbol from the ticks a poll delivered
+  satisfies:  RL-010 RL-013 RL-024
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01
+  probe:      probe_segment_features_current
+  accepts:    every feature row names the tick window it was computed from, and a missing or
+              stale input produces a refusal naming what was missing rather than a default
+  state:      measured by probe_segment_features_current
+
+### BF-03
+  slice:      bot-framework
+  does:       state what a BULL or BEAR brain is, so a rule brain and a trained model are the
+              same interface to everything downstream
+  satisfies:  RL-023 RL-025 RL-013 RL-011
+  sources:    ~/research/bull-bear-profit-agents-spec.md#1. The three bots
+  depends on: BF-02
+  probe:      probe_segment_brains_reason
+  accepts:    a brain returns a proposal carrying the features that produced it or a first-class
+              decline, a BULL can never propose a short, a BEAR can never propose a long, and
+              swapping a rule brain for a model changes no caller
+  state:      measured by probe_segment_brains_reason
+
+### BF-04
+  slice:      bot-framework
+  does:       own entry timing and the whole position after fill, without the power to refuse a
+              selected trade or to refuse to close a loser
+  satisfies:  RL-023 RL-011 RL-022
+  sources:    ~/research/bull-bear-profit-agents-spec.md#4. PROFIT-TAIL in detail
+  depends on: BF-02
+  probe:      probe_profit_tail_authority
+  accepts:    a test proves it cannot reject a selected trade, a test proves it cannot hold a
+              position past the hard stop, a trade abandoned on signal expiry is journalled as a
+              missed entry attributed to it, and every order it raises re-enters the risk gate
+  state:      measured by probe_profit_tail_authority
+
+### BF-05
+  slice:      bot-framework
+  does:       select the trade from the BULL and BEAR proposals with PROFIT-TAIL's expectancy as
+              an input, yielding one side or an abstention
+  satisfies:  RL-023 RL-011 RL-006
+  sources:    ~/research/bull-bear-profit-agents-spec.md#2. Authority map
+  depends on: BF-03 BF-04
+  probe:      probe_segment_arbiter_decides
+  accepts:    two brains proposing opposite sides yields one side or an abstention and never
+              both, PROFIT-TAIL's numbers change the selection but can never veto it, and the
+              rejected case is journalled with its reason
+  state:      measured by probe_segment_arbiter_decides
+
+### BF-06
+  slice:      bot-framework
+  does:       run one segment bot end to end on the live feed - features, three brains,
+              selection, timing, risk gate, broker, journal, heartbeat
+  satisfies:  RL-024 RL-019 RL-005 RL-020
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-05
+  probe:      probe_segment_engine_running
+  accepts:    the bot opens and closes positions on live prices, every fill is journalled under
+              its own segment, and its heartbeat carries the age of the newest tick it acted on
+  state:      measured by probe_segment_engine_running
+
+### BF-07
+  slice:      bot-framework
+  does:       declare each segment bot - its venue, its streams, its feature set and its three
+              brains - so a segment's architecture is stated in one place
+  satisfies:  RL-019 RL-006 RL-023
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-06
+  probe:      probe_segment_engine_running
+  accepts:    all four segments are declared, each names its own feed and its own features, and
+              no segment inherits another's brains by default
+  state:      measured by probe_segment_engine_running
+
+### BF-08
+  slice:      bot-framework
+  does:       show every segment bot's measured state on the wall, absence rendering as its own
+              state and the rule brains carrying their no-edge-claim label
+  satisfies:  RL-012 RL-025 RL-008
+  sources:    2026-08-17-ajit-master-plan-design.md#8. Progress reporting
+  depends on: BF-06
+  probe:      probe_segment_tiles_measured
+  accepts:    no tile is green without a probe having run, a bot that has never traded renders
+              NOT MEASURED rather than blank or green, and every tile running a rule brain says
+              so on its face
+  state:      measured by probe_segment_tiles_measured
+
+> **The modules these rows build.** Named here so the row and the file cannot drift apart, and so
+> `require-plan-row.sh` admits them:
+>
+> | row | module |
+> |---|---|
+> | BF-01 | `live/live_feed.py` |
+> | BF-02 | `segment/live_features.py` |
+> | BF-03 | `segment/brain.py` |
+> | BF-04 | `segment/profit_tail.py` |
+> | BF-05 | `segment/arbiter.py` |
+> | BF-06 | `segment/live_engine.py` |
+> | BF-07 | `segment/bot_registry.py` |
+> | BF-08 | `statuswall/segment_tiles.py` |
+> | SB-01 | `spot/tradable_universe.py` |
+> | SB-02 | `spot/segment_brains.py` |
+> | DB-01 | `dated/tradable_universe.py` |
+> | DB-02 | `dated/segment_brains.py` |
+> | OB-01 | `options/tradable_universe.py` |
+> | OB-02 | `options/segment_brains.py` |
+> | PB-15 | `perp/segment_brains.py` |
+>
+> The per-segment brain modules share a file NAME and nothing else. RL-019 makes each segment its
+> own bot with its own features, and the four files differ in every input they read: the perp
+> brains read funding and order flow, the spot brains cross-venue divergence, the dated brains term
+> structure and time to expiry, the options brains the quoted chain. A shared name is a convention
+> for finding them; it is not a shared implementation, and a segment inheriting another's brains by
+> default is what BF-07's acceptance refuses.
+
+---
+
 ## SLICE spot-bot — SPOT BOT
 
 *Row inventory pending the reconciliation sweep, reviewed with the user before this slice starts
 (design §12). An empty slice reports 0/0, which is the honest board for unplanned work.*
+
+**Rows written 2026-08-18 under RL-024 and RL-023.** The bot trades a live venue feed; the
+remaining rows of this slice are still pending review.
+
+### SB-01
+  slice:      spot-bot
+  does:       name every spot symbol the bot may trade and every one it may not, with the reason
+  satisfies:  RL-014 RL-009 RL-019 RL-018
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01
+  probe:      probe_spot_universe_measured
+  accepts:    every symbol the live spot feed carries resolves to tradable or excluded with its
+              reason named, and the excluded count is published rather than hidden
+  state:      measured by probe_spot_universe_measured
+
+### SB-02
+  slice:      spot-bot
+  does:       carry the spot BULL, BEAR and PROFIT-TAIL brains on spot's own features -
+              cross-venue divergence and consolidated price rather than funding
+  satisfies:  RL-023 RL-019 RL-025 RL-011
+  sources:    ~/research/bull-bear-profit-agents-spec.md#1. The three bots
+  depends on: BF-03 BF-04 SB-01
+  probe:      probe_segment_brains_reason
+  accepts:    the spot brains name spot features, no brain reads a perpetual-only input, and
+              each decision carries the features that produced it
+  state:      measured by probe_segment_brains_reason
+
 
 Known shape from the design: segment data completion → spot features → BULL, BEAR and PROFIT-TAIL
 brains → segment risk gate → engine, journal, supervisor and on/off switch → board tile → three
@@ -345,9 +521,242 @@ until all four exist.
 
 ## SLICE perp-bot — PERP BOT
 
-*Row inventory pending review.* The running `plumbing-momentum` engine retires into this slice: its
-journal is archived and marked as plumbing that made no edge claim, so it can never later be read
-as a result. Until then it keeps running, because something trading is what the 24/7 record needs.
+**Inventory reviewed with the user 2026-08-17 (RL-022).** This is the first segment bot built end
+to end. Its edge is **directional scalping**. Two exit horizons are built and run side by side on
+the same entry signal — a fast band of seconds to minutes and a slow band of five to sixty minutes
+— and measured winrate and net profit decide which survives. Market making, mean reversion and
+funding/basis carry were all chosen as wanted and are carried below as BLOCKED rows so they are
+revisited rather than forgotten.
+
+The running `plumbing-momentum` engine retires into this slice: its journal is archived and marked
+as plumbing that made no edge claim, so it can never later be read as a result. Until then it keeps
+running, because something trading is what the 24/7 record needs.
+
+**Why the perp segment first.** It has the deepest captured history across three venues, the best
+liquidity, no borrow to arrange for the bear side, and funding as a second observable. It is also
+where the paper harness already runs, so the engine, journal, fill model and equity curve are
+exercised code rather than new code.
+
+**What this slice does NOT assume.** No row below says which model or method an agent uses. That is
+settled per row against §1a's intelligence standard when the row is specced, not here — a plan that
+picked the method in advance would be the hard-coded instruction-following RL-013 refuses.
+
+### PB-01
+  slice:      perp-bot
+  does:       name every perp symbol whose bars, book and trades are complete enough to trade on,
+              and name every one that is not, with the reason
+  satisfies:  RL-014 RL-009 RL-019 RL-018
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: none
+  probe:      probe_perp_universe_measured
+  accepts:    every captured perp symbol resolves to tradable or excluded with its reason
+              named, and the excluded count is published rather than hidden
+  state:      measured by probe_perp_universe_measured
+
+> **Builds one module, `perp/tradable_universe.py`, on top of
+> `features/universe_coverage.py` rather than beside it.** That module already establishes the
+> segment from *which dataset carries the key* — funding makes a key a perpetual — and already
+> measures staleness against each series' own cadence rather than a shared constant. It is
+> deliberately a **watch list**: a symbol that went quiet is its most interesting row. This row is
+> the opposite decision — **admission to trading** — and the two must not be merged, because a
+> watch list that drops what it stopped seeing cannot answer "is that instrument gone, or did our
+> feed stop".
+>
+> **The measured constraint this row exists to surface.** Bars cover 2,235 symbols; the `book`
+> dataset covers **six** — BTCUSDT, ETHUSDT, SOLUSDT, BTC-USD, ETH-USD, SOL-USD — and only from
+> 2026-08-17T09. The capture configuration is `binance BTCUSDT,ETHUSDT,SOLUSDT ALL`: three named
+> symbols get depth, `ALL` gets bars. Order-flow imbalance, microprice and absorption all need the
+> book, so **RL-009/RL-014 breadth and book-based scalping cannot both hold today**. Admission
+> therefore carries a tier — DEEP where the book exists, BARS-ONLY otherwise — so PB-02 and PB-03
+> are specced against what is actually there rather than discovering it halfway through.
+
+### PB-02
+  slice:      perp-bot
+  does:       compute the scalping feature frame per tradable symbol per bar from the feature
+              modules that already exist and today feed nothing
+  satisfies:  RL-010 RL-013 RL-018 RL-019
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-01
+  probe:      probe_perp_features_current
+  accepts:    every tradable symbol carries a feature row no older than one bar, and a missing
+              or stale input produces a refusal naming what was missing rather than a default
+  state:      measured by probe_perp_features_current
+
+### PB-03
+  slice:      perp-bot
+  does:       propose long entries across the whole tradable universe, each with a confidence and
+              the evidence that produced it
+  satisfies:  RL-011 RL-013 RL-010 RL-006 RL-009
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: PB-02
+  probe:      probe_perp_bull_agent_reasons
+  accepts:    every proposal names the features that produced it, the same features at a later
+              date can produce a different decision, and declining a symbol is a first-class
+              outcome rather than the absence of one
+  state:      measured by probe_perp_bull_agent_reasons
+
+### PB-04
+  slice:      perp-bot
+  does:       propose short entries across the whole tradable universe on the same terms
+  satisfies:  RL-011 RL-013 RL-010 RL-006 RL-009
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: PB-02
+  probe:      probe_perp_bear_agent_reasons
+  accepts:    as PB-03, and the bear agent is a separate decision rather than the bull agent's
+              output negated
+  state:      measured by probe_perp_bear_agent_reasons
+
+### PB-05
+  slice:      perp-bot
+  does:       select the trade, or no trade at all, from the bull and bear proposals for a symbol,
+              with PROFIT-TAIL's expectancy and tail estimates as inputs rather than as a veto
+  satisfies:  RL-011 RL-006 RL-019 RL-023
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: PB-03 PB-04
+  probe:      probe_perp_arbiter_decides
+  accepts:    two agents proposing opposite sides on one symbol yields one side or an
+              abstention, never both, the rejected case is journalled with its reason, and
+              PROFIT-TAIL's numbers can change the selection but never refuse it
+  state:      measured by probe_perp_arbiter_decides
+
+### PB-06
+  slice:      perp-bot
+  does:       run the fast and the slow exit band on the same entry signal, journalled apart
+  satisfies:  RL-022 RL-018 RL-005
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-05
+  probe:      probe_perp_bands_journalled
+  accepts:    each band's trades are separable in the journal, one trade never appears in both,
+              and each band's exit rule is stated as a rule rather than a tuned constant
+  state:      measured by probe_perp_bands_journalled
+
+### PB-07
+  slice:      perp-bot
+  does:       refuse an order that breaches perp exposure, liquidation distance or entry funding cost
+  satisfies:  RL-006 RL-019 RL-004
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-05
+  probe:      probe_perp_risk_gate_refuses
+  accepts:    every limit has a test that trips it, a refusal names the limit and the measured
+              value that breached it, and no order reaches the broker without passing
+  state:      measured by probe_perp_risk_gate_refuses
+
+### PB-08
+  slice:      perp-bot
+  does:       run the perp bot 24/7 under its own supervisor with an on/off switch, journalling
+              every fill
+  satisfies:  RL-020 RL-005 RL-019 RL-006
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-06 PB-07
+  probe:      probe_perp_engine_running
+  accepts:    the bot returns after a reboot with nothing started by hand, the switch stops it
+              without stopping capture, and its heartbeat carries what the poll cost
+  state:      measured by probe_perp_engine_running
+
+### PB-09
+  slice:      perp-bot
+  does:       show the perp bot's measured state on the wall, absence rendering as its own state
+  satisfies:  RL-012 RL-004
+  sources:    2026-08-17-ajit-master-plan-design.md#8. Progress reporting
+  depends on: PB-08
+  probe:      probe_perp_tile_measured
+  accepts:    no tile is green without a probe having run, and a bot that has never traded
+              renders NOT MEASURED rather than blank or green
+  state:      measured by probe_perp_tile_measured
+
+### PB-10
+  slice:      perp-bot
+  does:       measure trades, winrate and net profit per exit band from the journal alone
+  satisfies:  RL-022 RL-005 RL-012
+  sources:    2026-08-17-ajit-master-plan-design.md#8. Progress reporting
+  depends on: PB-08
+  probe:      probe_perp_band_performance
+  accepts:    each band reports its trade count, winrate and profit net of fees and modelled
+              slippage, and a band with too few trades to support a rate says so instead of
+              reporting one
+  state:      measured by probe_perp_band_performance
+
+### PB-11
+  slice:      perp-bot
+  does:       decide whether a perp strategy has earned real money, on observed history only
+  satisfies:  RL-005 RL-004
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-10
+  probe:      probe_perp_promotion_gate
+  accepts:    a strategy passes only on out-of-sample observed history, deflated by the number
+              of trials it was actually selected from, and the gate refuses outright on
+              reconstructed data
+  state:      measured by probe_perp_promotion_gate
+
+### PB-15
+  slice:      perp-bot
+  does:       own perp entry timing and the whole position after fill, on the segment's own
+              horizon bands
+  satisfies:  RL-023 RL-022 RL-011 RL-019
+  sources:    ~/research/bull-bear-profit-agents-spec.md#4. PROFIT-TAIL in detail
+  depends on: PB-02
+  probe:      probe_profit_tail_authority
+  accepts:    it cannot reject a selected perp trade and cannot hold one past the hard stop, a
+              trade abandoned on signal expiry is journalled as a missed entry attributed to it,
+              and its fast and slow bands are the two PB-06 journals rather than a third
+  state:      measured by probe_profit_tail_authority
+
+> **This row is the RL-023 correction, and it was a real gap.** PB-03 named the bull, PB-04 the
+> bear and PB-05 an arbiter over the two - a two-brain design with a chooser, which is exactly the
+> shape `dual-agent-spec.md` was superseded for on 2026-08-03. The user caught it on 2026-08-18.
+> Three brains: BULL, BEAR, PROFIT-TAIL, and the arbiter is the selection step, not a brain.
+
+### PB-16
+  slice:      perp-bot
+  does:       move the perp bot's market data path from the parquet store to the live feed
+  satisfies:  RL-024 RL-018 RL-020
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01 BF-06
+  probe:      probe_live_feed_fresh
+  accepts:    the perp bot acts on ticks seconds old rather than hours, and no price it trades on
+              is ever read from the store
+  state:      measured by probe_live_feed_fresh
+
+> **The three rows below are chosen, not declined.** The user selected market making, mean
+> reversion and funding/basis carry alongside directional scalping (RL-022), then chose to run
+> scalping first and judge it on measured winrate and profit before adding the rest. They are
+> written as rows so the choice is revisited rather than remembered. Each is BLOCKED on PB-10
+> returning a verdict — which is a decision about sequence, not a claim that they are hard.
+
+### PB-12
+  slice:      perp-bot
+  does:       rest quotes on both sides of the perp book and earn the spread, managing inventory
+  satisfies:  RL-022 RL-006
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-10
+  probe:      probe_perp_band_performance
+  accepts:    not specced. Before this row is built, the fill model must be shown to model queue
+              position, because a market maker judged on a fill model that assumes fills is a
+              market maker judged on nothing
+  state:      BLOCKED
+
+### PB-13
+  slice:      perp-bot
+  does:       fade short-horizon overextension against a cross-venue reference price
+  satisfies:  RL-022 RL-006
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-10
+  probe:      probe_perp_band_performance
+  accepts:    not specced. `features.price_divergence` and `features.consolidated_price` already
+              exist and are the intended inputs
+  state:      BLOCKED
+
+### PB-14
+  slice:      perp-bot
+  does:       capture funding and spot-perp basis as a held position rather than a scalp
+  satisfies:  RL-022 RL-006 RL-018
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: PB-10
+  probe:      probe_perp_band_performance
+  accepts:    not specced. `strategy/funding_carry.py` already exists at 482 lines and is the
+              only non-plumbing strategy file in the repo. Its holding period is not intraday,
+              so RL-018 has to be reconciled with it before this row is built
+  state:      BLOCKED
 
 ---
 
@@ -355,6 +764,35 @@ as a result. Until then it keeps running, because something trading is what the 
 
 *Row inventory pending review.* `bybit` carries 48 dated contracts and `features.term_structure`
 already reads them.
+
+**Rows written 2026-08-18 under RL-024 and RL-023.** The bot trades a live venue feed; the
+remaining rows of this slice are still pending review.
+
+### DB-01
+  slice:      dated-bot
+  does:       name every dated futures contract the bot may trade and every one it may not,
+              with the reason and the contract's expiry
+  satisfies:  RL-014 RL-009 RL-019 RL-018
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01
+  probe:      probe_dated_universe_measured
+  accepts:    every dated contract the live feed carries resolves to tradable or excluded with
+              its reason named, and a contract inside its final settlement window is excluded
+              with that as the reason
+  state:      measured by probe_dated_universe_measured
+
+### DB-02
+  slice:      dated-bot
+  does:       carry the dated BULL, BEAR and PROFIT-TAIL brains on term structure and basis
+              rather than on spot momentum
+  satisfies:  RL-023 RL-019 RL-025 RL-011
+  sources:    ~/research/bull-bear-profit-agents-spec.md#1. The three bots
+  depends on: BF-03 BF-04 DB-01
+  probe:      probe_segment_brains_reason
+  accepts:    the dated brains name term-structure features, and time to expiry is an input to
+              every decision rather than an afterthought
+  state:      measured by probe_segment_brains_reason
+
 
 ---
 
@@ -365,6 +803,36 @@ already reads them.
 supervisor's rotation, so goal §3a item 2's *"no builder reads it yet"* is out of date. The chain
 cannot be backfilled — the endpoint ignores a `timestamp` parameter — so every hour of capture from
 2026-08-16 onward is the only history this segment will ever have.
+
+**Rows written 2026-08-18 under RL-024 and RL-023.** The bot trades a live venue feed; the
+remaining rows of this slice are still pending review.
+
+### OB-01
+  slice:      options-bot
+  does:       name every option instrument the bot may trade and every one it may not, with the
+              reason, its expiry and its moneyness
+  satisfies:  RL-014 RL-009 RL-019 RL-006
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01
+  probe:      probe_options_universe_measured
+  accepts:    every instrument the live chain carries resolves to tradable or excluded with its
+              reason named, an instrument with no two-sided quote is excluded as such, and the
+              thinness of the captured history is published rather than hidden
+  state:      measured by probe_options_universe_measured
+
+### OB-02
+  slice:      options-bot
+  does:       carry the options BULL, BEAR and PROFIT-TAIL brains on the chain's own inputs, an
+              option never being taken as a plain directional bet
+  satisfies:  RL-023 RL-019 RL-025 RL-011 RL-006
+  sources:    ~/research/bull-bear-profit-agents-spec.md#1. The three bots
+  depends on: BF-03 BF-04 OB-01
+  probe:      probe_segment_brains_reason
+  accepts:    the options brains read the quoted chain, a decision names the instrument's expiry
+              and moneyness, and the spec's rule that options are not a directional bet has a
+              test that trips on violating it
+  state:      measured by probe_segment_brains_reason
+
 
 ---
 

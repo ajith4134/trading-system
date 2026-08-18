@@ -33,8 +33,9 @@ from paper.forward_journal import read_heartbeat
 from plan.master_plan import PlanSlice, read_master_plan
 from plan.rulings import Ruling
 from plan.scope_coverage import Coverage, cover_ruling
+from perp.tradable_universe import REPORT_PATH as PERP_UNIVERSE_REPORT
 from statuswall.evidence import (
-    DEGRADED, NOT_MEASURED, OK, PARTIAL, ProbeResult, STATE_LABEL,
+    DEGRADED, FAILING, NOT_MEASURED, OK, PARTIAL, ProbeResult, STATE_LABEL,
 )
 from statuswall.staleness_banner import render_staleness_banner
 
@@ -335,7 +336,76 @@ def probe_ruling_conformance(
     return _board_freshness("ruling-conformance.html", out_dir)
 
 
+def probe_perp_universe_measured(
+        report_path: Path = PERP_UNIVERSE_REPORT,
+        stale_after_s: float = 6 * 3600.0) -> ProbeResult:
+    """PB-01, RL-009, RL-014: what the perp bot may trade, and what it refused.
+
+    Reads what `scripts/record_perp_universe.sh` published rather than running
+    the selection here. The selection reads the whole store, which is minutes of
+    IO, and a board pass that already takes ten to nineteen minutes must not grow
+    another multi-minute probe. The cost of that choice is that a stopped
+    recorder shows up as a stale report, which is why age is graded.
+
+    The states are ordered by what a reader would do about them:
+
+    * NOT MEASURED - nothing published. Absence is its own state (Rule 8), and
+      it must never render as "nothing tradable", which is a measurement.
+    * FAILING - the report contradicts itself, or every symbol was refused.
+      Admitted plus excluded not equalling considered means the accounting the
+      row's acceptance rests on is broken, and every number below it is suspect.
+    * PARTIAL - symbols are admitted but none has depth. Book-based scalping
+      features cannot run on a single one of them, so a green tile here would
+      say the perp bot is ready when its edge has no inputs.
+    * DEGRADED - the report is older than the recorder's cadence allows.
+    """
+    report_path = Path(report_path)
+    if not report_path.is_file():
+        return ProbeResult(NOT_MEASURED,
+                           "no perp universe has been recorded - run "
+                           "scripts/record_perp_universe.sh",
+                           str(report_path))
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        considered = int(report["considered"])
+        admitted = int(report["admitted"])
+        excluded = int(report["excluded"])
+        deep = int(report["deep"])
+        written_at_ns = int(report["written_at_ns"])
+    except (OSError, ValueError, KeyError, TypeError) as failure:
+        return ProbeResult(NOT_MEASURED,
+                           f"unreadable perp universe report: {failure!r}",
+                           str(report_path))
+
+    age_s = (time.time_ns() - written_at_ns) / 1e9
+    breakdown = report.get("excluded_by_reason") or {}
+    detail = (f"{considered} considered, {admitted} admitted "
+              f"({deep} with depth), {excluded} excluded"
+              + (f" - {', '.join(f'{count} {reason}' for reason, count in sorted(breakdown.items()))}"
+                 if breakdown else "")
+              + f"; recorded {age_s / 60:.0f}min ago")
+
+    if admitted + excluded != considered:
+        return ProbeResult(FAILING,
+                           f"the report does not add up: {admitted} admitted + "
+                           f"{excluded} excluded is not {considered} considered",
+                           str(report_path))
+    if considered and not admitted:
+        return ProbeResult(FAILING, detail, str(report_path))
+    if not considered:
+        return ProbeResult(NOT_MEASURED,
+                           "0 considered - no perpetual has been seen through "
+                           "the clock gate",
+                           str(report_path))
+    if age_s > stale_after_s:
+        return ProbeResult(DEGRADED, detail, str(report_path))
+    if not deep:
+        return ProbeResult(PARTIAL, detail, str(report_path))
+    return ProbeResult(OK, detail, str(report_path))
+
+
 PROBES = {
+    "probe_perp_universe_measured": probe_perp_universe_measured,
     "probe_store_offloaded": probe_store_offloaded,
     "probe_reconciliation_sweeps": probe_reconciliation_sweeps,
     "probe_plan_board_rendered": probe_plan_board_rendered,

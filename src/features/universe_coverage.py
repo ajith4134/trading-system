@@ -221,19 +221,29 @@ def _read(store_root: Path, dataset: str, as_of_ns: int,
 
 
 def compute_universe_coverage(store_root: Path, as_of_ns: int,
-                              custodian=None) -> UniverseCoverage:
+                              custodian=None,
+                              bars: pd.DataFrame | None = None) -> UniverseCoverage:
     """Roll-call every (venue, symbol) in every segment at this clock.
 
     Reads the three datasets that define the segments. A key's segment is
     whichever dataset carries it - funding makes it a perpetual, `dated_futures`
     makes it a dated contract, bars alone make it spot - so nothing here parses a
     venue or symbol name.
+
+    `bars` lets a caller that has ALREADY read the bars dataset through the clock
+    gate hand it over instead of paying for a second read. That is not a
+    micro-optimisation: the bars read is the expensive one, measured at minutes
+    against the live store, and `perp.tradable_universe` needs the same frame for
+    its liquidity refusal. It must be a clock-gated read as of the SAME instant -
+    a frame read at a different clock would silently change which symbols this
+    roll-call can see, which is the one thing the clock gate exists to prevent.
     """
     store_root = Path(store_root)
     as_of_ns = int(as_of_ns)
     refused = {"no_observations": 0, "unmeasurable_cadence": 0}
 
-    bars = _read(store_root, BARS_DATASET, as_of_ns, custodian)
+    if bars is None:
+        bars = _read(store_root, BARS_DATASET, as_of_ns, custodian)
     funding = _read(store_root, FUNDING_DATASET, as_of_ns, custodian)
     dated = _read(store_root, DATED_FUTURES_DATASET, as_of_ns, custodian)
 

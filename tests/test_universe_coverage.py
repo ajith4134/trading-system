@@ -274,3 +274,33 @@ def test_an_empty_store_watches_nothing_and_says_so(tmp_path):
     assert coverage.rows.empty
     assert coverage.segments == []
     assert "no symbols visible" in coverage.describe()
+
+
+def test_bars_already_read_are_used_instead_of_read_again(tmp_path, monkeypatch):
+    """The bars read is the expensive one - minutes against the live store - and
+    `perp.tradable_universe` needs the same frame for its liquidity refusal.
+    Handing it over must produce the same roll-call as letting the module read
+    it, or the caller is quietly working from a different universe.
+    """
+    from features import universe_coverage as module
+
+    _write(tmp_path, "bars_60000000000ns", _bars("BTCUSDT", "binance", 60))
+    _write(tmp_path, "funding", _funding("BTCUSDT", "binance", 60))
+    store, as_of = tmp_path, _START + 60 * _MINUTE
+    expected = compute_universe_coverage(store, as_of)
+
+    handed = module._read(store, module.BARS_DATASET, as_of, None)
+    reads: list[str] = []
+    original = module._read
+
+    def _counted(store_root, dataset, clock, custodian):
+        reads.append(dataset)
+        return original(store_root, dataset, clock, custodian)
+
+    monkeypatch.setattr(module, "_read", _counted)
+    got = compute_universe_coverage(store, as_of, bars=handed)
+
+    assert module.BARS_DATASET not in reads, "the bars dataset was read again"
+    assert got.total_symbols == expected.total_symbols
+    assert [s.describe() for s in got.segments] == \
+           [s.describe() for s in expected.segments]

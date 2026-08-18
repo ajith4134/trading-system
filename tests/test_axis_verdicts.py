@@ -173,13 +173,39 @@ def test_every_module_in_this_repo_is_judged():
 
 
 def test_the_record_admits_failures():
-    """A standard that produces only passes is a standard nobody fails. Three
-    modules fail DEPTH because nothing calls them - a module that cannot run
-    cannot change what the system does when it is wrong, which is the master
-    test - and one because no test exercises it at all."""
+    """A standard that produces only passes is a standard nobody fails.
+
+    Two kinds of failure are admitted, and they say different things:
+
+    **DEPTH** - the module cannot change what the system does when it is wrong,
+    because nothing calls it or no test exercises it. That is the master test.
+
+    **LEARNING** - added 2026-08-18 with the four segment bots. Their BULL, BEAR
+    and PROFIT-TAIL brains are RULE brains under RL-025: stated thresholds, no
+    adaptation, the same market twice producing the same decision forever. They
+    are recorded as FAILING the learning axis rather than as `n/a`, because `n/a`
+    is the honest answer for a Parquet writer and a self-serving one for something
+    calling itself a brain. §1a is the standard they are measured against and they
+    do not meet it yet; the tile says RULE BRAIN, every fill carries
+    `makes_edge_claim: false`, and this record is where that is admitted rather
+    than argued about.
+
+    The point of the exercise is that these entries exist. A verdict file where
+    every brain passed learning would be the one thing §1a exists to prevent.
+    """
     coverage = assess(REPO_ROOT)
     assert coverage.failing, "every verdict passed, which is not a judgement"
-    assert all(axes == ["depth"] for axes in coverage.failing.values()), coverage.failing
+    allowed = {"depth", "learning"}
+    for module, axes in coverage.failing.items():
+        assert set(axes) <= allowed, f"{module} fails an unexpected axis: {axes}"
+    learning_failures = {m for m, axes in coverage.failing.items() if "learning" in axes}
+    assert learning_failures, (
+        "no module admits a learning failure; the rule brains must not quietly "
+        "become n/a on the axis they actually fail")
+    # Every learning failure is a brain. If something else starts failing learning,
+    # that is a different claim and belongs in its own verdict with its own reason.
+    assert all("brains" in m or "profit_tail" in m or "arbiter" in m or "features" in m
+               for m in learning_failures), sorted(learning_failures)
 
 
 def test_the_depth_failures_are_exactly_the_unreachable_modules_plus_the_untested_one():

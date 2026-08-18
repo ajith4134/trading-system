@@ -155,6 +155,14 @@ supervise() {
         # system exists to run. A failure here is recorded and does NOT break
         # the loop: the wall must keep regenerating even if the plan board
         # cannot.
+        # BF-08: the four segment bots' wall. Its own invocation, and cheap - it
+        # reads four heartbeats and the day's fill journals, so it is regenerated on
+        # every pass rather than sharing the wall's slower cadence.
+        if ! "$PYTHON" -m statuswall.segment_tiles --out-dir "$BOARDS_DIR" \
+                >> "$GENERATOR_LOG" 2>&1; then
+            printf '%s segment_tiles failed\n' "$(date -u +%FT%TZ)" >> "$GENERATOR_LOG"
+        fi
+
         if ! "$PYTHON" -m plan.cli --out-dir "$BOARDS_DIR" >> "$GENERATOR_LOG" 2>&1; then
           echo "plan board regeneration failed; see $GENERATOR_LOG" >&2
         fi

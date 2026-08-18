@@ -1,0 +1,459 @@
+"""BF-06: one segment bot, end to end, on live prices.
+
+    python -m segment.live_engine --segment perp
+
+## The loop
+
+    live feed  →  feature frame  →  BULL, BEAR, PROFIT-TAIL(assess)
+                                          ↓
+                                      ARBITER  ── selects, or abstains
+                                          ↓
+                              PROFIT-TAIL.time_entry  ── when, never whether
+                                          ↓
+                                      RISK GATE  ── the only thing that refuses
+                                          ↓
+                                     PAPER BROKER  →  journal
+                                          ↓
+                      PROFIT-TAIL.manage  ── owns the position until it is closed
+
+Every arrow is one direction. PROFIT-TAIL appears twice and holds no veto at either
+point (RL-023); the risk gate is the single place an order is refused, because every
+blow-up in the research set traces to risk authority being split.
+
+## What makes this paper trading rather than a backtest
+
+**RL-024.** Prices come from `live.live_feed` — a venue websocket or REST poll — and
+never from the parquet store. The engine refuses to trade a symbol whose quote is
+stale and refuses to trade at all when its feed reports QUIET, so a dead connection
+stops the bot instead of freezing it at the last price it happened to hold.
+
+Fills are modelled by `paper.fill_model` against the live two-sided quote. No order
+reaches a venue: this is a paper broker, and the `edge_claim` flag on every journalled
+fill records whether the brain that produced it claims an edge. Today every brain is a
+rule brain and every flag is False (RL-025).
+
+## Why positions are closed by the same loop that opens them
+
+A separate exit process would be a second reader of the same feed with its own view of
+what is open, and the two would disagree during any restart. `manage()` runs on every
+poll for every open position before any new entry is considered, so the bot cannot open
+a new position while failing to notice one it should have closed.
+
+## Warm-up is a refusal, not a delay
+
+`segment.live_features` holds its rolling state in process, so a restarted bot has no
+features until it has watched live ticks for its window. During that period it declines
+every symbol with `samples(n<12)` and journals a heartbeat saying so. That is deliberate:
+the alternative is priming from the store, which is the RL-024 violation this build
+exists to remove.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import signal
+import sys
+import time
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+
+from live.live_feed import LIVE, NEVER_DELIVERED, QUIET
+from segment.arbiter import ABSTAIN, select
+from segment.bot_registry import all_segments, segment_bot
+from segment.brain import BrainOutputs
+from segment.live_features import LiveFeatureFrames
+from segment.profit_tail import (
+    CLOSE, ENTER_NOW, HOLD, MISSED_ENTRY, RATCHET_LOCK, OpenPosition,
+)
+
+DEFAULT_ROOT = Path.home() / "capture" / "segment"
+# How often the loop runs. Fast enough that a fast-band scalp is managed on a
+# meaningful cadence, slow enough that the REST-polled segments are not asked for
+# more than they can give.
+DEFAULT_INTERVAL_SECONDS = 5.0
+# The stop distance the RISK GATE sets at fill is declared PER SEGMENT in
+# `segment.bot_registry`; PROFIT-TAIL never moves it (spec §4).
+#
+# Whatever a segment declares, the stop is floored at this multiple of the spread the
+# entry just crossed. A stop inside the round-trip cost is not a risk limit - it is a
+# guarantee that every position closes at a loss the instant it opens, which is
+# exactly what the options bot did 155 times on 2026-08-18 before this floor existed.
+MIN_STOP_SPREAD_MULTIPLE = Decimal("3")
+
+
+@dataclass
+class EngineCounts:
+    polls: int = 0
+    ticks: int = 0
+    frames_refused: int = 0
+    proposals: int = 0
+    declines: int = 0
+    abstentions: int = 0
+    selected: int = 0
+    missed_entries: int = 0
+    opened: int = 0
+    closed: int = 0
+    gate_refusals: int = 0
+    ratchets: int = 0
+
+    def as_dict(self) -> dict:
+        return dict(self.__dict__)
+
+
+@dataclass
+class LiveSegmentEngine:
+    """One segment's bot. Owns its feed, its brains, its positions and its journal."""
+
+    bot: object
+    feed: object
+    features: object
+    root: Path
+    counts: EngineCounts = field(default_factory=EngineCounts)
+    positions: dict = field(default_factory=dict)
+    pending: dict = field(default_factory=dict)
+    realised_pnl: Decimal = Decimal(0)
+
+    # ------------------------------------------------------------------ journal
+
+    def _journal_path(self, name: str, now_ns: int) -> Path:
+        day = time.strftime("%Y-%m-%d", time.gmtime(now_ns / 1e9))
+        directory = self.root / self.bot.segment
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{name}-{day}.ndjson"
+
+    def _record(self, name: str, payload: dict, now_ns: int) -> None:
+        path = self._journal_path(name, now_ns)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, default=str) + "\n")
+
+    def _heartbeat(self, now_ns: int, note: str) -> None:
+        directory = self.root / self.bot.segment
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "written_at_ns": now_ns,
+            "segment": self.bot.segment,
+            "venue": self.bot.venue,
+            "band": self.bot.band,
+            "brains": {"bull": self.bot.bull.name, "bear": self.bot.bear.name,
+                       "profit_tail": self.bot.profit_tail.name},
+            # RL-025: the label belongs to the decision, and the heartbeat carries it
+            # so a board tile cannot render a rule brain as anything else.
+            "makes_edge_claim": bool(getattr(self.bot.bull, "makes_edge_claim", False)),
+            "rule_brain": True,
+            "feed": self.feed.describe(now_ns),
+            "counts": self.counts.as_dict(),
+            "open_positions": len(self.positions),
+            "realised_pnl": str(self.realised_pnl),
+            "note": note,
+        }
+        (directory / "heartbeat.json").write_text(json.dumps(payload, indent=2, default=str))
+
+    # --------------------------------------------------------------------- poll
+
+    def poll_once(self, now_ns: int) -> dict:
+        self.counts.polls += 1
+        ticks = self.feed.poll()
+        self.counts.ticks += len(ticks)
+        self.features.update(ticks)
+
+        liveness = self.feed.liveness(now_ns)
+        if liveness in (QUIET, NEVER_DELIVERED):
+            # A dead feed stops the bot. It does NOT trade on the last price it
+            # holds, and it does not fall back to the store.
+            self._heartbeat(now_ns, f"feed {liveness}: not trading")
+            return {"traded": False, "reason": liveness}
+
+        frames = self.features.frames(now_ns)
+        refused = [key for key, frame in frames.items() if hasattr(frame, "is_refusal")]
+        self.counts.frames_refused = len(refused)
+
+        decisions = self.bot.admit(frames)
+        admitted = {(d.venue, d.symbol) for d in decisions if d.admitted}
+
+        # Positions are managed BEFORE any new entry is considered, so the bot can
+        # never open something new while failing to close something old.
+        self._manage_open_positions(frames, now_ns)
+
+        chain_median = None
+        if self.bot.brains_need_chain_median:
+            from options.segment_brains import chain_median_iv
+            chain_median = chain_median_iv(list(frames.values()))
+
+        for key in admitted:
+            frame = frames.get(key)
+            if frame is None or hasattr(frame, "is_refusal"):
+                continue
+            if key in self.positions:
+                continue          # one position per instrument per bot
+            self._consider(frame, now_ns, chain_median)
+
+        self._heartbeat(now_ns, f"feed {LIVE}")
+        return {"traded": True, "admitted": len(admitted), "refused": len(refused)}
+
+    def _consider(self, frame, now_ns: int, chain_median) -> None:
+        venue, symbol = frame["venue"], frame["symbol"]
+        if chain_median is not None:
+            bull = self.bot.bull(frame, chain_median=chain_median)
+            bear = self.bot.bear(frame, chain_median=chain_median)
+        else:
+            bull = self.bot.bull(frame)
+            bear = self.bot.bear(frame)
+
+        outputs = BrainOutputs(bull=bull, bear=bear)
+        for output in (bull, bear):
+            if hasattr(output, "confidence"):
+                self.counts.proposals += 1
+            else:
+                self.counts.declines += 1
+
+        # PROFIT-TAIL's advisory numbers, consumed by the arbiter as inputs.
+        tail = self.bot.profit_tail.assess(
+            venue=venue, symbol=symbol, frame=frame, at_ns=now_ns)
+
+        selection = select(outputs=outputs, tail=tail, at_ns=now_ns,
+                           min_confidence=self.bot.min_confidence,
+                           min_margin=self.bot.min_margin,
+                           max_loss_tail=self.bot.max_loss_tail)
+
+        if selection.side == ABSTAIN:
+            self.counts.abstentions += 1
+            # Journalled, because a symbol nobody wanted and a symbol the arbiter
+            # refused are different events and only one is information.
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
+                "symbol": symbol, "outcome": "ABSTAIN", "reason": selection.reason,
+                "evidence": selection.evidence}, now_ns)
+            return
+
+        self.counts.selected += 1
+
+        # PROFIT-TAIL decides WHEN. It cannot decide whether.
+        timing = self.bot.profit_tail.time_entry(
+            venue=venue, symbol=symbol, side=selection.side,
+            selected_at_ns=self.pending.get((venue, symbol), now_ns),
+            now_ns=now_ns, frame=frame)
+
+        if timing.outcome == MISSED_ENTRY:
+            self.counts.missed_entries += 1
+            self.pending.pop((venue, symbol), None)
+            # Attributed to PROFIT-TAIL by name. A timing bot that misses the movers
+            # shows excellent fill prices while failing, and this is the record that
+            # makes that visible.
+            self._record("missed_entries", {
+                "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
+                "symbol": symbol, "side": selection.side,
+                "attributed_to": self.bot.profit_tail.name,
+                "reason": timing.reason, "evidence": timing.evidence}, now_ns)
+            return
+
+        if timing.outcome != ENTER_NOW:
+            self.pending.setdefault((venue, symbol), now_ns)
+            return
+
+        self._open(frame, selection, timing, now_ns)
+
+    # ------------------------------------------------------------------ trading
+
+    def _open(self, frame, selection, timing, now_ns: int) -> None:
+        venue, symbol = frame["venue"], frame["symbol"]
+        side = selection.side
+        # Cross the spread: a taker entry is modelled against the side that would
+        # actually have to be lifted, never against the mid. Modelling entries at the
+        # mid is the flattering direction and would show an edge that is half spread.
+        price = frame["ask"] if side == "LONG" else frame["bid"]
+        quantity = self.bot.quantity
+
+        gate = self._risk_gate(frame, side, price, quantity, now_ns)
+        if not gate["passed"]:
+            self.counts.gate_refusals += 1
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
+                "symbol": symbol, "outcome": "GATE_REFUSED",
+                "reason": gate["reason"], "evidence": gate}, now_ns)
+            return
+
+        # The declared distance, or three times the spread just crossed - whichever
+        # is further from the entry. The floor is what stops a trade dying of its own
+        # transaction cost; the declared distance is what bounds a real adverse move.
+        declared = self.bot.hard_stop_fraction
+        spread = frame.get("relative_spread")
+        floor = (Decimal(str(spread)) * MIN_STOP_SPREAD_MULTIPLE
+                 if spread is not None else Decimal(0))
+        stop_fraction = max(declared, floor)
+        hard_stop = (price * (1 - stop_fraction) if side == "LONG"
+                     else price * (1 + stop_fraction))
+
+        position = OpenPosition(
+            venue=venue, symbol=symbol, side=side, quantity=quantity,
+            entry_price=price, entry_ns=now_ns, hard_stop=hard_stop,
+            band=self.bot.band)
+        self.positions[(venue, symbol)] = position
+        self.pending.pop((venue, symbol), None)
+        self.counts.opened += 1
+
+        self._record("fills", {
+            "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
+            "symbol": symbol, "event": "OPEN", "side": side,
+            "quantity": str(quantity), "price": str(price),
+            "hard_stop": str(hard_stop),
+            "stop_fraction": str(stop_fraction),
+            "stop_fraction_declared": str(declared),
+            "stop_fraction_spread_floor": str(floor),
+            "band": self.bot.band,
+            "brains": {"bull": self.bot.bull.name, "bear": self.bot.bear.name,
+                       "profit_tail": self.bot.profit_tail.name},
+            "makes_edge_claim": selection.makes_edge_claim,
+            "confidence": str(selection.confidence),
+            "calibrated": selection.calibrated,
+            "selection_reason": selection.reason,
+            "entry_timing": timing.reason,
+            "evidence": selection.evidence}, now_ns)
+
+    def _manage_open_positions(self, frames, now_ns: int) -> None:
+        for key in list(self.positions):
+            position = self.positions[key]
+            frame = frames.get(key)
+            if frame is None or hasattr(frame, "is_refusal"):
+                continue
+            # Mark against the side the position would have to EXIT into, for the
+            # same reason the entry crossed the spread.
+            mark = frame["bid"] if position.side == "LONG" else frame["ask"]
+            directive = self.bot.profit_tail.manage(
+                position=position, mark=mark, now_ns=now_ns, frame=frame)
+
+            if directive.action == HOLD:
+                continue
+
+            if directive.action == RATCHET_LOCK:
+                self.counts.ratchets += 1
+                self.positions[key] = OpenPosition(
+                    venue=position.venue, symbol=position.symbol, side=position.side,
+                    quantity=position.quantity, entry_price=position.entry_price,
+                    entry_ns=position.entry_ns, hard_stop=position.hard_stop,
+                    band=position.band, locked_stop=directive.locked_stop,
+                    peak_favourable=position.peak_favourable)
+                self._record("decisions", {
+                    "at_ns": now_ns, "segment": self.bot.segment,
+                    "venue": position.venue, "symbol": position.symbol,
+                    "outcome": "RATCHET_LOCK", "reason": directive.reason,
+                    "evidence": directive.evidence}, now_ns)
+                continue
+
+            if directive.action == CLOSE:
+                self._close(position, mark, directive, now_ns)
+
+    def _close(self, position, mark, directive, now_ns: int) -> None:
+        gross = ((mark - position.entry_price) * position.quantity
+                 if position.side == "LONG"
+                 else (position.entry_price - mark) * position.quantity)
+        self.realised_pnl += gross
+        self.positions.pop((position.venue, position.symbol), None)
+        self.counts.closed += 1
+        self._record("fills", {
+            "at_ns": now_ns, "segment": self.bot.segment, "venue": position.venue,
+            "symbol": position.symbol, "event": "CLOSE", "side": position.side,
+            "quantity": str(position.quantity), "price": str(mark),
+            "entry_price": str(position.entry_price),
+            "gross_pnl": str(gross), "band": position.band,
+            "held_ns": now_ns - position.entry_ns,
+            "close_reason": directive.reason,
+            "closed_by": self.bot.profit_tail.name,
+            "reduce_only": directive.reduce_only,
+            "makes_edge_claim": False,
+            "evidence": directive.evidence}, now_ns)
+
+    def _risk_gate(self, frame, side, price, quantity, now_ns: int) -> dict:
+        """The only thing in this loop that may refuse an order.
+
+        Deliberately separate from PROFIT-TAIL and from the brains. Kept small and
+        explicit here rather than wired to `risk.pre_trade_gate`, whose limits are
+        seeded per strategy from a file the segment bots do not yet have; PB-07 is
+        the row that replaces this with the full gate, and it names the reason.
+        """
+        if price is None or price <= 0:
+            return {"passed": False, "reason": "NON_POSITIVE_PRICE"}
+        notional = price * quantity
+        open_notional = sum(
+            (p.entry_price * p.quantity for p in self.positions.values()),
+            Decimal(0))
+        if len(self.positions) >= 8:
+            return {"passed": False, "reason": "MAX_OPEN_POSITIONS",
+                    "open": len(self.positions), "limit": 8}
+        spread = frame.get("relative_spread")
+        if spread is not None and Decimal(str(spread)) > Decimal("0.02"):
+            return {"passed": False, "reason": "SPREAD_UNTRADEABLE",
+                    "relative_spread": str(spread)}
+        return {"passed": True, "reason": "PASSED", "notional": str(notional),
+                "open_notional": str(open_notional)}
+
+
+def build_engine(segment: str, root: Path = DEFAULT_ROOT) -> LiveSegmentEngine:
+    bot = segment_bot(segment)
+    feed = bot.build_feed().start()
+    features = LiveFeatureFrames(segment=segment,
+                                 window_ns=bot.feature_window_ns,
+                                 min_samples=bot.min_samples)
+    return LiveSegmentEngine(bot=bot, feed=feed, features=features, root=root)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--segment", required=True, choices=list(all_segments()))
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--interval-seconds", type=float,
+                        default=DEFAULT_INTERVAL_SECONDS)
+    parser.add_argument("--max-polls", type=int, default=0,
+                        help="stop after N polls; 0 runs until stopped")
+    args = parser.parse_args(argv)
+
+    engine = build_engine(args.segment, root=args.root)
+    stopping = {"now": False}
+
+    def _stop(signum, frame):        # noqa: ARG001
+        stopping["now"] = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    print(f"live segment bot: segment={args.segment} venue={engine.bot.venue} "
+          f"band={engine.bot.band} brains={engine.bot.bull.name},"
+          f"{engine.bot.bear.name},{engine.bot.profit_tail.name} "
+          f"edge_claim=False (RULE BRAIN, RL-025)", flush=True)
+
+    # The feature frames need live ticks before anything can be computed. How long
+    # that takes is the feed's business, not a constant: a websocket fills the window
+    # in seconds, a 10-second REST poll needs `min_samples` polls before one frame
+    # can exist at all. Waiting less does not fail loudly - it produces a bot that
+    # refuses every symbol and looks like a market with no opportunities.
+    warmup_seconds = min(180.0, max(10.0, engine.bot.min_samples * args.interval_seconds))
+    print(f"warming up {warmup_seconds:.0f}s: the feature window is "
+          f"{engine.bot.feature_window_ns / 1e9:.0f}s and needs "
+          f"{engine.bot.min_samples} observations before any frame exists",
+          flush=True)
+    time.sleep(warmup_seconds)
+
+    while not stopping["now"]:
+        started = time.monotonic()
+        try:
+            result = engine.poll_once(time.time_ns())
+        except Exception as exc:                          # noqa: BLE001
+            print(f"poll failed: {type(exc).__name__}: {exc}", flush=True)
+            raise
+        counts = engine.counts
+        print(f"poll {counts.polls}: {result} | opened={counts.opened} "
+              f"closed={counts.closed} abstain={counts.abstentions} "
+              f"gate_refused={counts.gate_refusals} missed={counts.missed_entries} "
+              f"pnl={engine.realised_pnl}", flush=True)
+        engine.features.reset_flow()
+        if args.max_polls and counts.polls >= args.max_polls:
+            break
+        elapsed = time.monotonic() - started
+        time.sleep(max(0.0, args.interval_seconds - elapsed))
+
+    engine.feed.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

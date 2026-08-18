@@ -44,8 +44,19 @@ why the systems that shipped them never noticed. See the addendum in
 
 - **Python 3.12** via `uv`. Never system Python (3.14.4 — too new for polars).
 - Tests: `.venv/bin/python -m pytest -q`. Baseline **857 passed, 1 skipped** (2026-08-09).
-- **Every market-data read goes through `store.clock_gated_reader`.** No direct Parquet reads, no
-  live REST in a pricing path. That is the whole reason Layer 1 exists.
+- **Every RESEARCH and TRAINING market-data read goes through `store.clock_gated_reader`.** No
+  direct Parquet reads. That is the whole reason Layer 1 exists, and it is unchanged for anything
+  that learns, backtests, validates or promotes.
+- **Trading prices do NOT come from Layer 1 — RL-024, 2026-08-18.** *"sould te paper tradin sould be
+  done on live data on live crypto prices not on old data"*. Every segment bot takes its prices from
+  `live.live_feed`, which holds the venue websocket or REST poll directly. Measured 2026-08-18: a
+  cold filtered store scan took 185.6s, an hour-pruned three-symbol read was killed at 300s having
+  returned nothing, and the running engine sat 14 minutes without completing one poll — while the
+  live feed delivered 501 trades and 3,406 two-sided quotes in 15 seconds at a newest-tick age of
+  1 millisecond. The old rule forbade live REST in a pricing path; that prohibition was written
+  before there was a trading loop, and a bot polling Layer 1 is backtesting on a delay while
+  carrying the name paper trading. **The two paths are separate on purpose: the store is the
+  corpus, the feed is the clock, and neither is allowed to do the other's job.**
 - **No quote may be produced from a default.** A missing or stale input produces a refusal naming
   what was missing.
 - Timestamps int64 nanoseconds UTC. Fees `Decimal` basis points, never float.

@@ -117,7 +117,7 @@
       "session": "0a15b275",
       "source": "transcript",
       "verbatim": "instead of picking symbols from its univers and tradings them and skipping the rest when they have potential to make profit instead I need the brain to act as a teacher in a examination hall with all the students of the class like that only top students pass and the teacher tries to help and pass all the students like this brain keeps track of full universe symbols in each segment and the passing criteria is the profit making environment for that symbol as every student has potential to pass every symbol has potential to make profit and the brain waits for that exact setup",
-      "means": "Universe-wide scanning is a property of EACH SEGMENT BOT, not a strategy and not a shared service. Every symbol in that bot's segment is watched continuously on that segment's own data, and the bot waits for each symbol's setup rather than pre-selecting a shortlist. Amended 2026-08-17 by RL-019: the goal document's §5a calls this 'a property of the system' and the user ruled it is a property of each bot. Measured the same day: src/strategy/ holds two modules and neither is an opportunity monitor, so this is 0/4.",
+      "means": "Universe-wide scanning is a property of EACH SEGMENT BOT, not a strategy and not a shared service. Every symbol in that bot's segment is watched continuously on that segment's own data, and the bot waits for each symbol's setup rather than pre-selecting a shortlist. Amended 2026-08-17 by RL-019: the goal document's \u00a75a calls this 'a property of the system' and the user ruled it is a property of each bot. Measured the same day: src/strategy/ holds two modules and neither is an opportunity monitor, so this is 0/4.",
       "scope": "per-segment",
       "recorded_in": [
         "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a"
@@ -286,7 +286,68 @@
         "src/statuswall/ruling_conformance.py"
       ],
       "probe": "probe_enforcement_live"
+    },
+    {
+      "id": "RL-022",
+      "date": "2026-08-17",
+      "session": "3a4fddd2",
+      "source": "transcript",
+      "verbatim": "lets first fouces on option one and see ow it performes and winrate and profit and add te rest if tis not work out so save te oter 2 options in te ajit plan file so we wont foret revisiyin it",
+      "clarified_as": "The perp/futures bot is built first, end to end. Its edge is DIRECTIONAL SCALPING. Two holding bands are built and compared side by side in paper - seconds-to-minutes and 5-to-60-minutes - and the winrate and profit decide which survives. Market making, mean reversion and funding/basis carry were all selected as wanted, and are recorded as later rows in the perp slice rather than built now.",
+      "means": "One segment, one edge, two horizons, judged on measured winrate and profit before anything else is added. Nothing chosen is dropped - the deferred edges and horizons are written into the plan as rows so they are revisited rather than forgotten.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_spine_parses"
+    },
+    {
+      "id": "RL-023",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "This is not as in the plans bull/bear/arbiter  it is bull bear and profit tailgating",
+      "clarified_as": "The three bots per brain are BULL, BEAR and PROFIT-TAIL. The arbiter is the SELECTION STEP that consumes all three, not a third brain. PROFIT-TAIL's expectancy and tail estimates are inputs the arbiter consumes, never a veto; PROFIT-TAIL then owns entry timing and the entire position after fill, and can neither reject a selected trade nor refuse to close a loser. The hard stop overrides it absolutely.",
+      "means": "Any segment bot built with two brains and an arbiter is built wrong. Three brains, then selection, then timing, then the gate.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md",
+        "~/research/bull-bear-profit-agents-spec.md"
+      ],
+      "probe": "probe_spine_parses"
+    },
+    {
+      "id": "RL-024",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "and tink aain sould te paper tradin sould be done on live data on live crypto prices not on old data",
+      "clarified_as": "Paper trading runs against LIVE crypto prices taken from the venue websockets, not against the parquet store. The store is a Layer-1 build that lags hours behind the market and costs a cold multi-minute scan per read; a bot polling it is backtesting on a delay while calling itself paper trading.",
+      "means": "Every segment bot's market data path is a live feed. The store remains the research and training corpus, and is never the trading clock.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_live_feed_fresh"
+    },
+    {
+      "id": "RL-025",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "[interview answer] Rule brains now, learned later; retire plumbing-momentum as the plan says",
+      "clarified_as": "Each segment bot's BULL, BEAR and PROFIT-TAIL decide from the computed live feature frame by explicit journalled rules, behind the same interface a trained model will later implement. Every decision names the features that produced it. The board labels them RULE BRAIN, NO EDGE CLAIM. plumbing-momentum is retired once a segment bot is journalling fills, its journal archived and marked as making no edge claim.",
+      "means": "Rule brains are scaffolding with an honest label, not the RL-013 intelligence standard. They are replaced, not extended.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_segment_brains_reason"
     }
   ],
-  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
+  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 \u00a75): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
 }

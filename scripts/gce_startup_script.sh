@@ -151,7 +151,21 @@ start_as_user "health_supervisor.sh" \
 # have no default in the engine - the only signal that exists makes no edge
 # claim, and an invented participation rate is the cheapest way to manufacture
 # edge. When Phase C produces a model, this line is where it is named.
-start_as_user "paper_supervisor.sh" \
-  "cd ${REPO} && nohup scripts/paper_supervisor.sh plumbing-momentum 0.1 60"
+# RETIRED 2026-08-18 under RL-025. `plumbing-momentum` made no edge claim and existed
+# to prove the paper path was reachable at all. The four segment bots below now do
+# that on live prices, so keeping it would put a second, no-edge-claim P&L series on
+# the same board as the real bots - and six weeks from now that series reads as a
+# result. Its journal stays on disk at ~/capture/paper/forward, marked as plumbing.
+#
+# start_as_user "paper_supervisor.sh" \
+#   "cd ${REPO} && nohup scripts/paper_supervisor.sh plumbing-momentum 0.1 60"
+
+# BF-06 / PB-08 / RL-020: the four segment bots, 24/7, one supervisor each. They take
+# their prices from the venue feeds (RL-024) rather than the store, so they do NOT
+# have to start after the store builders and are deliberately independent of them.
+for SEGMENT in perp spot dated options; do
+  start_as_user "segment_bot_supervisor.sh ${SEGMENT}" \
+    "cd ${REPO} && nohup scripts/segment_bot_supervisor.sh ${SEGMENT} 6"
+done
 
 log "startup-script finished"

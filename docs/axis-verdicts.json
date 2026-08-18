@@ -1215,6 +1215,150 @@
         "src/store/hourly_migration.py",
         "docs/superpowers/specs/2026-08-17-hourly-store-partitioning-design.md"
       ]
+    },
+    "perp.tradable_universe": {
+      "learning": "n/a: it decides admission from measured facts and fits nothing. Both thresholds it uses are imported rather than invented - features.staleness.CADENCE_SAMPLE for 'has this series ever shown a cadence' and STALE_MULTIPLE for 'is it late by its own gap' - so there is no constant here that could be tuned to make the universe look larger than it is.",
+      "reasoning": "pass: four decisions the obvious build gets wrong. (1) Admission is kept SEPARATE from features.universe_coverage rather than merged into it. That module is a watch list whose most interesting row is a symbol that went quiet, and giving it a reason to forget would destroy the one question it exists to answer. (2) The TIER. Measured 2026-08-17, bars cover 2,235 symbols and the book dataset covers six, so a single 'tradable' list would report 2,235 - true about bars, false about a strategy whose features are order-flow imbalance, microprice and absorption, and the first number anyone would build against. DEEP and BARS_ONLY keep RL-009 breadth and the book constraint both visible instead of one hiding the other. (3) The refusal precedence reports the CAUSE, not the symptom: a symbol with four bars is also trivially illiquid and cadence-less, and reporting it as ILLIQUID would be true and useless, because the thing to do about it is wait for history rather than drop it from capture. (4) The excluded population STAYS in rows. A population that omits what it rejected cannot show that nothing was skipped, and 'the excluded count is published rather than hidden' is the row's acceptance sentence.",
+      "depth": "pass: reachable and exercised. scripts/record_perp_universe.sh invokes it as `python -m perp.tradable_universe`, which makes it a root of the reachability graph, and statuswall.ruling_conformance.probe_perp_universe_measured grades what it publishes - FAILING when the report does not add up or admits nothing, PARTIAL when symbols are admitted but not one has depth, NOT MEASURED when nothing was recorded. tests/test_perp_tradable_universe.py exercises all four refusals, both tiers, the accounting identity that admitted plus excluded equals considered, and the empty store, which must read as 0 considered rather than as nothing wrong."
+    },
+    "live.live_feed": {
+      "learning": "n/a: a transport. It learns nothing and must not - a feed that adapted what it reported would be a feature computed in the wrong place",
+      "reasoning": "pass: it distinguishes a QUIET feed from an empty market, which are identical from the poll's point of view and mean opposite things. Measured 2026-08-18: `aggTrade` accepted the subscription and served ZERO messages in 30s while `trade` served 296, so the stream choice is recorded with the measurement rather than assumed. `_decimal_or_none` refuses to render an absent price as zero - a null bid on a Deribit option means nobody is bidding, and a zero would let a fill model buy a free option",
+      "depth": "pass: four segment supervisors run it 24/7 and it is the only price path any bot has. Reconnects are counted and published, so a feed reconnecting every 20 seconds reads as broken rather than healthy. Verified live 2026-08-18: 501 trades and 3,406 two-sided quotes in 15 seconds at a newest-tick age of 1 millisecond",
+      "evidence": [
+        "src/live/live_feed.py",
+        "src/segment/bot_registry.py",
+        "scripts/segment_bot_supervisor.sh"
+      ]
+    },
+    "segment.live_features": {
+      "learning": "fail: fixed feature definitions over a fixed window. Nothing here adapts, and a trained brain consuming these will be doing the learning",
+      "reasoning": "pass: a missing or stale input produces a refusal naming what was missing rather than a default, and only observations INSIDE the time window count so a symbol that stopped quoting cannot produce a momentum from old points. Measured 2026-08-18: an observation-counted window spanned 0.1s on a websocket and would have spanned 10 minutes on a 10s REST poll - the window is now time, and both the span and the bound are published on every frame so a threshold can never be read against a window it was not stated for",
+      "depth": "pass: every decision of all four bots reads a frame from here. The first live run abstained 81 of 81 times with momentum exactly 0.0, which is what surfaced the window bug - a feature module that could not be wrong in a visible way would not have shown it",
+      "evidence": [
+        "src/segment/live_features.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "segment.brain": {
+      "learning": "n/a: an interface. It defines what a brain is so a rule brain and a trained model are the same shape to everything downstream, and it learns nothing itself",
+      "reasoning": "pass: a BULL cannot express a short and a BEAR cannot express a long - `WrongSideProposed` is raised rather than the side being corrected, because a brain emitting the wrong side is a bug and silently flipping it would hide the bug behind plausible trades. A Proposal with no evidence is refused at construction. Decline is a value with a reason, so a brain that examined a symbol and said no is distinguishable from one that crashed",
+      "depth": "pass: all eight directional brains implement it and every live decision passes through it",
+      "evidence": [
+        "src/segment/brain.py",
+        "src/perp/segment_brains.py",
+        "src/segment/arbiter.py"
+      ]
+    },
+    "segment.profit_tail": {
+      "learning": "fail: the deterministic policy - immediate entry, target, ratchet, time stop. It learns nothing. FEATURES.md line 99 makes it the P1 fallback whose record trains the learned PROFIT-TAIL, so this ordering is forced rather than chosen",
+      "reasoning": "pass: its authority limits are enforced by control flow, not by convention. The hard stop is checked FIRST in `manage` and returns CLOSE unconditionally, so no later branch can reach past it and it cannot refuse to close a loser. `reject()` exists only to raise `ProfitTailOverreach`, so a caller reaching for a rejection finds the ruling instead of concluding the check belongs elsewhere. A signal that expires is journalled as a MISSED ENTRY attributed to it by name - the failure a timing bot hides behind excellent average fill prices",
+      "depth": "pass: it owns entry timing and every open position in all four running bots. Its horizon scaling is measured, not assumed: comparing a per-tick sigma to a take-profit made every expectancy negative and the perp bot selected 9 trades and took none, which is how the units bug surfaced",
+      "evidence": [
+        "src/segment/profit_tail.py",
+        "src/segment/live_engine.py",
+        "docs/AJIT-MASTER-PLAN.md"
+      ]
+    },
+    "segment.arbiter": {
+      "learning": "fail: fixed confidence floor and margin rule, declared per segment. No outcome changes them",
+      "reasoning": "pass: it is the only consumer of a TailAssessment, and there is deliberately no `if tail.refuses` branch and no boolean on the assessment for one to read - RL-023 makes PROFIT-TAIL an input before selection and nothing after it. Two proposals resolve to one side or an abstention, never both, and a near-tie abstains rather than picking the larger of two indistinguishable numbers: disagreement between two independent brains is the weakest evidence, not the strongest. Uncalibrated confidences are compared ordinally and the selection records that they were",
+      "depth": "pass: every trade any bot has taken passed through it, and every abstention is journalled with both brains' evidence",
+      "evidence": [
+        "src/segment/arbiter.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "segment.live_engine": {
+      "learning": "n/a: the harness. It runs whatever brains it is given and learns nothing",
+      "reasoning": "pass: a QUIET or NEVER_DELIVERED feed stops the bot rather than letting it trade the last price it holds, and there is no store fallback (RL-024). Open positions are managed BEFORE any new entry is considered, so it cannot open something new while failing to close something old. Entries cross the spread and marks use the side the position must exit into - modelling either at the mid is the flattering direction. The stop is floored above the spread just crossed, after 155 options positions closed STOP_BREACHED on the spread alone",
+      "depth": "pass: four supervised processes run it 24/7 against live venue feeds, journalling opens, closes, abstentions, gate refusals and missed entries",
+      "evidence": [
+        "src/segment/live_engine.py",
+        "scripts/segment_bot_supervisor.sh",
+        "src/statuswall/segment_tiles.py"
+      ]
+    },
+    "segment.bot_registry": {
+      "learning": "n/a: a declaration",
+      "reasoning": "pass: it makes each segment's architecture readable in one place so no segment inherits another's brains by default, which is RL-019's failure mode. The feature window and sample floor are declared together per segment because a shared 60s window with a 12-observation floor refused every frame on both REST-polled segments - 829 of 829 dated and 786 of 786 options - and the hard stop is per segment because an option's price is its premium",
+      "depth": "pass: every engine start reads it; there is no other path to a bot",
+      "evidence": [
+        "src/segment/bot_registry.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "perp.segment_brains": {
+      "learning": "fail: this is a RULE brain (RL-025). It applies stated thresholds and learns nothing - the same market twice produces the same decision forever, and no outcome changes any constant in it. Every proposal carries makes_edge_claim False so the failure is journalled rather than argued about. It exists to run the live loop end to end and to be the deterministic baseline a trained brain must beat; FEATURES.md line 99 makes generating that record the forced first step",
+      "reasoning": "pass: the bear is not the bull inverted - its flow and momentum thresholds are wider, and it refuses outright when funding shows a crowded short, which is the perp-specific way to be right about direction and still be liquidated. Every decline names its reason and carries the feature values",
+      "depth": "pass: running live under the perp supervisor; opens and closes are journalled",
+      "evidence": [
+        "src/perp/segment_brains.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "spot.segment_brains": {
+      "learning": "fail: this is a RULE brain (RL-025). It applies stated thresholds and learns nothing - the same market twice produces the same decision forever, and no outcome changes any constant in it. Every proposal carries makes_edge_claim False so the failure is journalled rather than argued about. It exists to run the live loop end to end and to be the deterministic baseline a trained brain must beat; FEATURES.md line 99 makes generating that record the forced first step",
+      "reasoning": "pass: it does not inherit the perp funding check, which would read a field that is always absent and silently never fire. Cross-venue divergence is unavailable on a one-venue feed and every decision says `divergence_available: False` rather than computing a one-venue divergence; the bear records `borrow_modelled: False` so its P&L is never read as achievable without checking",
+      "depth": "pass: running live under the spot supervisor",
+      "evidence": [
+        "src/spot/segment_brains.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "dated.segment_brains": {
+      "learning": "fail: this is a RULE brain (RL-025). It applies stated thresholds and learns nothing - the same market twice produces the same decision forever, and no outcome changes any constant in it. Every proposal carries makes_edge_claim False so the failure is journalled rather than argued about. It exists to run the live loop end to end and to be the deterministic baseline a trained brain must beat; FEATURES.md line 99 makes generating that record the forced first step",
+      "reasoning": "pass: it trades convergence rather than trend - positive basis is the BEAR's case and negative the BULL's, which inverts the usual momentum reading deliberately, because a momentum brain on a dated contract fights the one force guaranteed to act. Time to expiry is an input to every decision and both brains refuse inside the final settlement window, repeating DB-01's check rather than depending on the caller having filtered",
+      "depth": "pass: running live under the dated supervisor",
+      "evidence": [
+        "src/dated/segment_brains.py",
+        "src/dated/tradable_universe.py"
+      ]
+    },
+    "options.segment_brains": {
+      "learning": "fail: this is a RULE brain (RL-025). It applies stated thresholds and learns nothing - the same market twice produces the same decision forever, and no outcome changes any constant in it. Every proposal carries makes_edge_claim False so the failure is journalled rather than argued about. It exists to run the live loop end to end and to be the deterministic baseline a trained brain must beat; FEATURES.md line 99 makes generating that record the forced first step",
+      "reasoning": "pass: it refuses to take an option as a directional bet - the signal is implied volatility relative to the chain's own median, computed per poll rather than against a constant, so the bot cannot buy every option in a calm regime and sell every option in a volatile one. `OptionsTakenAsDirectionalBet` guards a proposal built without expiry, moneyness and the volatility reading. Nulls are normal on this chain and are never read as zeros",
+      "depth": "pass: running live under the options supervisor; it opened and closed the most round trips of the four on 2026-08-18",
+      "evidence": [
+        "src/options/segment_brains.py",
+        "src/options/tradable_universe.py"
+      ]
+    },
+    "spot.tradable_universe": {
+      "learning": "n/a: an admission decision, not a model",
+      "reasoning": "pass: four named refusals in a fixed precedence, and excluded rows are RETAINED so the excluded count is verifiable - the count is the acceptance. Counts are reported with their denominator, never as bare percentages",
+      "depth": "pass: the spot engine calls it every poll",
+      "evidence": [
+        "src/spot/tradable_universe.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "dated.tradable_universe": {
+      "learning": "n/a: an admission decision",
+      "reasoning": "pass: it adds the two refusals only a dated contract can earn - NOT_DATED and INSIDE_FINAL_SETTLEMENT_WINDOW. Bybit returns perpetuals and dated futures in one response and only `deliveryTime` separates them, so the count rejected as perpetual is published: a perpetual admitted here would be the perp bot's instrument traded by the dated bot's brains, which is RL-019's failure in its purest form",
+      "depth": "pass: the dated engine calls it every poll",
+      "evidence": [
+        "src/dated/tradable_universe.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "options.tradable_universe": {
+      "learning": "n/a: an admission decision",
+      "reasoning": "pass: its freshness bound is set to several poll intervals so one slow response cannot empty the universe, and it applies no trade-count floor because most of the chain quotes without printing. `describe()` carries the note that this segment cannot be backfilled, so an instrument count is never read as depth behind it",
+      "depth": "pass: the options engine calls it every poll",
+      "evidence": [
+        "src/options/tradable_universe.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "statuswall.segment_tiles": {
+      "learning": "n/a: a renderer",
+      "reasoning": "pass: Rule 8 throughout. A bot with no heartbeat renders NOT MEASURED rather than green or blank, and a stale heartbeat renders STALE with its age - a died supervisor and a quiet market produce the same trade count and only the age separates them. The no-edge-claim label is read from the heartbeat the engine wrote, never decided here, so a trained brain setting the flag changes the page without anybody editing a template. A winrate under 20 closes reports that it is too few rather than reporting a rate",
+      "depth": "pass: regenerated by boards_supervisor.sh on every pass and served at segment-bots.html; verified 200 over the tunnel 2026-08-18",
+      "evidence": [
+        "src/statuswall/segment_tiles.py",
+        "scripts/boards_supervisor.sh"
+      ]
     }
   }
 }
