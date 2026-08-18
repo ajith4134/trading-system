@@ -505,7 +505,14 @@ class LiveFeed:
         newest = self._buffer.newest_received_ns
         if newest is None:
             return None
-        return now_ns - newest
+        # Clamped at zero. The source thread keeps appending after the caller took
+        # its `now_ns`, so a tick can be newer than the clock it is measured against
+        # and the age comes out slightly negative - measured at -0.15s on the perp
+        # feed 2026-08-18. Harmless as a race, corrosive as a display: a board
+        # showing a negative age invites the reader to distrust every other number
+        # on it. Zero is the honest floor, because "newer than the moment I asked"
+        # is what actually happened.
+        return max(0, now_ns - newest)
 
     def liveness(self, now_ns: int) -> str:
         age = self.newest_age_ns(now_ns)
