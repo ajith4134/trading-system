@@ -50,6 +50,16 @@ FAMILY_LABEL_HORIZONS = {
     "trend": 10_080,     # a week of 1m bars
     "breakout": 1_440,   # a day
     "microstructure": 5,
+    # LB-02, added 2026-08-18. The segment bots' direction model labels each row
+    # by walking the deterministic exit policy forward at most
+    # `learn.training_set.MAX_LABEL_BARS` bars, so a row's label can depend on
+    # information up to 30 bars after its own. Anything less purges too little and
+    # leaks a label horizon of training rows into the test blocks - which is
+    # precisely the one-sided-purge defect found in donor code on 2026-08-08 and
+    # recorded in the ledger addendum.
+    "segment-direction": 30,
+    # The quantile forecast is fitted on the same rows and the same forward window.
+    "segment-profit-tail": 30,
 }
 
 

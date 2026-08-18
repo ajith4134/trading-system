@@ -82,6 +82,14 @@ MAX_OBSERVATIONS = 400
 # so the number is never read without it.
 MIN_SAMPLE_GAP_NS = 250_000_000
 
+# One-minute bars, matching `bars_60000000000ns` - the dataset the models are
+# fitted on. The width is not a free parameter: change it and the live features
+# stop being the features the model learned.
+LIVE_BAR_NS = 60_000_000_000
+# How many completed bars to keep. `learn.training_set.FEATURE_WINDOW_BARS` is 60,
+# so this holds the window plus headroom for inspection.
+LIVE_BAR_HISTORY = 90
+
 
 @dataclass(frozen=True)
 class FrameRefused:
@@ -111,7 +119,8 @@ class _SymbolState:
 
     __slots__ = ("mids", "last_trade", "buy_volume", "sell_volume", "trade_count",
                  "last_quote_ns", "last_trade_ns", "bid", "ask", "bid_size", "ask_size",
-                 "extra")
+                 "extra", "bars", "bar_open_ns", "bar_open", "bar_high", "bar_low",
+                 "bar_close", "bar_volume", "bar_trades")
 
     def __init__(self) -> None:
         # (received_ns, mid). Timestamped so the window is a duration, not a count.
@@ -127,6 +136,41 @@ class _SymbolState:
         self.bid_size: Decimal | None = None
         self.ask_size: Decimal | None = None
         self.extra: dict = {}
+        # **The one-minute bar series the LEARNED brains read.**
+        #
+        # `learn.training_set.compute_features` is fitted on one-minute bars from
+        # the store, and the same function is called live on these. That is not a
+        # convenience - it is the only thing that stops train/serve skew, where a
+        # model trained on one definition of "15-bar volatility" is served another
+        # and produces confident nonsense. One function, two callers, no second
+        # implementation to drift.
+        self.bars: deque = deque(maxlen=LIVE_BAR_HISTORY)
+        self.bar_open_ns: int | None = None
+        self.bar_open = None
+        self.bar_high = None
+        self.bar_low = None
+        self.bar_close = None
+        self.bar_volume = 0.0
+        self.bar_trades = 0.0
+
+
+@dataclass(frozen=True)
+class _SealedBar:
+    """A completed live bar, in the shape `learn.training_set` expects.
+
+    Structurally identical to `learn.training_set.MarketBar` and deliberately not
+    imported from it: `segment.live_features` is the live path and importing a
+    training module into it would make the trading loop depend on the training
+    stack. The field names are the contract, and a test asserts they match.
+    """
+
+    event_time_ns: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    trades: float
 
 
 class LiveFeatureFrames:
@@ -188,7 +232,52 @@ class LiveFeatureFrames:
             if tick.extra:
                 state.extra.update(
                     {k: v for k, v in tick.extra.items() if k != "taker_side"})
+            self._fold_into_bar(state, tick)
         return used
+
+    @staticmethod
+    def _fold_into_bar(state, tick) -> None:
+        """Accumulate a tick into the open one-minute bar, sealing the last one.
+
+        Price is the trade print where there is one and the mid otherwise. A bar
+        built only from prints would be empty for every symbol that quotes without
+        trading - most of an option chain and most of the long tail - and a bar
+        built only from mids would ignore where trades actually happened.
+        """
+        price = tick.price
+        if price is None:
+            price = tick.mid
+        if price is None:
+            return
+        value = float(price)
+        bucket = (tick.received_ns // LIVE_BAR_NS) * LIVE_BAR_NS
+
+        if state.bar_open_ns is None:
+            state.bar_open_ns = bucket
+            state.bar_open = state.bar_high = state.bar_low = state.bar_close = value
+            state.bar_volume = 0.0
+            state.bar_trades = 0.0
+        elif bucket > state.bar_open_ns:
+            # Seal the completed bar. Only sealed bars are read by the feature
+            # function: a partially formed bar has a high and a low that are still
+            # moving, and a model fitted on completed bars would be served a
+            # different object under the same name.
+            state.bars.append(_SealedBar(
+                event_time_ns=state.bar_open_ns, open=state.bar_open,
+                high=state.bar_high, low=state.bar_low, close=state.bar_close,
+                volume=state.bar_volume, trades=state.bar_trades))
+            state.bar_open_ns = bucket
+            state.bar_open = state.bar_high = state.bar_low = state.bar_close = value
+            state.bar_volume = 0.0
+            state.bar_trades = 0.0
+        else:
+            state.bar_high = max(state.bar_high, value)
+            state.bar_low = min(state.bar_low, value)
+            state.bar_close = value
+
+        if tick.price is not None:
+            state.bar_trades += 1.0
+            state.bar_volume += float(tick.quantity or 0)
 
     def symbols(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._state.keys())
@@ -284,6 +373,8 @@ class LiveFeatureFrames:
             "window_span_ns": window_span_ns,
             "window_ns": self._window_ns,
             "sample_gap_ns": self._min_sample_gap_ns,
+            # How much of the learned brains' warm-up this symbol has completed.
+            "sealed_bars": len(state.bars),
             "quote_age_ns": quote_age_ns,
             "has_two_sided_quote": True,
             # Whatever the venue sent that has no shared shape: an option's mark IV
@@ -291,6 +382,23 @@ class LiveFeatureFrames:
             # segment brains that need these know their keys.
             **{f"venue_{k}": v for k, v in state.extra.items()},
         }
+
+    def bar_window(self, venue: str, symbol: str, length: int):
+        """The last `length` sealed one-minute bars, or None if there are not enough.
+
+        None rather than a short window: `compute_features` is fitted on exactly
+        `FEATURE_WINDOW_BARS` bars, and handing it fewer would produce a feature
+        vector whose horizons mean something different from the ones the model
+        learned. A refusal is the honest answer during warm-up.
+        """
+        state = self._state.get((venue, symbol))
+        if state is None or len(state.bars) < length:
+            return None
+        return list(state.bars)[-length:]
+
+    def bars_held(self, venue: str, symbol: str) -> int:
+        state = self._state.get((venue, symbol))
+        return 0 if state is None else len(state.bars)
 
     def frames(self, now_ns: int, only=None) -> dict:
         """Every known symbol's frame, or just the admitted ones."""

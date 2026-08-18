@@ -168,4 +168,11 @@ for SEGMENT in perp spot dated options; do
     "cd ${REPO} && nohup scripts/segment_bot_supervisor.sh ${SEGMENT} 6"
 done
 
+# LB-08 / RL-026: refit the brains on a cadence with nobody invoking anything, and
+# run the §1a axis probes against whatever it registered. Four hours rather than
+# one: a refit reads 30 hours of the store, and the store read is what drove memory
+# to 25 GB of 29 on 2026-08-18. The bots trading on live prices come first.
+start_as_user "retrain_supervisor.sh" \
+  "cd ${REPO} && nohup scripts/retrain_supervisor.sh 14400 30"
+
 log "startup-script finished"

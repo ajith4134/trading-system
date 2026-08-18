@@ -877,6 +877,156 @@ remaining rows of this slice are still pending review.
 
 ---
 
+## SLICE learned-brains — REAL LEARNED BRAINS, AND WHAT ATTACHES TO THEM
+
+**Written 2026-08-18 under RL-026 and RL-027.** RL-025's rule brains were scaffolding with an
+honest label and this slice replaces them. The standard every row here is measured against is
+**§1a of the goal document** — three axes, judged separately, with the master test governing all
+of them: *does it change what the system does when it is wrong?*
+
+**The honest boundary, stated first so this slice does not become the overclaim §1a exists to
+prevent.** §1a.0: no architecture available in 2026 produces understanding, and six frontier
+models given $10k each on Hyperliquid perps lost 30–63% in 17 days. What crosses the distance
+between a script and an adapting system is not a smarter model — it is beliefs that carry
+provenance and expire, calibrated knowledge of its own competence, and learning from its own
+history as data. That is what this slice builds.
+
+**The data constraint, measured 2026-08-18 and binding on every row below.** The store holds
+**67 hour-partitions across 8 non-contiguous days** (2026-08-02, 03, 08, 09, 15, 16, 17, 18) —
+roughly 860,000 bar rows over 1,698 symbols, about 500 bars per symbol. Two consequences, neither
+negotiable: the model is **pooled cross-sectional** rather than per-symbol, because 500 bars
+cannot fit a symbol; and **§1a L6 (out-of-regime stress) cannot pass**, because eight days of one
+regime is not a regime change. L6 is recorded as FAILING rather than skipped.
+
+### LB-01
+  slice:      learned-brains
+  does:       build the pooled cross-sectional training set from the store - features as of a bar,
+              triple-barrier outcomes after it, and the label span each one occupied
+  satisfies:  RL-026 RL-013 RL-010
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: none
+  probe:      probe_training_set_built
+  accepts:    every row's features are computable from information available at its own bar and no
+              later, each row carries the label span its outcome occupied so uniqueness weighting
+              is possible, and the row count and day coverage are published rather than implied
+  state:      measured by probe_training_set_built
+
+### LB-02
+  slice:      learned-brains
+  does:       fit the segment model under purged cross-validation, count the trial, and register the
+              artefact with the loss that produced it
+  satisfies:  RL-026 RL-013 RL-004
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: LB-01
+  probe:      probe_model_registered_with_loss
+  accepts:    every registered model names the trial that counted it and the out-of-fold score it
+              earned, a fit that only reproduced the majority class is reported as such rather than
+              as an accuracy, and no model reaches a brain without passing through the registry
+  state:      measured by probe_model_registered_with_loss
+
+### LB-03
+  slice:      learned-brains
+  does:       carry a claim with its provenance, its epistemic class and its half-life, so future
+              intelligence attaches here rather than to the engine
+  satisfies:  RL-027 RL-013 RL-010
+  sources:    2026-08-08-final-project-goal-design.md#1a.6
+  depends on: none
+  probe:      probe_beliefs_carry_provenance
+  accepts:    every belief names what produced it and when it expires, an expired belief cannot
+              size a position, only an OBSERVED belief may size one at all, and a belief with no
+              provenance cannot be constructed
+  state:      measured by probe_beliefs_carry_provenance
+
+### LB-04
+  slice:      learned-brains
+  does:       decide BULL and BEAR from the registered model, emitting a calibrated belief or an
+              abstention with a coverage guarantee behind it
+  satisfies:  RL-026 RL-023 RL-013 RL-011
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: LB-02 LB-03
+  probe:      probe_brains_are_learned
+  accepts:    no threshold in the decision path is a typed constant, an abstention is backed by a
+              conformal quantile rather than a verbalised hedge, and swapping the trained
+              parameters for random ones measurably changes the decisions
+  state:      measured by probe_brains_are_learned
+
+### LB-05
+  slice:      learned-brains
+  does:       update calibration and the abstention quantile inside the live loop from realised
+              outcomes
+  satisfies:  RL-026 RL-013 RL-010
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: LB-04
+  probe:      probe_calibration_updates_live
+  accepts:    a parameter the live loop itself changed is distinguishable from one the retrainer
+              set, realised coverage is measured against the promised bound rather than assumed,
+              and the two are labelled apart on the board
+  state:      measured by probe_calibration_updates_live
+
+### LB-06
+  slice:      learned-brains
+  does:       forecast the distribution of forward P&L rather than a point estimate, so entry
+              timing and position management are learned
+  satisfies:  RL-026 RL-023 RL-022
+  sources:    ~/research/bull-bear-profit-agents-spec.md#4. PROFIT-TAIL in detail
+  depends on: LB-02 LB-03
+  probe:      probe_profit_tail_is_learned
+  accepts:    expectancy and loss tail come from fitted quantiles rather than from a volatility
+              proxy, PROFIT-TAIL's authority limits are unchanged by becoming learned, and the
+              deterministic policy remains the baseline it must beat
+  state:      measured by probe_profit_tail_is_learned
+
+### LB-07
+  slice:      learned-brains
+  does:       run the §1a axis probes against the live brains - randomisation, ablation, label
+              invariance and realised coverage
+  satisfies:  RL-026 RL-013 RL-012 RL-004
+  sources:    2026-08-08-final-project-goal-design.md#1a.2
+  depends on: LB-04 LB-05
+  probe:      probe_axis_tests_run
+  accepts:    L3 randomisation and L4 ablation both change measured behaviour or the brain is
+              reported as decorative, R9 label invariance holds when a feature is renamed, and
+              L6 out-of-regime is reported as FAILING rather than omitted while the record is
+              eight days of one regime
+  state:      measured by probe_axis_tests_run
+
+### LB-08
+  slice:      learned-brains
+  does:       refit on a cadence without a human invoking it, and publish which model each bot is
+              running
+  satisfies:  RL-026 RL-020 RL-012
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: LB-02 LB-04
+  probe:      probe_retrainer_running
+  accepts:    a refit happens with nothing started by hand, the board names the model version and
+              the out-of-fold score each bot is deciding on, and a bot running no model reads
+              NOT MEASURED rather than green
+  state:      measured by probe_retrainer_running
+
+> **The modules these rows build.**
+>
+> | row | module |
+> |---|---|
+> | LB-01 | `learn/training_set.py` |
+> | LB-02 | `learn/train_segment_model.py` |
+> | LB-03 | `learn/belief.py` |
+> | LB-04 | `learn/learned_brains.py` |
+> | LB-05 | `learn/online_calibration.py` |
+> | LB-06 | `learn/learned_brains.py` (the PROFIT-TAIL half) |
+> | LB-07 | `learn/axis_probes.py` |
+> | LB-08 | `scripts/retrain_supervisor.sh` |
+>
+> **What RL-027 makes this slice responsible for.** The user's words: *"lots of futer featues and
+> intelliences learnin will be connectin to tis"*. So `learn/belief.py` is deliberately the widest
+> point of the design and the narrowest interface: a capability that produces a claim attaches as a
+> belief SOURCE, one that challenges a claim attaches as a belief CRITIC, and neither touches the
+> engine, the arbiter or any segment bot. The ten capabilities §1a.6 orders first — provenance and
+> half-life, the read/verified/observed classes, verification before ingestion, abstention with its
+> P&L measured, calibration scoring, own-footprint attribution — are all belief-shaped, which is why
+> that is the carrier rather than a model output.
+
+---
+
 ## SLICE slice-5 — ALLOCATOR, PORTFOLIO RISK, BRAINS 2-3
 
 *Row inventory pending review.* Nothing here has anything to allocate between until at least two

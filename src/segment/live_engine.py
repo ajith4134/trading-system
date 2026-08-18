@@ -112,6 +112,10 @@ class LiveSegmentEngine:
     counts: EngineCounts = field(default_factory=EngineCounts)
     positions: dict = field(default_factory=dict)
     pending: dict = field(default_factory=dict)
+    # (venue, symbol) -> (raw model score, side) for open positions, so a close can
+    # be attributed to the score that opened it. Without the pairing the
+    # calibration would learn from outcomes it cannot attribute to a prediction.
+    opened_scores: dict = field(default_factory=dict)
     realised_pnl: Decimal = Decimal(0)
 
     # ------------------------------------------------------------------ journal
@@ -194,10 +198,17 @@ class LiveSegmentEngine:
             "band": self.bot.band,
             "brains": {"bull": self.bot.bull.name, "bear": self.bot.bear.name,
                        "profit_tail": self.bot.profit_tail.name},
-            # RL-025: the label belongs to the decision, and the heartbeat carries it
-            # so a board tile cannot render a rule brain as anything else.
+            # RL-025 / RL-026: the label belongs to the decision, and the heartbeat
+            # carries it so a board tile cannot render a brain as anything else.
             "makes_edge_claim": bool(getattr(self.bot.bull, "makes_edge_claim", False)),
-            "rule_brain": True,
+            "rule_brain": not self.bot.learned,
+            "learned": self.bot.learned,
+            "model_version": self.bot.model_version,
+            "tail_model_version": self.bot.tail_model_version,
+            # §1a L2: what the LIVE loop fitted, kept apart from what the retrainer
+            # set, because the two are different claims.
+            "live_fitted": (self.bot.extra["calibration"].realised_coverage()
+                            if self.bot.extra.get("calibration") else None),
             "feed": self.feed.describe(now_ns),
             "counts": self.counts.as_dict(),
             "open_positions": len(self.positions),
@@ -224,6 +235,20 @@ class LiveSegmentEngine:
         frames = self.features.frames(now_ns)
         refused = [key for key, frame in frames.items() if hasattr(frame, "is_refusal")]
         self.counts.frames_refused = len(refused)
+
+        # The LEARNED brains read a positional float vector computed by the SAME
+        # function the model was fitted with (`learn.training_set.compute_features`),
+        # from the same one-minute bar shape. Attached here rather than inside the
+        # brains so both directional brains and PROFIT-TAIL see one vector per
+        # symbol per poll instead of recomputing it three times.
+        if self.bot.learned:
+            from learn.learned_brains import features_from_live
+            for key, frame in frames.items():
+                if hasattr(frame, "is_refusal"):
+                    continue
+                frame["model_vector"] = features_from_live(
+                    self.features, key[0], key[1])
+                frame["sealed_bars"] = self.features.bars_held(key[0], key[1])
 
         decisions = self.bot.admit(frames)
         admitted = {(d.venue, d.symbol) for d in decisions if d.admitted}
@@ -348,6 +373,13 @@ class LiveSegmentEngine:
         self.positions[(venue, symbol)] = position
         self.pending.pop((venue, symbol), None)
         self.counts.opened += 1
+        raw = (selection.evidence.get("bull", {}).get("evidence", {})
+               or {}).get("raw_score")
+        if raw is None:
+            raw = (selection.evidence.get("bear", {}).get("evidence", {})
+                   or {}).get("raw_score")
+        if raw is not None:
+            self.opened_scores[(venue, symbol)] = (float(raw), side)
 
         self._record("fills", {
             "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
@@ -405,6 +437,14 @@ class LiveSegmentEngine:
                  if position.side == "LONG"
                  else (position.entry_price - mark) * position.quantity)
         self.realised_pnl += gross
+        # **LB-05: the one place the live loop changes a parameter itself.**
+        #
+        # A closed trade is a realised outcome, so it updates the reliability bin
+        # the decision was scored in and the conformal non-conformity window. §1a
+        # L2 turns on exactly this: without it, every parameter would come from a
+        # script a human invokes, and the honest label would be "scheduled
+        # retraining" rather than adaptive.
+        self._learn_from_close(position, gross, now_ns)
         self.positions.pop((position.venue, position.symbol), None)
         self.counts.closed += 1
         self._record("fills", {
@@ -419,6 +459,29 @@ class LiveSegmentEngine:
             "reduce_only": directive.reduce_only,
             "makes_edge_claim": False,
             "evidence": directive.evidence}, now_ns)
+
+    def _learn_from_close(self, position, gross, now_ns: int) -> None:
+        """Fold a realised outcome back into the live-fitted calibration."""
+        calibration = self.bot.extra.get("calibration")
+        opened = self.opened_scores.pop((position.venue, position.symbol), None)
+        if calibration is None or opened is None:
+            return
+        raw_score, side = opened
+        # The label is "did the LONG resolve profitable", which is what the model
+        # predicts. A short that made money is a long that would have lost, so the
+        # outcome is inverted for a short rather than recorded as a win - recording
+        # it as a win would teach the calibration the opposite of the truth.
+        profitable = gross > 0
+        outcome = 1 if (profitable if side == "LONG" else not profitable) else 0
+        calibration.observe(score=raw_score, outcome=outcome, acted=True)
+        try:
+            calibration.save(Path(str(
+                __import__("segment.bot_registry", fromlist=["CALIBRATION_PATH"])
+                .CALIBRATION_PATH).format(segment=self.bot.segment)))
+        except OSError:
+            # A calibration that cannot be persisted must not stop trading; it is
+            # rebuilt from subsequent outcomes.
+            pass
 
     def _risk_gate(self, frame, side, price, quantity, now_ns: int) -> dict:
         """The only thing in this loop that may refuse an order.

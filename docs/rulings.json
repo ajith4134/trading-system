@@ -347,6 +347,36 @@
         "docs/AJIT-MASTER-PLAN.md"
       ],
       "probe": "probe_segment_brains_reason"
+    },
+    {
+      "id": "RL-026",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "now make the brains real ai not rule based",
+      "clarified_as": "The BULL, BEAR and PROFIT-TAIL brains of every segment decide from TRAINED MODELS, not stated thresholds. Every numeric parameter in the decision path traces to a fit() with a logged loss and a dataset reference (\u00a71a L1). Chosen in interview: the model drives paper trading immediately - RL-005 makes paper the place for unrestricted experiment and no capital is at risk - while the promotion gate governs any future real-money step. Learning happens in two labelled places: a supervised retrainer refits from the store on a cadence (scheduled retraining), and the LIVE loop updates its own calibration and conformal abstention threshold from realised outcomes every poll (\u00a71a L2).",
+      "means": "RL-025's rule brains were scaffolding and this is their replacement, not their extension. A brain that cannot name the fit that produced its numbers is not admissible.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_brains_are_learned"
+    },
+    {
+      "id": "RL-027",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "also lots of futer featues and intelliences learnin will be connectin to tis",
+      "clarified_as": "The learned brain layer is an EXTENSION POINT, not one model wired to one engine. Future intelligence capabilities - the ten \u00a71a.6 orders first, and whatever follows - attach as belief sources and belief critics without modifying the engine, the arbiter or the segment bots. The carrier is a BELIEF: a claim with its provenance, its epistemic class (read / verified / observed, and only observed may size a position) and a half-life after which it expires rather than being silently reused.",
+      "means": "Any capability that cannot be expressed as a belief with provenance, class and expiry does not attach here, and any decision path that reads a raw model output instead of a belief has bypassed the extension point.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_beliefs_carry_provenance"
     }
   ],
   "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 \u00a75): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

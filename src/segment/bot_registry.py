@@ -35,10 +35,13 @@ tile, so a narrow universe reads as narrow rather than as complete.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from pathlib import Path
 
 from dated import segment_brains as dated_brains
+from learn import learned_brains
+from learn.online_calibration import OnlineCalibration
 from dated import tradable_universe as dated_universe
 from live import live_feed, universe_discovery
 from options import segment_brains as options_brains
@@ -136,6 +139,13 @@ class SegmentBot:
     brains_need_chain_median: bool = False
     notes: str = ""
     extra: dict = field(default_factory=dict)
+    # Set when a trained champion is loaded for this segment (RL-026). The rule
+    # brains stay in the file as the documented rollback target and as the
+    # baseline §1a asks a learned brain to beat - they are not deleted, they are
+    # no longer what decides.
+    learned: bool = False
+    model_version: str = ""
+    tail_model_version: str = ""
 
 
 def _perp_feed():
@@ -268,12 +278,73 @@ def _registry() -> dict[str, SegmentBot]:
     }
 
 
-def segment_bot(segment: str) -> SegmentBot:
+# Where each segment's live-fitted calibration is persisted. Outside the repo:
+# Rule 9 keeps generated state out of git, and this is state the LIVE loop writes.
+CALIBRATION_PATH = Path.home() / "capture" / "segment" / "{segment}" / "calibration.json"
+
+
+def _with_learned_brains(bot: SegmentBot) -> SegmentBot:
+    """Swap the rule brains for the registered champion, if one exists.
+
+    **A missing champion is not an error here.** `learned_brains.load_champion`
+    raises, and this catches it and returns the rule bot unchanged - because a
+    segment whose model has not been trained yet must still trade. What must never
+    happen is a bot that SAYS learned and is not, so `learned` is set only when a
+    model actually loaded, and the board renders that flag rather than an intention.
+    """
+    from learn.learned_brains import (
+        LearnedBearBrain, LearnedBullBrain, LearnedProfitTail, NoChampionRegistered,
+        load_champion, load_tail_champion,
+    )
+    try:
+        model = load_champion(bot.segment)
+    except (NoChampionRegistered, Exception):            # noqa: BLE001
+        return bot
+
+    calibration = OnlineCalibration.load(
+        Path(str(CALIBRATION_PATH).format(segment=bot.segment)),
+        segment=bot.segment)
+    # Seed the conformal quantile from the model's held-out calibration set, but
+    # only when the live loop has not built its own record yet. A brain that has
+    # traded knows more about its own reliability than its training holdout does,
+    # and overwriting that with the holdout every restart would discard exactly
+    # the post-deployment evidence §1a L2 is about.
+    seeded = model.metrics.get("conformal_scores") or []
+    if seeded and not calibration.scores:
+        calibration.scores = list(seeded)
+    tail_model = load_tail_champion(bot.segment)
+
+    # PROFIT-TAIL keeps this segment's own horizons - the learned half replaces
+    # `assess()` only, so RL-023's authority limits and RL-022's bands are
+    # untouched by the swap.
+    rule_tail = bot.profit_tail
+    learned_tail = LearnedProfitTail(
+        segment=rule_tail.segment, name=rule_tail.name,
+        take_profit=rule_tail.take_profit,
+        ratchet_trigger=rule_tail.ratchet_trigger,
+        ratchet_give_back=rule_tail.ratchet_give_back,
+        signal_expiry_ns=rule_tail.signal_expiry_ns,
+        max_hold_ns=rule_tail.max_hold_ns,
+        tail_model=tail_model)
+
+    return replace(
+        bot,
+        bull=LearnedBullBrain(bot.segment, model, calibration),
+        bear=LearnedBearBrain(bot.segment, model, calibration),
+        profit_tail=learned_tail,
+        learned=True,
+        model_version=model.version_id,
+        tail_model_version=(tail_model or {}).get("version_id", ""),
+        extra={**bot.extra, "calibration": calibration, "model": model})
+
+
+def segment_bot(segment: str, *, learned: bool = True) -> SegmentBot:
     registry = _registry()
     if segment not in registry:
         raise ValueError(
             f"unknown segment {segment!r}; the four are {', '.join(SEGMENTS)}")
-    return registry[segment]
+    bot = registry[segment]
+    return _with_learned_brains(bot) if learned else bot
 
 
 def all_segments() -> tuple[str, ...]:

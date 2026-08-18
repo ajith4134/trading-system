@@ -195,8 +195,35 @@ def _tile(measured: dict) -> str:
              + "".join(rows) + "</tbody></table>")
 
     edge_claim = heartbeat.get("makes_edge_claim")
-    label = ("<span class='badge claim'>EDGE CLAIM</span>" if edge_claim
-             else "<span class='badge ruleb'>RULE BRAIN · NO EDGE CLAIM</span>")
+    learned = heartbeat.get("learned")
+    if learned:
+        version = heartbeat.get("model_version") or "?"
+        label = (f"<span class='badge learned'>LEARNED · model {html.escape(version[:12])}</span>")
+    elif edge_claim:
+        label = "<span class='badge claim'>EDGE CLAIM</span>"
+    else:
+        label = "<span class='badge ruleb'>RULE BRAIN · NO EDGE CLAIM</span>"
+
+    # §1a L2: what the LIVE loop fitted, kept visibly apart from what the
+    # retrainer set. They are different claims and a board that blurred them
+    # would be making the stronger one on the weaker one's evidence.
+    live = heartbeat.get("live_fitted") or {}
+    if live:
+        realised = live.get("realised_coverage")
+        promised = live.get("promised_coverage")
+        holds = live.get("holds")
+        state = ("NOT MEASURED" if realised is None
+                 else ("holds" if holds else "BREACHED"))
+        klass = ("unmeasured" if realised is None else ("up" if holds else "down"))
+        live_row = (
+            f"<p class='meta'>live-fitted (§1a L2) · abstention coverage promised "
+            f"<strong>{promised}</strong>, realised "
+            f"<strong class='{klass}'>{realised if realised is not None else '—'}</strong> "
+            f"over {live.get('acted_on', 0)} resolved decision(s) — <strong>{state}</strong> · "
+            f"{live.get('updates', 0)} live update(s)</p>")
+    else:
+        live_row = ("<p class='meta'>live-fitted (§1a L2) · <span class='thin'>"
+                    "NOT MEASURED — no calibration held yet</span></p>")
 
     return f"""
     <section class="tile {_STATUS_CLASS[status]}">
@@ -232,6 +259,7 @@ def _tile(measured: dict) -> str:
         gate refusals {counts.get('gate_refusals', 0)} ·
         ratchets {counts.get('ratchets', 0)} ·
         frames refused {counts.get('frames_refused', 0)}</p>
+      {live_row}
       {table}
     </section>"""
 
@@ -260,6 +288,7 @@ h2 { font-size:16px; margin:0; text-transform:uppercase; letter-spacing:.06em; }
 .badge.stale { color:var(--warn); border-color:var(--warn); }
 .badge.off, .badge.unmeasured { color:var(--dim); }
 .badge.ruleb { color:var(--warn); border-color:var(--warn); }
+.badge.learned { color:#a371f7; border-color:#a371f7; }
 .badge.claim { color:var(--up); border-color:var(--up); }
 .meta { color:var(--dim); margin:4px 0; font-size:12px; }
 .why { color:var(--dim); font-size:12px; }
@@ -295,12 +324,15 @@ def render(state_root: Path, now_ns: int) -> str:
    {total_opens} opened · {total_closes} closed · page refreshes every 20s ·
    <a href="index.html">index</a></p>
 <div class="banner">
-  <strong>These bots run RULE BRAINS and make no edge claim (RL-025).</strong>
-  Every decision below came from explicit stated rules, not a trained model, and every
-  fill is journalled with <code>makes_edge_claim: false</code>. The P&amp;L is a
-  measurement of the plumbing and of the deterministic baseline a trained
-  PROFIT-TAIL must later beat — <em>it is not evidence of edge and must never be
-  promoted as one</em>.
+  <strong>A tile marked LEARNED decides from a trained model (RL-026); one marked RULE
+  BRAIN is still on stated thresholds and makes no edge claim (RL-025).</strong>
+  Every learned tile names the model version its decisions came from, and every model in
+  the registry names the counted trial and the out-of-fold score that produced it (§1a L1).
+  <strong>§1a L6 — out-of-regime stress — FAILS by construction</strong> while the archive
+  holds one regime, and is reported rather than omitted.
+  <br><br>
+  The P&amp;L here is paper and is <em>not</em> evidence of edge: the promotion gate,
+  not this board, governs any real-money step.
   <br><br>
   Prices are live venue websocket and REST feeds (RL-024), never the parquet store.
   Fills are modelled; no order reaches a venue.

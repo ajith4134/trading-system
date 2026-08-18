@@ -20,7 +20,7 @@ SPINE = REPO / "docs" / "AJIT-MASTER-PLAN.md"
 REGISTER = REPO / "docs" / "rulings.json"
 
 
-def test_the_real_spine_parses_into_the_seven_slices():
+def test_the_real_spine_parses_into_the_eight_slices():
     """`bot-framework` was added 2026-08-18 between governance and the segments.
 
     slice-0 deliberately left the shared bot framework out, to be planned when a
@@ -32,7 +32,7 @@ def test_the_real_spine_parses_into_the_seven_slices():
     slices = read_master_plan(SPINE)
     keys = [s.key for s in slices]
     assert keys == ["slice-0", "bot-framework", "spot-bot", "perp-bot", "dated-bot",
-                    "options-bot", "slice-5"]
+                    "options-bot", "learned-brains", "slice-5"]
 
 
 def test_every_row_in_the_real_spine_names_a_ruling_that_exists():
@@ -61,7 +61,9 @@ def test_only_the_reviewed_segment_slices_carry_rows():
     Until then only perp had rows, reviewed with the user 2026-08-17 under RL-022.
     On 2026-08-18 the user asked for all four segment bots trading live, which is
     the authorisation the other three slices were waiting for, and RL-023/RL-024/
-    RL-025 settled their shape. So spot, dated and options now carry the rows that
+    RL-025 settled their shape. Later the same day RL-026 replaced the rule brains
+    with trained models and RL-027 made the belief the extension point future
+    capabilities attach to, which is the `learned-brains` slice. So spot, dated and options now carry the rows that
     request implies - a live universe row and a three-brain row each.
 
     **What they do NOT carry is a full inventory,** and the distinction is the point.

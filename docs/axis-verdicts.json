@@ -1369,6 +1369,64 @@
         "src/segment/bot_registry.py",
         "docs/AJIT-MASTER-PLAN.md"
       ]
+    },
+    "learn.belief": {
+      "learning": "n/a: a carrier. It holds a claim and the evidence for it; the learning happens in whatever produced the claim",
+      "reasoning": "pass: it enforces the two rules \u00a71a.6 states and most systems leave as documentation. Only an OBSERVED belief may size a position - READ and VERIFIED cannot, checked in may_size() rather than in a comment. A belief with no provenance cannot be CONSTRUCTED, and one with no half-life is refused at __post_init__, because a claim that never expires is \u00a71a.0's confident staleness written as a constant. Beliefs are never mutated: a critique returns a new belief, so the original stays auditable",
+      "depth": "pass: every directional decision of a learned bot emits one, and RL-027 makes it the attachment point for future capabilities - a source produces beliefs, a critic annotates them, and neither touches the engine, the arbiter or a segment bot",
+      "evidence": [
+        "src/learn/belief.py",
+        "tests/test_learned_brains.py",
+        "src/learn/learned_brains.py"
+      ]
+    },
+    "learn.training_set": {
+      "learning": "n/a: it builds the dataset something else learns from",
+      "reasoning": "pass: the row-level leakage rule is enforced structurally - features come from a trailing window ending at bar i, the label from the path starting at i+1, and the two never touch. Labels come from the same deterministic exit policy the live bot runs rather than a fixed-horizon return, so the model is trained on the question the system actually faces. Every row carries the LabelSpan its outcome occupied, so overlapping labels are discounted rather than counted as independent. The store read is per hour DIRECTORY because opening the whole dataset drove memory to 25 GB of 29 and threatened the running bots",
+      "depth": "pass: it is the only path to a training set, and its describe() publishes day coverage and the regime note that makes \u00a71a L6's failure legible rather than implicit",
+      "evidence": [
+        "src/learn/training_set.py",
+        "tests/test_learned_brains.py"
+      ]
+    },
+    "learn.train_segment_model": {
+      "learning": "pass: this IS the fit. It runs combinatorial purged cross-validation through a trial registry that counts the candidate before the first tree grows, and registers the artefact against that counted trial - model_registry refuses trial_id=None. Measured 2026-08-18: 195,617 out-of-fold rows, accuracy 0.5445 against a 0.5248 base rate",
+      "reasoning": "pass: it REFUSES to register a model that only reproduced the majority class or failed to beat its base rate, rather than registering it with a caveat - a registered model gets loaded and a caveat in a metrics dict is not read at 3am. Verified by it actually refusing: on 8 hours of venue-filtered data both perp (p=0.117) and spot (p=1.0) were declined. The conformal calibration set is split by TIME, never at random, because a random split leaks the label horizon across the boundary. The artefact is JSON rather than pickle, so a model file is not an executable payload",
+      "depth": "pass: it is the only path to a champion alias, and the whole \u00a71a L1 chain - trial id, out-of-fold score, model version, loaded bytes - exists because this module writes it",
+      "evidence": [
+        "src/learn/train_segment_model.py",
+        "scripts/retrain_supervisor.sh",
+        "src/validation/purged_cross_validation.py"
+      ]
+    },
+    "learn.online_calibration": {
+      "learning": "pass: the only parameters in this system that the LIVE loop fits itself, which is what \u00a71a L2 distinguishes from scheduled retraining. Reliability bins and a conformal quantile, both updated from realised trade outcomes every close, both labelled 'live loop' so they are never confused with what the retrainer set",
+      "reasoning": "pass: it answers \u00a71a.5's master test directly - as the model becomes wrong its non-conformity scores rise, the quantile rises with them, and the brain abstains MORE, with nobody intervening. That behaviour has its own test. An uncalibrated bin returns the raw score and reports itself uncalibrated rather than pretending, so nothing sizes off an uncalibrated number. A corrupt calibration file starts fresh rather than raising, because the fresh state is already the conservative one - no record means abstain on everything",
+      "depth": "pass: R4's real requirement is implemented, not just its vocabulary - realised_coverage() audits what was promised against what happened on non-abstained predictions, so a guarantee that stopped holding is visible rather than assumed",
+      "evidence": [
+        "src/learn/online_calibration.py",
+        "tests/test_learned_brains.py",
+        "src/segment/live_engine.py"
+      ]
+    },
+    "learn.learned_brains": {
+      "learning": "pass: every number in the decision path comes from a fit - the score from a booster fitted under purged CPCV, the probability from live-fitted reliability bins, the abstention threshold from a conformal quantile, the expectancy and loss tail from quantile regressions. The one design choice that is not fitted, the bear's reversed-reading penalty, is DISCLOSED in every decision's evidence, which is what \u00a71a L1 permits and what it refuses to leave undisclosed",
+      "reasoning": "pass: train/serve skew is prevented structurally - the live features are computed by learn.training_set.compute_features, the same code object the model was fitted with, not a reimplementation that agrees today. The feature-name contract is checked at load and refused on mismatch, because a booster splits on column indices and a reordered vector is silently wrong. A missing champion raises at construction rather than declining forever at runtime, since a bot that declines everything is indistinguishable on a board from a quiet market. LearnedProfitTail subclasses the deterministic one so RL-023's authority limits are inherited unchanged - only assess() is overridden, because only assess() was a proxy",
+      "depth": "pass: R9 holds by construction - predict() takes a positional float vector and no name reaches the model - and the probe runs anyway, because 'it cannot fail' is a claim about code and a probe is what replaces a claim",
+      "evidence": [
+        "src/learn/learned_brains.py",
+        "src/learn/axis_probes.py",
+        "src/segment/bot_registry.py"
+      ]
+    },
+    "learn.axis_probes": {
+      "learning": "n/a: it measures learning, it does not do any",
+      "reasoning": "pass: it reports L6 as FAILING rather than omitting it, because an absent test reads as a passed one on a board (Rule 8). It compares DECISIONS rather than scores under randomisation, since two score distributions can differ while every trade they imply is identical. It reports NOT MEASURED when no prediction has resolved rather than defaulting to a verdict",
+      "depth": "pass: run against the real registered champion 2026-08-18 - L1 PASS, L3 PASS, L4 PASS, R9 PASS, R4 NOT MEASURED, L6 FAIL - which is the \u00a71a two-test bar met and the honest limit stated in the same output",
+      "evidence": [
+        "src/learn/axis_probes.py",
+        "tests/test_learned_brains.py"
+      ]
     }
   }
 }
