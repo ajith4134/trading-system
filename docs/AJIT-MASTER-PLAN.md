@@ -449,6 +449,46 @@ absolutely.
               so on its face
   state:      measured by probe_segment_tiles_measured
 
+### BF-09
+  slice:      bot-framework
+  does:       enumerate every instrument each venue lists, so a segment's universe is the
+              venue's own and never a list somebody typed
+  satisfies:  RL-009 RL-014 RL-019 RL-024
+  sources:    2026-08-17-ajit-master-plan-design.md#2. The slices — vertical, one bot at a time
+  depends on: BF-01
+  probe:      probe_universe_is_the_venues
+  accepts:    each segment's instrument count comes from a venue listing call rather than a
+              constant, the count and what was dropped are published with the reason, and a
+              venue that lists nothing reads as a failed discovery rather than an empty market
+  state:      measured by probe_universe_is_the_venues
+
+> **Builds `live/universe_discovery.py`. Measured 2026-08-18, and the numbers are the row's
+> justification.** The bots started on 13 hand-typed symbols. The venues list:
+>
+> | segment | typed | listed |
+> |---|---|---|
+> | perp | 13 | **570** binance perpetuals |
+> | spot | 13 | **1,361** binance spot pairs |
+> | dated | 40 | **48** — 4 binance quarterlies, 40 bybit linear, 4 bybit inverse |
+> | options | 786 | **1,442** — Deribit BTC 786 and ETH 656; SOL and XRP list zero |
+>
+> A segment whose universe is a typed list is a segment whose universe is whatever somebody
+> remembered.
+>
+> **The dated count read 217 until a delivery date was found to mean nothing.** 169 binance
+> `TRADIFI_PERPETUAL` contracts — Tesla, Intel, gold, silver, Korean and Hong Kong equities —
+> carry a delivery date of the year 2100 and pass any "is it dated" test phrased as an
+> exclusion. They are perpetuals with no basis to converge, and they are not crypto. **The
+> wrong count was the LARGER one**, which is why this row's acceptance requires that what was
+> dropped is published with its reason rather than only what was kept.
+>
+> **Subscription shape, and why it is not one stream per symbol.** Quotes come from the
+> all-market `!bookTicker` stream and funding from `!markPrice@arr@1s` — one stream each,
+> covering every symbol the venue lists, so breadth costs no extra connections. Only the
+> per-symbol `@trade` streams are sharded, because there is no all-market trade stream and
+> the aggressor side cannot be recovered without one. `capture.venues.shard_by_url_budget`
+> already exists for that split and is reused rather than re-derived.
+
 > **The modules these rows build.** Named here so the row and the file cannot drift apart, and so
 > `require-plan-row.sh` admits them:
 >
@@ -462,6 +502,7 @@ absolutely.
 > | BF-06 | `segment/live_engine.py` |
 > | BF-07 | `segment/bot_registry.py` |
 > | BF-08 | `statuswall/segment_tiles.py` |
+> | BF-09 | `live/universe_discovery.py` |
 > | SB-01 | `spot/tradable_universe.py` |
 > | SB-02 | `spot/segment_brains.py` |
 > | DB-01 | `dated/tradable_universe.py` |

@@ -283,16 +283,36 @@ class WebsocketTickSource(_SourceThread):
                            ping_interval=20, ping_timeout=20) as socket:
             while not self._stop.is_set():
                 raw = await socket.recv()
-                tick = self._parse(raw)
-                if tick is not None:
+                for tick in self._parse_many(raw):
                     self._buffer.put(tick)
 
-    def _parse(self, raw) -> LiveTick | None:
+    def _parse_many(self, raw) -> list:
+        """One raw frame into zero or more ticks.
+
+        The all-market `!markPrice@arr@1s` stream delivers an ARRAY of every symbol's
+        mark and funding in a single frame. A parser that only understood objects
+        would silently discard the entire funding feed for 570 symbols and leave the
+        bear brain's crowded-short check reading None forever - which is the same
+        silent-guard failure the per-symbol markPrice stream was added to fix.
+        """
         try:
             message = json.loads(raw)
         except (TypeError, ValueError):
-            return None
-        data = message.get("data", message)
+            return []
+        payload = message.get("data", message) if isinstance(message, dict) else message
+        if isinstance(payload, list):
+            ticks = [self._parse_one(row) for row in payload if isinstance(row, dict)]
+            return [tick for tick in ticks if tick is not None]
+        if isinstance(payload, dict):
+            tick = self._parse_one(payload)
+            return [tick] if tick is not None else []
+        return []
+
+    def _parse(self, raw) -> LiveTick | None:
+        ticks = self._parse_many(raw)
+        return ticks[0] if ticks else None
+
+    def _parse_one(self, data: dict) -> LiveTick | None:
         if not isinstance(data, dict):
             return None
         symbol = data.get("s")
@@ -405,6 +425,74 @@ def fan_out_bybit_linear(venue: str, payload: dict, received_ns: int) -> list[Li
     return ticks
 
 
+DERIBIT_CHAIN_URL = ("https://www.deribit.com/api/v2/public/"
+                     "get_book_summary_by_currency?currency={currency}&kind=option")
+BINANCE_PREMIUM_INDEX = "https://fapi.binance.com/fapi/v1/premiumIndex"
+BINANCE_BOOK_TICKER = "https://fapi.binance.com/fapi/v1/ticker/bookTicker"
+
+
+def binance_dated_fan_out(delivery_by_symbol: dict):
+    """Build a fan-out for binance DATED contracts from `premiumIndex`.
+
+    **Why this and not the all-market websocket.** `!bookTicker` carries quotes for
+    every futures symbol including the dated ones, but the dated brains reason about
+    the basis to the INDEX, and neither the index nor the delivery date is on that
+    stream. `premiumIndex` returns `markPrice` and `indexPrice` for all 874 symbols in
+    one request, which is precisely the pair `dated.segment_brains._annualised_basis`
+    needs.
+
+    The delivery date comes from discovery and is closed over here. It is a property
+    of the CONTRACT rather than of the tick - it does not change between polls - so
+    fetching it once and joining it in beats asking the venue for it every few seconds.
+    """
+    def fan_out(venue: str, payload, received_ns: int) -> list:
+        rows = payload if isinstance(payload, list) else []
+        ticks = []
+        for row in rows:
+            symbol = row.get("symbol")
+            delivery_ns = delivery_by_symbol.get(symbol)
+            if not delivery_ns:
+                # Not a dated contract this bot was given. Perpetuals dominate this
+                # response and belong to the perp bot.
+                continue
+            mark = _decimal_or_none(row.get("markPrice"))
+            ticks.append(LiveTick(
+                venue=venue, symbol=symbol, received_ns=received_ns,
+                venue_ts_ns=(int(row["time"]) * 1_000_000 if row.get("time") else None),
+                price=mark,
+                extra={"delivery_ns": delivery_ns,
+                       "mark_price": row.get("markPrice"),
+                       "index_price": row.get("indexPrice"),
+                       "funding_rate": row.get("lastFundingRate")}))
+        return ticks
+    return fan_out
+
+
+def binance_dated_quote_fan_out(delivery_by_symbol: dict):
+    """Best bid and ask for the dated contracts, from the REST book ticker.
+
+    A separate call from `premiumIndex` because the two carry different things and
+    neither is optional: without the quote there is no two-sided market and the frame
+    refuses; without mark and index there is no basis and the brains decline.
+    """
+    def fan_out(venue: str, payload, received_ns: int) -> list:
+        rows = payload if isinstance(payload, list) else []
+        ticks = []
+        for row in rows:
+            symbol = row.get("symbol")
+            if symbol not in delivery_by_symbol:
+                continue
+            ticks.append(LiveTick(
+                venue=venue, symbol=symbol, received_ns=received_ns,
+                bid=_decimal_or_none(row.get("bidPrice")),
+                ask=_decimal_or_none(row.get("askPrice")),
+                bid_size=_decimal_or_none(row.get("bidQty")),
+                ask_size=_decimal_or_none(row.get("askQty")),
+                extra={"delivery_ns": delivery_by_symbol[symbol]}))
+        return ticks
+    return fan_out
+
+
 def fan_out_deribit_chain(venue: str, payload: dict, received_ns: int) -> list[LiveTick]:
     """Deribit `get_book_summary_by_currency` into one tick per option instrument.
 
@@ -452,6 +540,122 @@ def binance_spot_url(symbols: list[str]) -> str:
     return _binance_url("wss://stream.binance.com:9443/stream?streams=", symbols)
 
 
+# Binance caps a connection at 1024 streams. Kept well under so a universe that grows
+# between a discovery call and a reconnect cannot silently cross it.
+MAX_STREAMS_PER_CONNECTION = 480
+
+
+def binance_futures_all_market_urls() -> list[str]:
+    """Quotes for EVERY futures symbol, in one stream.
+
+    `!bookTicker` carries the best bid and ask of every symbol the venue lists, so the
+    whole board's quotes cost one connection. That is what makes RL-014's "consider
+    everything" affordable rather than a fan-out of 570 sockets.
+
+    **Funding is NOT here, and the reason is measured.** `!markPrice@arr@1s` and
+    `!markPrice@arr` were both probed on 2026-08-18: the connection opens, the
+    subscription is accepted, and nothing is ever delivered - a clean timeout after 14
+    seconds on a stream documented to push every one to three seconds. Funding
+    therefore comes from the `premiumIndex` REST poll, which returned all 874 symbols
+    in one request. A stream that accepts a subscription and serves nothing is the
+    same silent failure `aggTrade` had, and the same answer applies: measure what
+    arrives, use what does.
+    """
+    return ["wss://fstream.binance.com/ws/!bookTicker"]
+
+
+def binance_spot_all_market_url() -> str:
+    """DEPRECATED BY THE VENUE - kept so its absence is documented, not rediscovered.
+
+    Binance no longer serves an all-market `!bookTicker` on spot. Probed 2026-08-18:
+    the connection opens and nothing arrives, exactly as with `!ticker@arr`. Spot
+    quotes therefore come from per-symbol `@bookTicker` streams, sharded - six
+    connections for 1,361 pairs instead of the one the futures board needs.
+    """
+    return "wss://stream.binance.com:9443/ws/!bookTicker"
+
+
+def binance_quote_and_trade_shard_urls(base: str, symbols: list[str],
+                                       per_connection: int = MAX_STREAMS_PER_CONNECTION
+                                       ) -> list[str]:
+    """Per-symbol `@bookTicker` AND `@trade`, sharded. For venues with no all-market quote."""
+    streams = []
+    for symbol in symbols:
+        lowered = symbol.lower()
+        streams.append(f"{lowered}@bookTicker")
+        streams.append(f"{lowered}@trade")
+    return [base + "/".join(streams[i:i + per_connection])
+            for i in range(0, len(streams), per_connection)]
+
+
+def binance_funding_fan_out(symbols=None):
+    """Funding and mark for every perpetual, from the `premiumIndex` REST poll.
+
+    Replaces the `!markPrice@arr` stream the venue accepts and never serves. The perp
+    BEAR brain refuses a short into a crowded-short funding rate, and without this the
+    guard reads None on every symbol and silently never fires.
+    """
+    wanted = set(symbols) if symbols else None
+
+    def fan_out(venue: str, payload, received_ns: int) -> list:
+        rows = payload if isinstance(payload, list) else []
+        ticks = []
+        for row in rows:
+            symbol = row.get("symbol")
+            if wanted is not None and symbol not in wanted:
+                continue
+            ticks.append(LiveTick(
+                venue=venue, symbol=symbol, received_ns=received_ns,
+                venue_ts_ns=(int(row["time"]) * 1_000_000 if row.get("time") else None),
+                extra={"funding_rate": row.get("lastFundingRate"),
+                       "mark_price": row.get("markPrice"),
+                       "index_price": row.get("indexPrice")}))
+        return ticks
+    return fan_out
+
+
+def composite_feed(*, venue: str, detail: str, websocket_urls=(), rest_endpoints=(),
+                   rest_interval_seconds: float = 5.0,
+                   capacity: int = DEFAULT_BUFFER,
+                   quiet_after_ns: int = DEFAULT_QUIET_AFTER_NS) -> LiveFeed:
+    """One feed mixing websocket and REST sources over a shared buffer.
+
+    The perp segment needs both: quotes and trades push over sockets, funding only
+    comes back from a REST call because the venue's funding stream serves nothing.
+    They are one market to the bot, so they are one buffer and one `poll()`.
+    """
+    buffer = _TickBuffer(capacity)
+    sources = [WebsocketTickSource(venue, url, buffer) for url in websocket_urls]
+    sources += [RestPollTickSource(venue, url, buffer, fan_out, rest_interval_seconds)
+                for url, fan_out in rest_endpoints]
+    if not sources:
+        raise ValueError(f"{venue}: a feed with no source would report QUIET forever")
+    return LiveFeed(venue=venue, sources=sources, buffer=buffer,
+                    kind="composite", detail=detail, quiet_after_ns=quiet_after_ns)
+
+
+def binance_trade_shard_urls(base: str, symbols: list[str],
+                             per_connection: int = MAX_STREAMS_PER_CONNECTION) -> list[str]:
+    """Per-symbol `@trade` streams, sharded across connections.
+
+    **There is no all-market trade stream, and that is why this exists.** `!bookTicker`
+    gives the whole market's quotes for free, but the AGGRESSOR SIDE only comes from
+    per-symbol trade streams, and order-flow imbalance is the perp bull and bear
+    brains' primary input. Dropping it would leave breadth with no flow feature - the
+    universe would be wide and the brains would have less to reason with on every
+    symbol in it.
+
+    Sharding follows `capture.venues.shard_by_url_budget`'s reasoning rather than its
+    code: that module budgets by URL bytes because its streams ride in the URL, and so
+    do these, but the binding limit here is the venue's 1024-streams-per-connection cap.
+    """
+    urls = []
+    for start in range(0, len(symbols), per_connection):
+        shard = symbols[start:start + per_connection]
+        urls.append(base + "/".join(f"{s.lower()}@trade" for s in shard))
+    return urls
+
+
 def _binance_url(base: str, symbols: list[str], *, mark_price: bool = False) -> str:
     streams = []
     for symbol in symbols:
@@ -470,24 +674,32 @@ def _binance_url(base: str, symbols: list[str], *, mark_price: bool = False) -> 
 class LiveFeed:
     """What a segment bot holds. One venue, one source, ticks since the last poll."""
 
-    def __init__(self, *, venue: str, source: _SourceThread, buffer: _TickBuffer,
+    def __init__(self, *, venue: str, sources, buffer: _TickBuffer,
                  kind: str, detail: str,
                  quiet_after_ns: int = DEFAULT_QUIET_AFTER_NS) -> None:
         self.venue = venue
         self.kind = kind
         self.detail = detail
-        self._source = source
+        # **Several connections, one buffer.** Covering 570 perpetuals takes an
+        # all-market quote stream, an all-market funding stream and two shards of
+        # per-symbol trade streams - four sockets whose ticks are one market. They
+        # share a buffer so the engine still makes one `poll()` call and cannot end up
+        # holding a quote from one connection and a trade from another as if they were
+        # separate feeds.
+        self._sources = list(sources)
         self._buffer = buffer
         self._quiet_after_ns = quiet_after_ns
         self._started = False
 
     def start(self) -> LiveFeed:
-        self._source.start()
+        for source in self._sources:
+            source.start()
         self._started = True
         return self
 
     def stop(self) -> None:
-        self._source.stop()
+        for source in self._sources:
+            source.stop()
 
     def poll(self) -> tuple[LiveTick, ...]:
         """Every tick that arrived since the last call, oldest first."""
@@ -533,24 +745,52 @@ class LiveFeed:
             "newest_age_seconds": None if age is None else round(age / 1e9, 3),
             "ticks_delivered": delivered,
             "ticks_dropped": dropped,
-            "reconnects": self._source.reconnects,
-            "last_error": self._source.last_error,
+            "connections": len(self._sources),
+            # Summed across connections: one socket flapping while three are healthy
+            # is still a broken feed, and an average would hide it.
+            "reconnects": sum(s.reconnects for s in self._sources),
+            "last_error": next((s.last_error for s in self._sources if s.last_error), ""),
         }
 
 
-def websocket_feed(*, venue: str, url: str, detail: str,
-                   capacity: int = DEFAULT_BUFFER,
+def websocket_feed(*, venue: str, detail: str, url: str | None = None,
+                   urls=None, capacity: int = DEFAULT_BUFFER,
                    quiet_after_ns: int = DEFAULT_QUIET_AFTER_NS) -> LiveFeed:
+    """One venue, one or many sockets, one buffer."""
+    if url is not None and urls is not None:
+        raise ValueError("pass url or urls, not both")
+    endpoints = [url] if url is not None else list(urls or ())
+    if not endpoints:
+        raise ValueError(f"{venue}: a feed with no endpoint would report QUIET forever")
     buffer = _TickBuffer(capacity)
-    source = WebsocketTickSource(venue, url, buffer)
-    return LiveFeed(venue=venue, source=source, buffer=buffer,
+    sources = [WebsocketTickSource(venue, endpoint, buffer) for endpoint in endpoints]
+    return LiveFeed(venue=venue, sources=sources, buffer=buffer,
                     kind=_WEBSOCKET, detail=detail, quiet_after_ns=quiet_after_ns)
+
+
+def multi_rest_poll_feed(*, venue: str, endpoints, interval_seconds: float,
+                         detail: str, capacity: int = DEFAULT_BUFFER,
+                         quiet_after_ns: int = DEFAULT_QUIET_AFTER_NS) -> LiveFeed:
+    """One feed over several REST endpoints, each with its own fan-out.
+
+    The dated segment needs three: binance `premiumIndex` for mark and index, binance
+    `ticker/bookTicker` for the two-sided quote, and bybit's tickers for its own board.
+    They are one market to the bot and one buffer here, so `poll()` stays a single call
+    and no caller has to know the segment spans two venues.
+    """
+    buffer = _TickBuffer(capacity)
+    sources = [RestPollTickSource(venue, url, buffer, fan_out, interval_seconds)
+               for url, fan_out in endpoints]
+    return LiveFeed(venue=venue, sources=sources, buffer=buffer,
+                    kind=_REST_POLL, detail=detail, quiet_after_ns=quiet_after_ns)
 
 
 def rest_poll_feed(*, venue: str, url: str, fan_out, interval_seconds: float,
                    detail: str, capacity: int = DEFAULT_BUFFER,
                    quiet_after_ns: int = DEFAULT_QUIET_AFTER_NS) -> LiveFeed:
     buffer = _TickBuffer(capacity)
-    source = RestPollTickSource(venue, url, buffer, fan_out, interval_seconds)
-    return LiveFeed(venue=venue, source=source, buffer=buffer,
+    endpoints = [url] if isinstance(url, str) else list(url)
+    sources = [RestPollTickSource(venue, endpoint, buffer, fan_out, interval_seconds)
+               for endpoint in endpoints]
+    return LiveFeed(venue=venue, sources=sources, buffer=buffer,
                     kind=_REST_POLL, detail=detail, quiet_after_ns=quiet_after_ns)

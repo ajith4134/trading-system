@@ -61,7 +61,26 @@ MIN_SAMPLES = 12
 WINDOW_NS = 60_000_000_000
 # Ring capacity. Bounded by memory rather than by meaning - the window above decides
 # what is USED; this only decides how much can be held before the oldest is dropped.
-MAX_OBSERVATIONS = 20_000
+MAX_OBSERVATIONS = 400
+
+# **The minimum gap between two stored mid observations, per symbol.**
+#
+# Without it a wide universe cannot fit in memory. Measured 2026-08-18: `!bookTicker`
+# on binance futures delivers ~90 updates a second for a major, so an unthrottled
+# 60-second window holds ~5,400 points per symbol - across 1,361 spot pairs that is
+# millions of tuples held to compute a return over sixty seconds.
+#
+# At 250 ms a 60-second window holds at most 240 points, which is ample for a return
+# and for a standard deviation, and the whole spot universe costs a few hundred
+# thousand floats.
+#
+# **What this changes, stated rather than buried:** realized volatility measured on
+# 250 ms sampling is not the same number as volatility measured tick by tick - finer
+# sampling picks up more of the bid-ask bounce. It is a consistent choice across all
+# four segments and all symbols, `window_volatility` is what the brains and
+# PROFIT-TAIL compare against, and the sampling interval is published on every frame
+# so the number is never read without it.
+MIN_SAMPLE_GAP_NS = 250_000_000
 
 
 @dataclass(frozen=True)
@@ -119,15 +138,18 @@ class LiveFeatureFrames:
     """
 
     def __init__(self, *, segment: str, window_ns: int = WINDOW_NS,
-                 min_samples: int = MIN_SAMPLES) -> None:
+                 min_samples: int = MIN_SAMPLES,
+                 min_sample_gap_ns: int = MIN_SAMPLE_GAP_NS) -> None:
         self.segment = segment
         self._window_ns = window_ns
         self._min_samples = min_samples
+        self._min_sample_gap_ns = min_sample_gap_ns
         self._state: dict[tuple[str, str], _SymbolState] = defaultdict(_SymbolState)
 
     def update(self, ticks) -> int:
         """Fold a poll's ticks into the rolling state. Returns how many were used."""
         used = 0
+        self_gap = self._min_sample_gap_ns
         for tick in ticks:
             state = self._state[(tick.venue, tick.symbol)]
             if tick.bid is not None or tick.ask is not None:
@@ -146,7 +168,12 @@ class LiveFeatureFrames:
                     if state.ask >= state.bid:
                         mid = (state.bid + state.ask) / 2
                 if mid is not None:
-                    state.mids.append((tick.received_ns, float(mid)))
+                    # Downsample: keep the FIRST observation in each gap rather than
+                    # the last, so a symbol's series advances at a steady cadence
+                    # instead of being pinned to whenever the last burst happened.
+                    if (not state.mids
+                            or tick.received_ns - state.mids[-1][0] >= self_gap):
+                        state.mids.append((tick.received_ns, float(mid)))
                 used += 1
             if tick.price is not None:
                 state.last_trade = tick.price
@@ -256,6 +283,7 @@ class LiveFeatureFrames:
             # not the one it was stated for.
             "window_span_ns": window_span_ns,
             "window_ns": self._window_ns,
+            "sample_gap_ns": self._min_sample_gap_ns,
             "quote_age_ns": quote_age_ns,
             "has_two_sided_quote": True,
             # Whatever the venue sent that has no shared shape: an option's mark IV

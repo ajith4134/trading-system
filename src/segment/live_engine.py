@@ -127,6 +127,63 @@ class LiveSegmentEngine:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, default=str) + "\n")
 
+    def recover_open_positions(self, now_ns: int) -> int:
+        """Rebuild open positions from the journal after a restart.
+
+        **Without this a restart orphans every open position.** The book lives in
+        memory, so a supervised restart forgets what is open while the journal keeps
+        the OPEN row that has no CLOSE. Measured 2026-08-18: the options bot showed
+        `opened=1` against `open_positions=0` with no close journalled - a position
+        that was neither held nor closed, and a P&L that silently excluded it.
+
+        That is worse than a crash. The record reads complete and is not, and every
+        winrate computed from it is computed over the trades that happened to survive
+        a restart.
+
+        Positions are matched per (venue, symbol): an OPEN with no later CLOSE is
+        still open. The hard stop is read back from the journal rather than
+        recomputed, because it was set by the risk gate at fill and PROFIT-TAIL is
+        never allowed to move it - recomputing it from today's price would do exactly
+        that, and in the flattering direction.
+        """
+        directory = self.root / self.bot.segment
+        recovered = {}
+        for path in sorted(directory.glob("fills-*.ndjson")):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                key = (row.get("venue"), row.get("symbol"))
+                if row.get("event") == "OPEN":
+                    try:
+                        recovered[key] = OpenPosition(
+                            venue=key[0], symbol=key[1], side=row["side"],
+                            quantity=Decimal(str(row["quantity"])),
+                            entry_price=Decimal(str(row["price"])),
+                            entry_ns=int(row["at_ns"]),
+                            hard_stop=Decimal(str(row["hard_stop"])),
+                            band=row.get("band", self.bot.band))
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                elif row.get("event") == "CLOSE":
+                    recovered.pop(key, None)
+        self.positions.update(recovered)
+        if recovered:
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment,
+                "outcome": "POSITIONS_RECOVERED",
+                "reason": "restart",
+                "evidence": {"count": len(recovered),
+                             "symbols": [k[1] for k in recovered]}}, now_ns)
+        return len(recovered)
+
     def _heartbeat(self, now_ns: int, note: str) -> None:
         directory = self.root / self.bot.segment
         directory.mkdir(parents=True, exist_ok=True)
@@ -377,9 +434,10 @@ class LiveSegmentEngine:
         open_notional = sum(
             (p.entry_price * p.quantity for p in self.positions.values()),
             Decimal(0))
-        if len(self.positions) >= 8:
+        limit = self.bot.max_open_positions
+        if len(self.positions) >= limit:
             return {"passed": False, "reason": "MAX_OPEN_POSITIONS",
-                    "open": len(self.positions), "limit": 8}
+                    "open": len(self.positions), "limit": limit}
         spread = frame.get("relative_spread")
         if spread is not None and Decimal(str(spread)) > Decimal("0.02"):
             return {"passed": False, "reason": "SPREAD_UNTRADEABLE",
@@ -408,6 +466,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     engine = build_engine(args.segment, root=args.root)
+    recovered = engine.recover_open_positions(time.time_ns())
+    if recovered:
+        print(f"recovered {recovered} open position(s) from the journal", flush=True)
     stopping = {"now": False}
 
     def _stop(signum, frame):        # noqa: ARG001

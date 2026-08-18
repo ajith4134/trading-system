@@ -1359,6 +1359,16 @@
         "src/statuswall/segment_tiles.py",
         "scripts/boards_supervisor.sh"
       ]
+    },
+    "live.universe_discovery": {
+      "learning": "n/a: it asks each venue what it lists. There is nothing here to learn and nothing that should adapt - a discovery step that adjusted its own answer would be a universe nobody could reproduce",
+      "reasoning": "pass: it refuses to infer. A contract is dated only when the venue names a dated contract TYPE, never because it carries a delivery date - measured 2026-08-18, 169 binance TRADIFI_PERPETUAL contracts (Tesla, Intel, gold, silver, Korean and Hong Kong equities) carry a delivery date set to the year 2100 and pass any exclusion-phrased test, taking the dated universe from 48 to 217. The wrong count was the LARGER one, which is why what is dropped is published with its reason alongside what is kept. Crypto-only is enforced on underlyingType rather than on the symbol name. DiscoveryFailed is raised rather than an empty list returned, because a bot handed an empty universe trades nothing and reads exactly like a bot in a quiet market",
+      "depth": "pass: every feed every bot builds calls it at start; there is no other path to a universe. Verified live 2026-08-18 - 570 perpetuals, 1,361 spot pairs, 48 dated crypto contracts, 1,442 options",
+      "evidence": [
+        "src/live/universe_discovery.py",
+        "src/segment/bot_registry.py",
+        "docs/AJIT-MASTER-PLAN.md"
+      ]
     }
   }
 }
