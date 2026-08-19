@@ -202,3 +202,22 @@ def test_interest_scales_with_how_long_the_position_was_held():
     # 5x spot held five days at 8% is ~44 bp of the margin - not a rounding error
     # at any horizon, and the reason it cannot be left unmodelled.
     assert float(five / Decimal("100")) == pytest.approx(0.0044, rel=1e-2)
+
+
+def test_leverage_is_a_whole_multiple_rounded_down():
+    # No venue offers 2.389x. Down rather than nearest, because rounding up takes
+    # more risk than the declared volatility target asked for.
+    choice = choose_leverage(declaration=_declaration(), segment="perp",
+                             window_volatility=Decimal("0.0004"),
+                             window_ns=WINDOW_NS)
+
+    assert choice.leverage == choice.leverage.to_integral_value()
+    assert choice.leverage == Decimal("2")      # unclamped is ~2.389
+
+
+def test_a_floored_multiple_never_drops_below_the_declared_floor():
+    # 0.9x floors to 0, which is not leverage - it is no position at all.
+    choice = choose_leverage(declaration=_declaration(floor="1"), segment="perp",
+                             window_volatility=Decimal("0.002"), window_ns=WINDOW_NS)
+
+    assert choice.leverage >= Decimal("1")

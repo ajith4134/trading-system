@@ -136,7 +136,14 @@ def choose_leverage(*, declaration, segment: str, window_volatility=None,
 
     annual_pct = annual * 100
     raw = declaration.target_annual_vol_pct / annual_pct
-    leverage = max(floor, min(ceiling, raw))
+    # **Whole multiples only, rounded DOWN.** No venue offers 2.389x, so a
+    # fractional multiple is a number that could never be placed and would have to
+    # be silently re-rounded by whatever tried. Down rather than nearest, because
+    # rounding up takes more risk than the declared volatility target asked for -
+    # and a sizing rule that overshoots its own target on half its trades is not
+    # the rule that was declared.
+    leverage = max(floor, min(ceiling, raw)).to_integral_value(rounding="ROUND_FLOOR")
+    leverage = max(floor, leverage)
     return LeverageChoice(
         leverage=leverage, rule=VOLATILITY_TARGETED,
         reason="target annual volatility divided by this instrument's own",
