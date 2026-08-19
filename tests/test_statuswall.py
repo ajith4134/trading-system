@@ -299,7 +299,11 @@ def test_clock_gate_probe_reports_failing_when_a_row_leaks_before_availability(t
             self._store_root = store_root
             self._dataset = dataset
 
-        def read_as_of(self, sim_clock_ns, symbols=None):
+        def read_as_of(self, sim_clock_ns, symbols=None, columns=None):
+            # `columns` is part of the reader's interface since 2026-08-19, when
+            # the status probes stopped materialising every column of 168,639
+            # fragments to answer a yes-or-no question. A double that did not
+            # accept it would pass while the real caller raised.
             from store.parquet_partition import read_dataset
             return read_dataset(self._store_root, self._dataset)
 
@@ -367,7 +371,7 @@ def test_clock_gate_probe_fails_a_gate_that_serves_rows_ahead_of_the_clock(tmp_p
         def __init__(self, store_root, dataset):
             self._store_root, self._dataset = store_root, dataset
 
-        def read_as_of(self, sim_clock_ns, symbols=None):
+        def read_as_of(self, sim_clock_ns, symbols=None, columns=None):
             from store.parquet_partition import read_dataset
             everything = read_dataset(self._store_root, self._dataset)
             if int(sim_clock_ns) < int(everything[AVAILABILITY_TIME].min()):

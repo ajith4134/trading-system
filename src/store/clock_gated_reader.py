@@ -56,11 +56,20 @@ class ClockGatedReader:
 
     def read_as_of(self, sim_clock_ns: int,
                    symbols: Sequence[str] | None = None,
-                   not_before_ns: int | None = None) -> pd.DataFrame:
+                   not_before_ns: int | None = None,
+                   columns: Sequence[str] | None = None) -> pd.DataFrame:
         """Everything knowable at `sim_clock_ns`, and nothing else.
 
         Inclusive at the boundary: a row available exactly at T is usable at T.
         Off by one in this comparison silently drops the newest bar on every read.
+
+        `columns` narrows the read SIDEWAYS, for a caller that needs a count or a
+        freshness stamp rather than the rows themselves. The four temporal keys
+        are always read whether or not they were asked for, so the clock bound
+        and correction resolution are unchanged - a narrower read is never a
+        looser one. Measured 2026-08-19: the bars dataset holds 168,639 parquet
+        fragments, and three status probes were each materialising every column
+        of all of them to compute a row count.
 
         `not_before_ns` narrows the read from BELOW, for a caller that already
         holds everything older and does not want to materialise it again. It is a
@@ -77,8 +86,17 @@ class ClockGatedReader:
         """
         if self._custodian is not None:
             self._custodian.assert_readable(int(sim_clock_ns))
+        # **The four temporal keys ride along whatever the caller asked for.**
+        # Without them the clock bound cannot be applied and a correction cannot
+        # be resolved, so a projection that omitted one would return rows this
+        # reader exists to filter out. Asking for fewer columns must never mean
+        # asking for weaker as-of semantics.
+        wanted = None
+        if columns is not None:
+            wanted = list(dict.fromkeys(
+                [*columns, AVAILABILITY_TIME, EVENT_TIME, SYMBOL, VENUE]))
         frame = read_dataset(self._store_root, self._dataset,
-                             not_before_ns=not_before_ns)
+                             not_before_ns=not_before_ns, columns=wanted)
         if frame.empty:
             return frame
 

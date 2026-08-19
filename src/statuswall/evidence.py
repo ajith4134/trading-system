@@ -413,7 +413,8 @@ def _probe_consolidated_price_now(facts: SystemFacts) -> ProbeResult:
     try:
         from features.consolidated_price import consolidate_prices
         from store.clock_gated_reader import ClockGatedReader
-        book = ClockGatedReader(facts.capture_root / "store", "book").read_as_of(2**62)
+        book = ClockGatedReader(facts.capture_root / "store", "book").read_as_of(
+            2**62, columns=[])
         if book.empty:
             return ProbeResult(NOT_BUILT, "no book dataset to consolidate from",
                                "capture/store/book")
@@ -864,7 +865,10 @@ def _probe_bitemporal_store_now(facts: SystemFacts) -> ProbeResult:
                            "capture/store")
     parts = [part for dataset in datasets for part in dataset.rglob("*.parquet")]
     from store.clock_gated_reader import ClockGatedReader
-    rows = len(ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(2**62))
+    # A COUNT, not the rows. The keys the reader always reads are enough to
+    # resolve corrections and count what survives them.
+    rows = len(ClockGatedReader(_store_root(facts), datasets[0].name)
+               .read_as_of(2**62, columns=[]))
 
     evidence = f"capture/store/{datasets[0].name}"
     counts = f"{rows} rows across {len(parts)} append-only part(s) in {len(datasets)} dataset(s)"
@@ -922,7 +926,11 @@ def _probe_bar_price_validity_now(facts: SystemFacts) -> ProbeResult:
         return ProbeResult(NOT_BUILT, "no store to check prices in", "capture/store")
 
     from store.clock_gated_reader import ClockGatedReader
-    served = ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(2**62)
+    # Only the price columns are ever looked at, so only they are read. The
+    # dataset holds 168,639 fragments and every column of all of them was being
+    # materialised to answer "is any price non-positive".
+    served = ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(
+        2**62, columns=["open", "high", "low", "close"])
     evidence = f"capture/store/{datasets[0].name}"
     if served.empty:
         return ProbeResult(DEGRADED, "store reads empty, so no price can be checked",
@@ -983,12 +991,14 @@ def _probe_clock_gated_access_now(facts: SystemFacts) -> ProbeResult:
 
     store_root, dataset = _store_root(facts), datasets[0].name
     reader = ClockGatedReader(store_root, dataset)
-    stored = read_dataset(store_root, dataset)
-    if stored.empty or reader.read_as_of(2**62).empty:
+    # Availability times only: this probe asks WHICH rows the gate serves, never
+    # what is in them, and the dataset holds 168,639 fragments.
+    stored = read_dataset(store_root, dataset, columns=[AVAILABILITY_TIME])
+    if stored.empty or reader.read_as_of(2**62, columns=[]).empty:
         return ProbeResult(DEGRADED, "store exists but reads empty", "ClockGatedReader.read_as_of")
 
     earliest = int(stored[AVAILABILITY_TIME].min())
-    hidden = reader.read_as_of(earliest - 1)
+    hidden = reader.read_as_of(earliest - 1, columns=[])
     if not hidden.empty:
         # The gate is the whole layer. If it lets anything through early, that is
         # a failure of the system's core guarantee, not a degraded metric.
@@ -1430,7 +1440,11 @@ def _probe_promotion_readiness_now(facts: SystemFacts) -> ProbeResult:
     if not (store_root / OBSERVED_FUNDING).is_dir():
         return ProbeResult(NOT_MEASURED, "no observed funding dataset to measure", proof)
 
-    frame = ClockGatedReader(store_root, OBSERVED_FUNDING).read_as_of(2**62)
+    # `daily_carry` reads the funding rate, the event time and the symbol. The
+    # funding dataset holds 58,841 fragments and every column of them was being
+    # materialised for those three.
+    frame = ClockGatedReader(store_root, OBSERVED_FUNDING).read_as_of(
+        2**62, columns=["funding_rate"])
     if frame.empty:
         return ProbeResult(NOT_MEASURED, "observed funding dataset is empty", proof)
 

@@ -359,7 +359,8 @@ def _write_part_atomically(table: pa.Table, folder: Path, target: Path) -> None:
 
 
 def read_dataset(store_root: Path, dataset: str,
-                 not_before_ns: int | None = None) -> pd.DataFrame:
+                 not_before_ns: int | None = None,
+                 columns: Sequence[str] | None = None) -> pd.DataFrame:
     """Every part, concatenated. Absent datasets read empty, not as an error.
 
     An empty store is the correct state before the first build, and raising there
@@ -379,11 +380,40 @@ def read_dataset(store_root: Path, dataset: str,
     Added 2026-08-17 after the forward paper engine was OOM-killed (exit 137,
     fourth restart that day): it re-read the whole bars dataset every 60-second
     poll, holding 5.5 GB, on a 30 GB box with no swap.
+
+    `columns` narrows the read to the columns named, and it does two things at
+    once. Measured 2026-08-19: the bars dataset holds **168,639 parquet
+    fragments** and funding holds 58,841. A caller that wants a row count or a
+    freshness stamp was materialising every column of every one of them, and
+    before that it was opening every fragment's FOOTER to unify the schema -
+    which is why a status board took 25 minutes and 11.7 GB to answer "how many
+    rows are in the store".
+
+    **Schema unification is skipped when every requested column is already in the
+    dataset's own schema, and that is safe for exactly that case.** Unification
+    exists because pyarrow infers a dataset's schema from the first fragment, so
+    a column added by a LATER partition would be silently dropped. A column that
+    is already in the inferred schema cannot be the column that goes missing. Ask
+    for a column that is not there and the full unified path runs, so a caller
+    can never lose data by naming a column.
     """
     root = Path(store_root) / dataset
     if not root.is_dir():
         return pd.DataFrame()
     dataset_handle = ds.dataset(root, format="parquet", partitioning="hive")
+
+    if columns is not None:
+        wanted = list(dict.fromkeys(columns))
+        if wanted and set(wanted) <= set(dataset_handle.schema.names):
+            table = dataset_handle.to_table(
+                columns=wanted,
+                filter=_availability_bound(
+                    not_before_ns,
+                    partitioned_by_hour=_is_partitioned_by_hour(root,
+                                                                dataset_handle)))
+            if HOUR_KEY in table.column_names:
+                table = table.drop_columns([HOUR_KEY])
+            return table.to_pandas()
 
     # Unify the schemas across every fragment before reading, and this is not
     # tidiness - without it the reader SILENTLY DROPS COLUMNS.
@@ -414,6 +444,7 @@ def read_dataset(store_root: Path, dataset: str,
     # in this comparison silently drops a bar on every poll of a caller that
     # advances its watermark to the newest availability time it has seen.
     table = dataset_handle.to_table(
+        columns=list(dict.fromkeys(columns)) if columns else None,
         filter=_availability_bound(
             not_before_ns,
             partitioned_by_hour=_is_partitioned_by_hour(root, dataset_handle)))
