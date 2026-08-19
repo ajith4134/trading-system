@@ -69,6 +69,14 @@ TAIL_ROWS = 400
 TAIL_BYTES = 4_000_000
 # A winrate under this many closes is not a winrate (PB-10's acceptance).
 MIN_CLOSES_FOR_RATE = 20
+# **What "the window this frame was computed from" is called, per brain kind.**
+# A rule brain counts raw observations (`samples`); a learned brain counts the
+# sealed one-minute bars its feature vector was built from (`sealed_bars`) and
+# names the vector it fed the model. BF-02's acceptance is that the row NAMES its
+# window - not that it uses one particular word for it, and a probe that knew
+# only the rule brain's word reported FAILING the moment a trained brain was
+# deployed, which is what happened on 2026-08-19.
+WINDOW_KEYS = ("samples", "sealed_bars", "feature_vector_length")
 
 
 # --- reading, always bounded ----------------------------------------------
@@ -287,7 +295,7 @@ def probe_segment_features_current() -> ProbeResult:
         evidenced = 0
         for row in rows:
             evidence = ((row.get("evidence") or {}).get("bull") or {}).get("evidence") or {}
-            if evidence.get("samples") is not None:
+            if any(key in evidence for key in WINDOW_KEYS):
                 evidenced += 1
         if not evidenced:
             missing[segment] = "no decision carries the sample window it was computed from"
@@ -310,8 +318,9 @@ def probe_perp_features_current() -> ProbeResult:
     if not rows:
         return ProbeResult(NOT_MEASURED, "the decision journal tail is empty", proof)
     with_window = [r for r in rows
-                   if (((r.get("evidence") or {}).get("bull") or {})
-                       .get("evidence") or {}).get("samples") is not None]
+                   if any(key in ((((r.get("evidence") or {}).get("bull") or {})
+                                   .get("evidence")) or {})
+                          for key in WINDOW_KEYS)]
     refused = (payload.get("counts") or {}).get("frames_refused")
     detail = (f"{len(with_window)}/{len(rows)} recent decisions name their sample "
               f"count, {refused} frames refused on the last poll")
@@ -334,6 +343,7 @@ def _brain_outcomes(segment: str) -> dict:
                "bull_proposals": 0, "bull_declines": 0, "bull_reasons": set(),
                "bear_proposals": 0, "bear_declines": 0, "bear_reasons": set(),
                "with_evidence": 0, "abstain": 0, "selected": 0, "both_sides": 0,
+               "identical_evidence": 0,
                "tail_advisory": 0, "tail_present": 0}
     for row in rows:
         evidence = row.get("evidence") or {}
@@ -348,6 +358,10 @@ def _brain_outcomes(segment: str) -> dict:
                 summary[f"{side}_reasons"].add(block["reason"])
             if block.get("evidence"):
                 summary["with_evidence"] += 1
+        bull_block = (evidence.get("bull") or {}).get("evidence")
+        bear_block = (evidence.get("bear") or {}).get("evidence")
+        if bull_block and bull_block == bear_block:
+            summary["identical_evidence"] += 1
         tail = evidence.get("tail") or {}
         if tail:
             summary["tail_present"] += 1
@@ -412,12 +426,21 @@ def probe_perp_bear_agent_reasons() -> ProbeResult:
               f"declines, reasons {sorted(summary['bear_reasons'])[:3]}")
     if not summary["bear_reasons"]:
         return ProbeResult(FAILING, "no bear outcome names a reason", proof)
-    # Separate decision, measured: the bear's reason vocabulary is its own. A bear
-    # that were the bull negated would decline for the bull's reasons.
-    if summary["bear_reasons"] == summary["bull_reasons"]:
+    # **Separate decision, measured on the EVIDENCE rather than on the reason.**
+    # Sharing a reason is not sharing a decision: both brains legitimately decline
+    # with the same word while warming up, and on 2026-08-19 a freshly restarted
+    # bot was reported as running a negated bull for exactly that reason. What a
+    # negation actually looks like is the bear reasoning from the bull's evidence,
+    # byte for byte, which is what this compares.
+    if summary["rows"] and summary["identical_evidence"] == summary["rows"]:
         return ProbeResult(DEGRADED,
-                           f"{detail} - the bear declines for exactly the bull's "
-                           f"reasons, which is what a negation looks like", proof)
+                           f"{detail} - every bear outcome carries the bull's own "
+                           f"evidence, which is what a negation looks like", proof)
+    if summary["bear_reasons"] == summary["bull_reasons"]:
+        return ProbeResult(PARTIAL,
+                           f"{detail} - both brains are declining for the same "
+                           f"reason in this window, which a warm-up also produces",
+                           proof)
     return ProbeResult(OK, detail, proof)
 
 

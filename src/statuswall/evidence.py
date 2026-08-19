@@ -62,6 +62,64 @@ class ProbeResult:
     proof: str
 
 
+# --- measurements too expensive to repeat every five minutes ---------------
+#
+# **Measured 2026-08-19.** Five probes on this wall each call
+# `ClockGatedReader.read_as_of(2**62)`, which materialises a WHOLE dataset -
+# bars, book, funding - and the boards supervisor runs the wall every five
+# minutes. One pass was still reading `store/funding/symbol=.../part-*.parquet`
+# after 25 minutes at 2.5 GB and climbing; earlier passes reached 11.7 GB on a
+# 30 GB box and were OOM-killed three times in one morning. The board that
+# reports whether the system is healthy was the thing taking it down.
+#
+# The numbers those probes produce move on the order of a day - observed days of
+# history, symbols in the store, bar validity across the archive. Re-deriving
+# them every five minutes buys nothing and costs the board.
+#
+# So an expensive measurement is taken on its own cadence and the tile SAYS WHEN
+# IT WAS TAKEN. That is the Rule 8 line: a cached measurement is still a
+# measurement as long as its age is on the face of it, and this appends the age
+# to the detail rather than presenting an old number as a new one. A cache that
+# hid its age would be an assertion.
+PROBE_CACHE_DIR = Path.home() / "capture" / "boards" / "probe-cache"
+# Six hours. Longer than any board pass, far shorter than the day these numbers
+# actually move on.
+EXPENSIVE_TTL_S = 6 * 3600.0
+
+
+def measured_periodically(key: str, compute, ttl_s: float = EXPENSIVE_TTL_S,
+                          cache_dir: Path | None = None) -> ProbeResult:
+    """Run `compute` at most once per `ttl_s`, and age the answer on its face.
+
+    A compute that raises is NOT swallowed - it belongs to `assess`, which turns
+    it into a visible FAILING tile. Only a successful measurement is stored, so
+    a cache can never hold a result nothing measured.
+    """
+    directory = cache_dir or PROBE_CACHE_DIR
+    path = directory / f"{key}.json"
+    try:
+        held = json.loads(path.read_text(encoding="utf-8"))
+        age_s = time.time() - float(held["measured_at_s"])
+        if 0 <= age_s < ttl_s:
+            hours = age_s / 3600.0
+            stamp = (f"measured {age_s / 60:.0f} min ago" if hours < 1
+                     else f"measured {hours:.1f}h ago")
+            return ProbeResult(held["state"], f"{held['detail']} ({stamp})",
+                               held["proof"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass                      # no usable cache is not an error, it is a miss
+
+    result = compute()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "state": result.state, "detail": result.detail, "proof": result.proof,
+            "measured_at_s": time.time()}), encoding="utf-8")
+    except OSError:
+        pass                      # an unwritable cache costs speed, never truth
+    return result
+
+
 @dataclass(frozen=True)
 class SystemFacts:
     """One measurement pass over the machine, shared by every probe.
@@ -344,7 +402,7 @@ def probe_wash_trading_discount(facts: SystemFacts) -> ProbeResult:
         "features/volume_quality.py + capture/store/bars")
 
 
-def probe_consolidated_price(facts: SystemFacts) -> ProbeResult:
+def _probe_consolidated_price_now(facts: SystemFacts) -> ProbeResult:
     # Asked at the newest clock the book dataset supports, not at wall-clock
     # now, and the gap between those two is reported rather than hidden: the
     # store builds closed hours, so Layer 1's depth trails live by up to an
@@ -782,7 +840,7 @@ def _captured_symbols_on(facts: SystemFacts) -> int | None:
     return total if measured_any else None
 
 
-def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
+def _probe_bitemporal_store_now(facts: SystemFacts) -> ProbeResult:
     """Reports on the store by reading it, and on whether it is still being written.
 
     Row and part counts come from `ClockGatedReader.read_as_of`, the same call
@@ -838,7 +896,7 @@ def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
                        evidence)
 
 
-def probe_bar_price_validity(facts: SystemFacts) -> ProbeResult:
+def _probe_bar_price_validity_now(facts: SystemFacts) -> ProbeResult:
     """Are the prices in the store prices at all?
 
     Nothing was asking. The store tile reports rows, then freshness, then coverage,
@@ -898,7 +956,7 @@ def probe_bar_price_validity(facts: SystemFacts) -> ProbeResult:
         evidence)
 
 
-def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
+def _probe_clock_gated_access_now(facts: SystemFacts) -> ProbeResult:
     """Reports on the gate by exercising it, not by checking the file exists.
 
     The check that matters is negative: read one nanosecond before the
@@ -1347,7 +1405,7 @@ def probe_exchange_reserves(facts: SystemFacts) -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
-def probe_promotion_readiness(facts: SystemFacts) -> ProbeResult:
+def _probe_promotion_readiness_now(facts: SystemFacts) -> ProbeResult:
     """How far the observed record is from being able to support a promotion.
 
     The decision of 2026-08-09 was to wait for observed history rather than
@@ -3059,6 +3117,67 @@ def probe_outage_detection(facts: SystemFacts) -> ProbeResult:
 # Feature key -> probe. A feature absent from this map has no measurement and is
 # therefore NOT_BUILT. Adding a row here is a claim that something is real, and
 # the probe is what has to defend it.
+
+def _probe_cache_dir(facts: SystemFacts) -> Path:
+    """Beside the archive the measurement was taken from, never a global path."""
+    return Path(facts.capture_root) / "boards" / "probe-cache"
+
+
+def probe_bitemporal_store(facts: SystemFacts) -> ProbeResult:
+    """Reads a whole dataset, so it runs on its own cadence (see
+    `measured_periodically`). The tile carries the age of the measurement.
+
+    The cache lives UNDER the capture root it measured. Keyed by probe name
+    alone it would serve one machine's answer for another's - and every test
+    here points a probe at a fabricated store, which is exactly that case.
+    """
+    return measured_periodically("probe_bitemporal_store", lambda: _probe_bitemporal_store_now(facts),
+                                cache_dir=_probe_cache_dir(facts))
+
+def probe_bar_price_validity(facts: SystemFacts) -> ProbeResult:
+    """Reads a whole dataset, so it runs on its own cadence (see
+    `measured_periodically`). The tile carries the age of the measurement.
+
+    The cache lives UNDER the capture root it measured. Keyed by probe name
+    alone it would serve one machine's answer for another's - and every test
+    here points a probe at a fabricated store, which is exactly that case.
+    """
+    return measured_periodically("probe_bar_price_validity", lambda: _probe_bar_price_validity_now(facts),
+                                cache_dir=_probe_cache_dir(facts))
+
+def probe_clock_gated_access(facts: SystemFacts) -> ProbeResult:
+    """Reads a whole dataset, so it runs on its own cadence (see
+    `measured_periodically`). The tile carries the age of the measurement.
+
+    The cache lives UNDER the capture root it measured. Keyed by probe name
+    alone it would serve one machine's answer for another's - and every test
+    here points a probe at a fabricated store, which is exactly that case.
+    """
+    return measured_periodically("probe_clock_gated_access", lambda: _probe_clock_gated_access_now(facts),
+                                cache_dir=_probe_cache_dir(facts))
+
+def probe_promotion_readiness(facts: SystemFacts) -> ProbeResult:
+    """Reads a whole dataset, so it runs on its own cadence (see
+    `measured_periodically`). The tile carries the age of the measurement.
+
+    The cache lives UNDER the capture root it measured. Keyed by probe name
+    alone it would serve one machine's answer for another's - and every test
+    here points a probe at a fabricated store, which is exactly that case.
+    """
+    return measured_periodically("probe_promotion_readiness", lambda: _probe_promotion_readiness_now(facts),
+                                cache_dir=_probe_cache_dir(facts))
+
+def probe_consolidated_price(facts: SystemFacts) -> ProbeResult:
+    """Reads a whole dataset, so it runs on its own cadence (see
+    `measured_periodically`). The tile carries the age of the measurement.
+
+    The cache lives UNDER the capture root it measured. Keyed by probe name
+    alone it would serve one machine's answer for another's - and every test
+    here points a probe at a fabricated store, which is exactly that case.
+    """
+    return measured_periodically("probe_consolidated_price", lambda: _probe_consolidated_price_now(facts),
+                                cache_dir=_probe_cache_dir(facts))
+
 PROBES = {
     "sample uniqueness sequential bootstrap": probe_sample_uniqueness,
     "triple barrier labelling": probe_triple_barrier_labelling,

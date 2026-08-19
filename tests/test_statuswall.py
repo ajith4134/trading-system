@@ -1357,3 +1357,61 @@ def test_the_uniqueness_tile_fails_if_concurrency_stops_counting(tmp_path,
     result = probe_sample_uniqueness(_facts(capture_root=tmp_path))
     assert result.state == FAILING
     assert "stopped counting" in result.detail
+
+
+# --- expensive measurements run on their own cadence -----------------------
+
+def test_an_expensive_measurement_is_taken_once_and_then_carries_its_age(tmp_path):
+    """Measured 2026-08-19: five probes on this wall each materialise a whole
+    dataset, and the supervisor runs the wall every five minutes. One pass was
+    still reading the funding store after 25 minutes; earlier ones reached 11.7 GB
+    and were OOM-killed. The numbers move on the order of a day."""
+    from statuswall.evidence import OK, ProbeResult, measured_periodically
+    calls = []
+
+    def compute():
+        calls.append(1)
+        return ProbeResult(OK, "42 rows", "the store")
+
+    first = measured_periodically("k", compute, cache_dir=tmp_path)
+    second = measured_periodically("k", compute, cache_dir=tmp_path)
+
+    assert len(calls) == 1, "the second call must not re-measure"
+    assert first.detail == "42 rows"
+    assert "measured" in second.detail, "a cached answer must carry its age"
+    assert "42 rows" in second.detail
+
+
+def test_a_measurement_past_its_ttl_is_taken_again(tmp_path):
+    from statuswall.evidence import OK, ProbeResult, measured_periodically
+    calls = []
+
+    def compute():
+        calls.append(1)
+        return ProbeResult(OK, f"run {len(calls)}", "the store")
+
+    measured_periodically("k", compute, ttl_s=0.0, cache_dir=tmp_path)
+    second = measured_periodically("k", compute, ttl_s=0.0, cache_dir=tmp_path)
+
+    assert len(calls) == 2
+    assert second.detail == "run 2"
+
+
+def test_a_measurement_that_raises_is_never_cached(tmp_path):
+    """A cache must not be able to hold a result nothing measured."""
+    from statuswall.evidence import measured_periodically
+
+    def compute():
+        raise RuntimeError("the store rotted")
+
+    with pytest.raises(RuntimeError):
+        measured_periodically("k", compute, cache_dir=tmp_path)
+    assert not (tmp_path / "k.json").exists()
+
+
+def test_the_cache_lives_under_the_archive_it_measured(tmp_path):
+    """Keyed by probe name alone it would serve one machine's answer for another."""
+    from statuswall.evidence import _probe_cache_dir
+    facts = _facts(capture_root=tmp_path)
+
+    assert _probe_cache_dir(facts) == tmp_path / "boards" / "probe-cache"

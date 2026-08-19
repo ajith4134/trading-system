@@ -445,3 +445,48 @@ def test_a_registered_champion_that_no_bot_runs_is_reported_as_unused(live_root,
 
     assert result.state == NOT_MEASURED
     assert "the bot runs no model" in result.detail
+
+
+# --- a probe must read BOTH brain shapes, not only the one it was written on
+
+def _learned_decision(reason="MODEL_BELOW_THRESHOLD", same_evidence=False):
+    bull = {"brain": "perp-bull-learned", "outcome": "DECLINE", "reason": reason,
+            "evidence": {"model_version": "f2a4adfb", "trial_id": 36,
+                         "rule_brain": False, "sealed_bars": 2}}
+    bear = {"brain": "perp-bear-learned", "outcome": "DECLINE", "reason": reason,
+            "evidence": dict(bull["evidence"]) if same_evidence else
+            {"model_version": "f2a4adfb", "trial_id": 36, "rule_brain": False,
+             "reversed_reading_penalty": 0.05, "sealed_bars": 2}}
+    return {"at_ns": 1, "segment": "perp", "symbol": "BTCUSDT", "outcome": "ABSTAIN",
+            "reason": "NO_PROPOSAL",
+            "evidence": {"bull": bull, "bear": bear,
+                         "tail": {"authority": "advisory-input-only"}}}
+
+
+def test_a_learned_brain_names_its_window_as_sealed_bars_and_that_counts(live_root):
+    """Measured 2026-08-19: the moment a trained brain was deployed this probe read
+    FAILING, because it knew only the rule brain's word for the window."""
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_learned_decision()])
+
+    assert probes.probe_perp_features_current().state == OK
+
+
+def test_two_brains_sharing_a_warm_up_reason_are_not_called_a_negation(live_root):
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_learned_decision(reason="WARMING_UP_NO_FEATURE_VECTOR")])
+
+    result = probes.probe_perp_bear_agent_reasons()
+
+    assert result.state == PARTIAL, "a warm-up is not a negated bull"
+    assert "warm-up" in result.detail
+
+
+def test_a_bear_carrying_the_bulls_own_evidence_is_a_negation(live_root):
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_learned_decision(same_evidence=True)])
+
+    result = probes.probe_perp_bear_agent_reasons()
+
+    assert result.state == DEGRADED
+    assert "negation" in result.detail

@@ -584,10 +584,20 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    # **The banner reports what loaded, it does not assert what was expected.**
+    # It read "edge_claim=False (RULE BRAIN, RL-025)" as a constant, and on
+    # 2026-08-19 the perp bot started on a trained champion and printed that line
+    # anyway. A start-up line nobody can trust is worse than none.
+    claim = bool(getattr(engine.bot.bull, "makes_edge_claim", False))
+    kind = (f"LEARNED, model {engine.bot.model_version}" if engine.bot.learned
+            else "RULE BRAIN, RL-025")
+    refused = engine.bot.extra.get("champion_refused")
     print(f"live segment bot: segment={args.segment} venue={engine.bot.venue} "
           f"band={engine.bot.band} brains={engine.bot.bull.name},"
           f"{engine.bot.bear.name},{engine.bot.profit_tail.name} "
-          f"edge_claim=False (RULE BRAIN, RL-025)", flush=True)
+          f"edge_claim={claim} ({kind})", flush=True)
+    if refused:
+        print(f"champion refused: {refused}", flush=True)
 
     # The feature frames need live ticks before anything can be computed. How long
     # that takes is the feed's business, not a constant: a websocket fills the window
