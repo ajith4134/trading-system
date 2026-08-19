@@ -635,6 +635,21 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_champion_promotion_is_gated"
+  },
+  {
+   "id": "RL-045",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "You are forgetting the whole picture we skipped the plan and Jumped straight to implementing papper trading and setment bots now we implement the thing that make these bots intelligent learning research strategies instructions universal opportunity scanner bull and bear and profit tail gating bots inside the segments bots with is own features etc and so on and many more we discussed and skipped now I need to focus on whole picture and see or search how other famous crypto bots papper trading or trading types they use compete to what we did or implemented / [interview answers] Both, reconciliation first; All three research areas as one report; Stop them during the audit",
+   "clarified_as": "Work stops being reactive. Before any more building: one honest reconciliation of everything ruled, planned or discussed against what measurably exists in the code, and one graded research report comparing this system to the named public crypto trading systems on all three axes - paper-trading mechanics, intelligence and learning approach, and overall architecture. The reconciliation comes first and its gap list becomes the build order. All four segment bots are switched off for the duration so nothing moves underneath the audit.",
+   "means": "The user is naming a process failure, not a technical one, and they are right. Every session today ran the loop 'find defect, fix defect, find next defect' - the capital sizing, the champion gate, the uniqueness pooling - all real, all reactive, none of it the plan asking to be built. That is Rule 6 run backwards, and the cost is invisible precisely because the work was useful. What was skipped is named in the ruling itself: real learning, research capability, strategy discovery, the universal opportunity scanner (RL-009, RL-014), bull/bear/profit-tail as three brains inside each segment bot with that bot's own features (RL-011, RL-019, RL-023), and the intelligence standard of the goal document's SS1a. The reconciliation must search `~/research/ledger/` before concluding any capability is absent - 599 of its rows are PRIOR-ART in repositories no plan references, and four capabilities were designed from scratch on 2026-08-08 that the corpus already held.",
+   "scope": "system",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_reconciliation_is_current"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

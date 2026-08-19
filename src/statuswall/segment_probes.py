@@ -1886,6 +1886,46 @@ def probe_champion_promotion_is_gated() -> ProbeResult:
                            f"recorded verdict", proof)
 
 
+def probe_reconciliation_is_current() -> ProbeResult:
+    """RL-045: the reconciliation exists and is newer than what it reconciles.
+
+    A reconciliation is a snapshot of a moving target. The moment a ruling is
+    recorded or a plan row is written after it, it describes a system that no
+    longer exists — and a stale audit is more dangerous than none, because it
+    reads as a current account of where the build is.
+
+    So this measures ONE thing: is the newest reconciliation document newer than
+    the newest change to the register and the plan it reconciles?
+    """
+    documents = sorted(REPO.glob("docs/RECONCILIATION-*.md"))
+    proof = "docs/RECONCILIATION-*.md vs docs/rulings.json, docs/AJIT-MASTER-PLAN.md"
+
+    if not documents:
+        return ProbeResult(
+            NOT_MEASURED,
+            "no reconciliation document exists; RL-045 asked for one before further "
+            "building", proof)
+
+    newest = max(documents, key=lambda path: path.stat().st_mtime_ns)
+    written_ns = newest.stat().st_mtime_ns
+    sources = {"rulings.json": REPO / "docs" / "rulings.json",
+               "AJIT-MASTER-PLAN.md": REPO / "docs" / "AJIT-MASTER-PLAN.md"}
+    stale_against = [name for name, path in sources.items()
+                     if path.exists() and path.stat().st_mtime_ns > written_ns]
+
+    age_hours = (time.time_ns() - written_ns) / 3.6e12
+    if stale_against:
+        return ProbeResult(
+            DEGRADED,
+            f"{newest.name} was written {age_hours:.1f}h ago but "
+            f"{', '.join(sorted(stale_against))} changed since — it describes a "
+            f"system that has moved",
+            proof)
+    return ProbeResult(
+        OK, f"{newest.name} is newer than the register and the plan it reconciles "
+            f"({age_hours:.1f}h old)", proof)
+
+
 SEGMENT_PROBES = {
     "probe_segment_engine_running": probe_segment_engine_running,
     "probe_perp_engine_running": probe_perp_engine_running,
@@ -1942,6 +1982,7 @@ SEGMENT_PROBES = {
     "probe_swing_band_is_live": probe_swing_band_is_live,
     "probe_one_engine_not_two": probe_one_engine_not_two,
     "probe_champion_promotion_is_gated": probe_champion_promotion_is_gated,
+    "probe_reconciliation_is_current": probe_reconciliation_is_current,
 }
 
 
