@@ -9,6 +9,16 @@ The field that matters most here is the absent one. A heartbeat written before
 these fields existed has to read NOT MEASURED, never OK - zero footers opened is
 the *healthy* answer, so defaulting an absent measurement to zero would paint
 the failing case green (Rule 8).
+
+**Repointed 2026-08-19.** The engine those first two tests describe -
+`plumbing-momentum` - was RETIRED under RL-025, and nothing polls the store on a
+loop any more: RL-024 moved every trading price to a live feed. The journal still
+round-trips its cost fields and those tests still defend that. What the PROBE
+grades changed with its subject: the property SL-14 and SL-15 defend is that a
+read costs what arrived rather than what is archived, and the thing that now
+decides that is the hour partitioning itself. So the probe grades the layout, and
+the failing state is still reachable on purpose - a tile with no way to render
+red has not been tested against a real failure.
 """
 from __future__ import annotations
 
@@ -57,39 +67,77 @@ def test_a_heartbeat_from_before_the_fields_still_parses(tmp_path):
     assert beat.fragment_schema_reads is None and beat.poll_seconds is None
 
 
-# --- and the probe grades it ------------------------------------------------
+# --- and the probe grades the layout that makes a read cheap ----------------
 
-def test_a_cheap_poll_reads_ok(tmp_path):
-    _beat(tmp_path, fragment_schema_reads=2, poll_seconds=1.5)
-    result = probe_poll_scan_cost(tmp_path, _dataset(tmp_path, 100))
+def _hour_partitioned(root, hours: int, per_hour: int):
+    """A store partitioned by availability hour, as SL-15 built it."""
+    dataset = root / "bars"
+    for hour in range(hours):
+        directory = dataset / f"availability_hour=2026-08-19T{hour:02d}" / "symbol=BTCUSDT"
+        directory.mkdir(parents=True)
+        for index in range(per_hour):
+            (directory / f"part-{index}.parquet").write_bytes(b"")
+    return dataset
+
+
+def test_a_store_whose_recent_hours_are_a_small_share_of_it_reads_ok(tmp_path):
+    dataset = _hour_partitioned(tmp_path, hours=24, per_hour=3)
+
+    result = probe_poll_scan_cost(dataset=dataset, learn_root=tmp_path / "learn")
+
     assert result.state == OK
-    assert "2/100 fragment footers" in result.detail
+    assert "24 hour partitions" in result.detail
+    assert "6/72" in result.detail
 
 
-def test_a_poll_slower_than_the_interval_reads_degraded(tmp_path):
-    """The failing state has to be reachable, or the tile was never tested."""
-    _beat(tmp_path, fragment_schema_reads=1, poll_seconds=93.0)
-    result = probe_poll_scan_cost(tmp_path, _dataset(tmp_path, 100))
+def test_recent_hours_holding_most_of_the_archive_reads_degraded(tmp_path):
+    """The regression SL-14 and SL-15 exist to catch, in its layout form: if a
+    two-hour read still opens most of the store, bounding the read bought
+    nothing."""
+    dataset = tmp_path / "bars"
+    # Twenty-two quiet hours and two that hold almost the whole archive: the
+    # shape a compaction into recent partitions would produce, and the one that
+    # makes "read only the newest hours" stop meaning anything.
+    for hour in range(24):
+        directory = dataset / f"availability_hour=2026-08-19T{hour:02d}" / "symbol=BTCUSDT"
+        directory.mkdir(parents=True)
+        for index in range(200 if hour >= 22 else 1):
+            (directory / f"part-{index}.parquet").write_bytes(b"")
+
+    result = probe_poll_scan_cost(dataset=dataset, learn_root=tmp_path / "learn")
+
     assert result.state == DEGRADED
-    assert "falling behind the tape" in result.detail
+    assert "not staying bounded" in result.detail
 
 
-def test_cost_scaling_with_the_archive_reads_degraded(tmp_path):
-    """The regression SL-14 exists to catch: the whole store re-walked."""
-    _beat(tmp_path, fragment_schema_reads=100, poll_seconds=4.0)
-    result = probe_poll_scan_cost(tmp_path, _dataset(tmp_path, 100))
+def test_a_store_that_is_not_hour_partitioned_reads_degraded(tmp_path):
+    """Every read walks the whole archive, which is the state SL-15 replaced."""
+    result = probe_poll_scan_cost(dataset=_dataset(tmp_path, 5),
+                                  learn_root=tmp_path / "learn")
+
     assert result.state == DEGRADED
-    assert "scaling with the archive" in result.detail
+    assert "not partitioned by availability hour" in result.detail
 
 
-def test_a_heartbeat_without_the_cost_fields_is_not_measured(tmp_path):
-    _beat(tmp_path)
-    result = probe_poll_scan_cost(tmp_path, _dataset(tmp_path, 100))
+def test_no_dataset_at_all_is_not_measured(tmp_path):
+    result = probe_poll_scan_cost(dataset=tmp_path / "absent",
+                                  learn_root=tmp_path / "learn")
+
     assert result.state == NOT_MEASURED
 
 
-def test_no_heartbeat_at_all_is_not_measured(tmp_path):
-    assert probe_poll_scan_cost(tmp_path, _dataset(tmp_path, 1)).state == NOT_MEASURED
+def test_the_retrainer_read_is_reported_beside_the_layout(tmp_path):
+    """What still reads the store on a cadence is the retrainer, so what it paid
+    on its last pass belongs on the same tile as the layout that priced it."""
+    learn_root = tmp_path / "learn"
+    learn_root.mkdir()
+    (learn_root / "perp-retrain.json").write_text(json.dumps(
+        {"segment": "perp", "read": {"hours_read": 30, "rows": 969505}}))
+
+    result = probe_poll_scan_cost(dataset=_hour_partitioned(tmp_path, 24, 3),
+                                  learn_root=learn_root)
+
+    assert "perp read 30h -> 969,505 rows" in result.detail
 
 
 def test_the_probe_is_registered_under_the_name_the_plan_uses(tmp_path):

@@ -113,6 +113,12 @@ def _evidence(frame, contract: dict, moneyness, chain_median) -> dict:
         "relative_spread": None if frame.get("relative_spread") is None else float(frame["relative_spread"]),
         "named_expiry_and_moneyness": True,
         "directional_bet": False,
+        # **The window this frame was computed from (BF-02).** Its acceptance is
+        # that every feature row NAMES the window behind it, and this brain was
+        # the only evidence on the board that did not - so a reader could not
+        # tell a decision made on two observations from one made on two hundred.
+        "samples": frame.get("samples"),
+        "window_ns": frame.get("window_ns"),
         "rule_brain": True,
     }
 

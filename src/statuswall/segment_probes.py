@@ -971,6 +971,18 @@ def probe_brains_are_learned() -> ProbeResult:
             missing[segment] = "no heartbeat"
             continue
         if payload.get("learned") and payload.get("model_version"):
+            warm_up = payload.get("warm_up") or {}
+            if warm_up and not warm_up.get("symbols_ready"):
+                # Deciding from a model and being ABLE to decide are different
+                # facts. A learned bot inside its bar window has not failed - it
+                # is counted apart so nobody reads "0 proposals" as a verdict on
+                # the model.
+                missing[segment] = (
+                    f"learned on {payload['model_version'][:8]} and warming up: "
+                    f"{warm_up.get('deepest_bars', 0)}/{warm_up.get('bars_required', 0)}"
+                    f" bars, ~{warm_up.get('minutes_to_first_decision', 0)} min to its "
+                    f"first decision")
+                continue
             met.append(segment)
             continue
         refused = (payload.get("champion_refused")
@@ -989,35 +1001,78 @@ def probe_beliefs_carry_provenance() -> ProbeResult:
     Measured on the journal rather than on the class, because a belief that is
     constructible in a test and never emitted by the live loop is a type, not a
     capability.
+
+    **A belief rides a PROPOSAL, not a decline**, so an absence of beliefs in a
+    window of declines says nothing about whether the capability works. That
+    distinction is the whole point of this probe: the first version reported
+    NOT MEASURED across all four bots while the perp bot was emitting beliefs
+    correctly, because its tail happened to hold nothing but declines - and
+    "the brains emit no belief" and "no brain proposed anything recently" are
+    different facts about the system.
     """
+    # **The denominator is the LEARNED bots, not all four.** A rule brain makes
+    # no edge claim (RL-025) and emits no belief, so counting it as a bot that
+    # failed to emit one would report a design decision as a defect - and would
+    # keep reporting it after the capability was working everywhere it applies.
+    learned = [segment for segment, (payload, age_s) in live_heartbeats().items()
+               if (payload or {}).get("learned")]
+    if not learned:
+        return ProbeResult(
+            NOT_MEASURED,
+            "no learned brain is deployed, and a rule brain emits no belief by "
+            "design (RL-025) - there is nothing here to measure yet",
+            str(STATE_ROOT / "<segment>" / "heartbeat.json"))
+
     met, missing = [], {}
-    for segment in SEGMENTS:
+    for segment in learned:
         path = latest_journal(segment, "decisions")
-        rows = tail_rows(path, rows=200) if path else []
+        rows = tail_rows(path, rows=4000, max_bytes=16_000_000) if path else []
         if not rows:
             missing[segment] = "no decisions journalled"
             continue
+        proposals = 0
         with_belief = 0
         with_provenance = 0
         for row in rows:
             for side in ("bull", "bear"):
                 block = ((row.get("evidence") or {}).get(side) or {})
-                belief = block.get("belief") or {}
+                if block.get("outcome") not in ("PROPOSAL", "PROPOSE"):
+                    continue
+                proposals += 1
+                belief = (block.get("evidence") or {}).get("belief") or {}
                 if not belief:
                     continue
                 with_belief += 1
-                if belief.get("provenance") and belief.get("expires_at_ns"):
+                # The expiry contract is the half-life plus when it was held;
+                # `describe()` publishes both, and a belief may not be
+                # constructed without provenance at all.
+                if (belief.get("provenance") and belief.get("half_life_ns")
+                        and belief.get("held_at_ns") is not None):
                     with_provenance += 1
+        if not proposals:
+            missing[segment] = "no proposal in the journal window to carry one"
+            continue
         if not with_belief:
-            missing[segment] = "the live brains emit no belief (rule brains do not)"
+            missing[segment] = f"{proposals} proposals and none carries a belief"
             continue
         if with_provenance < with_belief:
             missing[segment] = (f"{with_belief - with_provenance} beliefs carry no "
                                 f"provenance or no half-life")
             continue
-        met.append(segment)
-    return _fraction(met, missing, "bots emitting beliefs with provenance and a half-life",
-                     str(STATE_ROOT / "<segment>" / "decisions-*.ndjson"))
+        met.append(f"{segment} ({with_provenance}/{proposals})")
+    shown = ", ".join(met) or "none"
+    detail = (f"{len(met)}/{len(learned)} LEARNED bots whose proposals carry a "
+              f"belief with provenance and a half-life ({shown})"
+              + ("; " + "; ".join(f"{k}: {v}" for k, v in sorted(missing.items()))
+                 if missing else "")
+              + f"; {len(SEGMENTS) - len(learned)} bot(s) run rule brains, which "
+                f"emit no belief by design (RL-025)")
+    proof = str(STATE_ROOT / "<segment>" / "decisions-*.ndjson")
+    if len(met) == len(learned):
+        return ProbeResult(OK, detail, proof)
+    if met:
+        return ProbeResult(PARTIAL, detail, proof)
+    return ProbeResult(NOT_MEASURED, detail, proof)
 
 
 def probe_calibration_updates_live() -> ProbeResult:

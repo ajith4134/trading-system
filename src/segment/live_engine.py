@@ -223,6 +223,34 @@ class LiveSegmentEngine:
         return {"quote_currency": currency, "usd_rate": str(underlying),
                 "rate_source": "venue underlying price on the deciding frame"}
 
+    def _warm_up(self) -> dict | None:
+        """How far a LEARNED bot is from being able to decide at all.
+
+        **Measured 2026-08-19, and it looked exactly like a broken model.** The
+        perp bot swapped to its trained champion and then declined 152,334 times
+        across 319 polls without one proposal. Nothing was wrong: a learned brain
+        needs `FEATURE_WINDOW_BARS` SEALED one-minute bars before a feature vector
+        exists, so every restart costs it that many minutes of not trading - and
+        the board showed `0 proposals`, which is indistinguishable from a model
+        whose threshold is never crossed.
+
+        None for a rule bot, which has no such window and for which the question
+        is meaningless rather than zero.
+        """
+        if not self.bot.learned:
+            return None
+        from learn.training_set import FEATURE_WINDOW_BARS
+        held = [self.features.bars_held(venue, symbol)
+                for venue, symbol in self.features.symbols()]
+        ready = sum(1 for count in held if count >= FEATURE_WINDOW_BARS)
+        return {"bars_required": FEATURE_WINDOW_BARS,
+                "symbols_ready": ready,
+                "symbols_watched": len(held),
+                "deepest_bars": max(held, default=0),
+                # One bar a minute, so what is left IS the wait in minutes.
+                "minutes_to_first_decision": max(0, FEATURE_WINDOW_BARS
+                                                 - max(held, default=0))}
+
     def _heartbeat(self, now_ns: int, note: str) -> None:
         directory = self.root / self.bot.segment
         directory.mkdir(parents=True, exist_ok=True)
@@ -244,6 +272,9 @@ class LiveSegmentEngine:
             # refused.** Without this the board can only say `not learned`, which
             # reads as `nobody has trained one yet` - a different fact.
             "champion_refused": self.bot.extra.get("champion_refused"),
+            # A learned bot that cannot yet see 60 sealed bars is WARMING UP, not
+            # declining. The two produce the same zero on a board.
+            "warm_up": self._warm_up(),
             # §1a L2: what the LIVE loop fitted, kept apart from what the retrainer
             # set, because the two are different claims.
             "live_fitted": (self.bot.extra["calibration"].realised_coverage()

@@ -134,3 +134,91 @@ def test_the_archive_is_walked_once_per_process_not_once_per_row(tmp_path):
 
 def test_a_dataset_that_does_not_exist_counts_zero_and_says_the_walk_finished(tmp_path):
     assert ruling_conformance.count_store_fragments(tmp_path / "absent") == (0, True)
+
+
+# --- probes repointed off a retired engine (2026-08-19) --------------------
+
+def _segment_root(tmp_path, segments=("perp", "spot", "dated", "options"),
+                  age_s=1.0, recovered=True):
+    import json as _json
+    import time as _time
+    root = tmp_path / "segment"
+    for segment in segments:
+        directory = root / segment
+        directory.mkdir(parents=True)
+        (directory / "heartbeat.json").write_text(_json.dumps(
+            {"written_at_ns": _time.time_ns() - int(age_s * 1e9),
+             "segment": segment}))
+        (directory / "engine.log").write_text(
+            "recovered 3 open position(s) from the journal\n" if recovered
+            else "poll 1: {}\n")
+    return root
+
+
+def test_the_paper_engine_probe_measures_the_bots_that_are_running(tmp_path):
+    """It measured `plumbing-momentum`, retired under RL-025 on 2026-08-18, and
+    reported DEGRADED on a heartbeat 38 hours old and never coming back. A tile
+    permanently red about something switched off on purpose is one everybody
+    learns to skip."""
+    from statuswall.evidence import OK
+    result = ruling_conformance.probe_paper_engine_running(
+        state_root=_segment_root(tmp_path))
+
+    assert result.state == OK
+    assert "4/4 segment paper engines polling" in result.detail
+    assert "4 journalled a position recovery" in result.detail
+
+
+def test_two_bots_polling_of_four_reads_as_partial_and_names_the_others(tmp_path):
+    from statuswall.evidence import PARTIAL
+    root = _segment_root(tmp_path, segments=("perp", "spot"))
+
+    result = ruling_conformance.probe_paper_engine_running(state_root=root)
+
+    assert result.state == PARTIAL
+    assert "dated: no heartbeat" in result.detail
+
+
+def test_a_stopped_bot_is_not_counted_as_a_running_paper_engine(tmp_path):
+    from statuswall.evidence import NOT_MEASURED
+    root = _segment_root(tmp_path, age_s=4000)
+
+    result = ruling_conformance.probe_paper_engine_running(state_root=root)
+
+    assert result.state == NOT_MEASURED
+    assert "min old" in result.detail
+
+
+def test_an_unpartitioned_store_reads_as_degraded_because_every_read_walks_it_all(
+        tmp_path):
+    from statuswall.evidence import DEGRADED
+    dataset = tmp_path / "bars"
+    (dataset / "symbol=BTCUSDT").mkdir(parents=True)
+    (dataset / "symbol=BTCUSDT" / "a.parquet").write_bytes(b"")
+
+    result = ruling_conformance.probe_poll_scan_cost(
+        dataset=dataset, learn_root=tmp_path / "learn")
+
+    assert result.state == DEGRADED
+    assert "not partitioned by availability hour" in result.detail
+
+
+def test_the_scan_probe_never_compares_an_exact_count_to_a_lower_bound(tmp_path,
+                                                                      monkeypatch):
+    """First run of this probe reported a healthy store as DEGRADED at
+    `4288/2000+`: the numerator was exact and the denominator was whatever the
+    budgeted walk had reached."""
+    from statuswall.evidence import PARTIAL
+    dataset = tmp_path / "bars"
+    for hour in ("2026-08-19T05", "2026-08-19T06"):
+        directory = dataset / f"availability_hour={hour}" / "symbol=BTCUSDT"
+        directory.mkdir(parents=True)
+        (directory / "part.parquet").write_bytes(b"")
+    monkeypatch.setattr(ruling_conformance, "count_store_fragments",
+                        lambda *a, **k: (1, False))
+
+    result = ruling_conformance.probe_poll_scan_cost(
+        dataset=dataset, learn_root=tmp_path / "learn")
+
+    assert result.state == PARTIAL
+    assert "lower bound" in result.detail

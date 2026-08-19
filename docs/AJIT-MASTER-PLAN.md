@@ -189,6 +189,15 @@ its own plan when slice 1's row inventory is reviewed.
               no archived event is ever traded on resume
   state:      measured by probe_paper_engine_running
 
+> **Repointed 2026-08-19, and the row is unchanged.** `probe_paper_engine_running` measured
+> `capture/paper/forward` - the `plumbing-momentum` engine RETIRED under RL-025 - so it reported
+> DEGRADED on a heartbeat 38 hours old and deliberately never coming back. The four segment bots
+> are the paper engines now and they satisfy this acceptance more strictly than the engine that
+> was retired: they never read the parquet archive at all (RL-024), so "no archived event is
+> traded on resume" holds by construction, and each journals what it rebuilt from its own fills
+> before it polls. **A tile permanently red about something switched off on purpose is one
+> everybody learns to skip, which is how the next real failure gets missed.**
+
 ### SL-13
   slice:      slice-0
   does:       make this plan the document every other document points at
@@ -224,6 +233,18 @@ its own plan when slice 1's row inventory is reviewed.
               of the old layout is present in the new one before the old is
               retired
   state:      measured by probe_poll_scan_cost
+
+> **Repointed 2026-08-19 with SL-12, and what it measures now.** Nothing polls the store on a
+> loop any more - RL-024 moved every trading price to a live feed - so the subject of this
+> measurement changed while the property being defended did not. What still reads the store on a
+> cadence is the RETRAINER, and what makes that read cheap or ruinous is this row's partitioning.
+> The probe therefore measures the layout directly: how many fragments a reader bounded to the
+> newest hours must open, against how many exist. Measured 2026-08-19: **168,639 fragments across
+> 73 hour directories**, with the newest two holding 4,288 of them.
+>
+> Its first run reported a healthy store as DEGRADED at `4288/2000+` - an exact numerator against
+> a budgeted lower-bound denominator. A lower bound is a measurement and a ratio taken against one
+> is not, so the share is now computed only from a complete count and reads PARTIAL otherwise.
 
 > **Hour, not date, and the file count is why.** Measured 2026-08-17: 538 MB across 52,487 files
 > is an average of **10 KB per file**, roughly 6,000 new files a day over 2,230 symbol directories.
@@ -1098,6 +1119,17 @@ regime is not a regime change. L6 is recorded as FAILING rather than skipped.
               the out-of-fold score each bot is deciding on, and a bot running no model reads
               NOT MEASURED rather than green
   state:      measured by probe_retrainer_running
+
+> **What a learned brain costs at every restart, measured 2026-08-19.** The perp bot swapped to
+> its trained champion and then declined **152,334 times across 319 polls without one proposal**.
+> Nothing was wrong: `compute_features` is fitted on exactly 60 sealed one-minute bars, so a
+> learned brain cannot produce a vector at all until it has watched 60 minutes of live tape, and
+> `segment.live_features` holds that state IN PROCESS - a restart discards it (RL-024 forbids
+> priming from the store, which is the alternative). **On the board this was `0 proposals`, which
+> is indistinguishable from a model whose threshold is never crossed.** The heartbeat now carries
+> the bar count against the window and the minutes remaining, the tile renders WARMING UP, and
+> `probe_brains_are_learned` counts a warming bot apart from a deciding one. LB-09's reload is
+> what would remove the cost rather than only reporting it.
 
 ### LB-09
   slice:      learned-brains

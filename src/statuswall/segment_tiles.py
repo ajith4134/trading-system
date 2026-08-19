@@ -250,9 +250,21 @@ def _tile(measured: dict) -> str:
 
     edge_claim = heartbeat.get("makes_edge_claim")
     learned = heartbeat.get("learned")
+    warm_up = heartbeat.get("warm_up") or {}
     if learned:
         version = heartbeat.get("model_version") or "?"
         label = (f"<span class='badge learned'>LEARNED · model {html.escape(version[:12])}</span>")
+        # **A learned brain that has not yet seen its window is WARMING UP, and
+        # that is a different fact from a brain that keeps declining.** Measured
+        # 2026-08-19: the perp bot declined 152,334 times across 319 polls
+        # without one proposal, and nothing was wrong - it held 33 of the 60
+        # sealed bars its feature vector needs. `0 proposals` on a tile cannot
+        # tell that from a model whose threshold is never crossed.
+        if warm_up and not warm_up.get("symbols_ready"):
+            label += (f"<span class='badge warming'>WARMING UP · "
+                      f"{warm_up.get('deepest_bars', 0)}/{warm_up.get('bars_required', 0)}"
+                      f" bars · ~{warm_up.get('minutes_to_first_decision', 0)} min to "
+                      f"first decision</span>")
     elif edge_claim:
         label = "<span class='badge claim'>EDGE CLAIM</span>"
     else:
@@ -335,6 +347,7 @@ h1 { font-size:20px; margin:0 0 4px; }
 .tile.live { border-left:4px solid var(--up); }
 .numbers.capital { border-top:1px dashed var(--line); padding-top:10px; margin-top:6px; }
 .warnt { color:var(--warn); }
+.badge.warming { background:#3a2f12; color:#e7c96b; border:1px solid var(--warn); }
 .flat { color:var(--dim); }
 .tile.stale { border-left:4px solid var(--warn); }
 .tile.off { border-left:4px solid var(--dim); }

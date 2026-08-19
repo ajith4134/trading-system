@@ -379,7 +379,9 @@ def test_a_bot_deciding_from_a_registered_model_counts_as_learned(live_root):
     assert probes.probe_brains_are_learned().state == OK
 
 
-def test_a_belief_without_provenance_or_a_half_life_is_not_counted(live_root):
+def test_a_belief_probe_reads_nothing_from_a_board_of_rule_brains(live_root):
+    """Superseded the "every decision must carry a belief" reading: a belief rides
+    a PROPOSAL from a LEARNED brain, and neither is true of a rule-brain board."""
     row = _decision()
     row["evidence"]["bull"]["belief"] = {"claim": "up"}
     _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson", [row])
@@ -387,7 +389,7 @@ def test_a_belief_without_provenance_or_a_half_life_is_not_counted(live_root):
     result = probes.probe_beliefs_carry_provenance()
 
     assert result.state == NOT_MEASURED
-    assert "carry no provenance" in result.detail
+    assert "no learned brain is deployed" in result.detail
 
 
 # --- the self-probe --------------------------------------------------------
@@ -541,3 +543,110 @@ def test_a_bot_that_has_opened_but_closed_nothing_has_no_return_yet(live_root):
 
     assert result.state == NOT_MEASURED
     assert "closed nothing" in result.detail
+
+
+# --- LB-03: a belief rides a proposal, and only a learned brain emits one ---
+
+def _proposal_with_belief(belief=None, outcome="PROPOSAL"):
+    evidence = {"model_version": "f2a4adfb", "sealed_bars": 3}
+    if belief is not None:
+        evidence["belief"] = belief
+    return {"at_ns": 1, "segment": "perp", "symbol": "BTCUSDT",
+            "outcome": "SELECTED", "reason": "SELECTED",
+            "evidence": {"bull": {"brain": "perp-bull-learned", "outcome": outcome,
+                                  "reason": "MODEL_ABOVE_THRESHOLD",
+                                  "evidence": evidence},
+                         "bear": {"brain": "perp-bear-learned", "outcome": "DECLINE",
+                                  "reason": "MODEL_BELOW_THRESHOLD",
+                                  "evidence": {"sealed_bars": 3}},
+                         "tail": {"authority": "advisory-input-only"}}}
+
+
+_GOOD_BELIEF = {"claim": "direction", "value": 0.61, "epistemic_class": "observed",
+                "provenance": {"source": "perp-direction f2a4adfb"},
+                "held_at_ns": 1, "half_life_ns": 300_000_000_000}
+
+
+def _learned(live_root, segments=("perp",)):
+    for segment in segments:
+        _write(live_root / segment / "heartbeat.json",
+               _heartbeat(probes.time.time_ns(), segment=segment, learned=True,
+                          model_version="f2a4adfb"))
+
+
+def test_rule_brains_are_not_counted_as_bots_that_failed_to_emit_a_belief(live_root):
+    """A rule brain makes no edge claim and emits no belief by design, so counting
+    it as a failure would report a decision as a defect."""
+    result = probes.probe_beliefs_carry_provenance()
+
+    assert result.state == NOT_MEASURED
+    assert "no learned brain is deployed" in result.detail
+
+
+def test_a_learned_proposal_carrying_provenance_and_a_half_life_passes(live_root):
+    _learned(live_root)
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_proposal_with_belief(_GOOD_BELIEF)])
+
+    result = probes.probe_beliefs_carry_provenance()
+
+    assert result.state == OK
+    assert "1/1 LEARNED bots" in result.detail
+    assert "rule brains" in result.detail
+
+
+def test_a_belief_without_a_half_life_does_not_pass(live_root):
+    _learned(live_root)
+    belief = {k: v for k, v in _GOOD_BELIEF.items() if k != "half_life_ns"}
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_proposal_with_belief(belief)])
+
+    result = probes.probe_beliefs_carry_provenance()
+
+    assert result.state == NOT_MEASURED
+    assert "no provenance or no half-life" in result.detail
+
+
+def test_a_window_of_declines_says_so_rather_than_claiming_no_belief_exists(live_root):
+    """The first version of this probe read NOT MEASURED across four bots while
+    the perp bot was emitting beliefs correctly - its tail held only declines."""
+    _learned(live_root)
+    _write_rows(live_root / "perp" / "decisions-2026-08-19.ndjson",
+                [_proposal_with_belief(None, outcome="DECLINE")])
+
+    result = probes.probe_beliefs_carry_provenance()
+
+    assert "no proposal in the journal window" in result.detail
+
+
+# --- warming up is not the same as never deciding --------------------------
+
+def test_a_learned_bot_inside_its_bar_window_is_reported_as_warming_up(live_root):
+    """Measured 2026-08-19: the perp bot swapped to its trained champion and then
+    declined 152,334 times across 319 polls without one proposal. Nothing was
+    wrong - it held 33 of the 60 sealed bars a feature vector needs. `0 proposals`
+    cannot be told from a model whose threshold is never crossed."""
+    _write(live_root / "perp" / "heartbeat.json",
+           _heartbeat(probes.time.time_ns(), learned=True,
+                      model_version="f2a4adfb785232ec",
+                      warm_up={"bars_required": 60, "symbols_ready": 0,
+                               "symbols_watched": 770, "deepest_bars": 33,
+                               "minutes_to_first_decision": 27}))
+
+    result = probes.probe_brains_are_learned()
+
+    assert "warming up" in result.detail
+    assert "33/60 bars" in result.detail
+    assert "27 min" in result.detail
+
+
+def test_a_learned_bot_past_its_window_counts_as_deciding_from_the_model(live_root):
+    for segment in probes.SEGMENTS:
+        _write(live_root / segment / "heartbeat.json",
+               _heartbeat(probes.time.time_ns(), segment=segment, learned=True,
+                          model_version="f2a4adfb785232ec",
+                          warm_up={"bars_required": 60, "symbols_ready": 412,
+                                   "symbols_watched": 770, "deepest_bars": 180,
+                                   "minutes_to_first_decision": 0}))
+
+    assert probes.probe_brains_are_learned().state == OK

@@ -94,33 +94,78 @@ def probe_memory_reachable() -> ProbeResult:
                        f"{generic} -> {generic_count}, {named} -> {named_count}")
 
 
+SEGMENT_STATE_ROOT = Path.home() / "capture" / "segment"
+SEGMENTS = ("perp", "spot", "dated", "options")
+RETIRED_PLUMBING = Path.home() / "capture" / "paper" / "forward"
+
+
 def probe_paper_engine_running(
-    state_dir: Path = Path.home() / "capture" / "paper" / "forward",
+    state_root: Path = SEGMENT_STATE_ROOT,
 ) -> ProbeResult:
     """RL-005, RL-017, RL-020: paper trading is the experimentation ground.
 
-    PARTIAL rather than OK while the strategy makes no edge claim. The engine
-    working and the strategy being a strategy are different facts, and a green
-    tile over `plumbing-momentum` would be the second one asserted from the
-    first.
+    **Repointed 2026-08-19 at the engines that are actually running.** This
+    measured `capture/paper/forward` - the `plumbing-momentum` engine RETIRED
+    under RL-025 on 2026-08-18 - and so reported DEGRADED on a heartbeat that
+    was 38 hours old and deliberately never coming back. A tile that is
+    permanently red about something switched off on purpose is one everybody
+    learns to skip, which is how the next real failure gets missed.
+
+    The four segment bots are the paper engines now, and they satisfy the row's
+    acceptance more strictly than the engine that was retired: they never read
+    the parquet archive at all (RL-024), so "no archived event is traded on
+    resume" holds by construction, and a restart is observable - each one
+    journals what it recovered from its own fill journal before it polls.
     """
-    heartbeat = state_dir / "heartbeat.json"
-    if not heartbeat.is_file():
-        return ProbeResult(NOT_MEASURED, "no heartbeat written", str(heartbeat))
+    live, recovered, missing = [], [], {}
+    for segment in SEGMENTS:
+        beat_path = state_root / segment / "heartbeat.json"
+        try:
+            beat = json.loads(beat_path.read_text(encoding="utf-8"))
+            age_s = (time.time_ns() - int(beat["written_at_ns"])) / 1e9
+        except (OSError, ValueError, KeyError, TypeError):
+            missing[segment] = "no heartbeat"
+            continue
+        if age_s > 300:
+            missing[segment] = f"heartbeat {age_s / 60:.0f} min old"
+            continue
+        live.append(segment)
+        # A restart that re-primed from the archive would show up as a bot that
+        # traded before it had watched any live ticks. What it does instead is
+        # journal the positions it rebuilt from its own fills.
+        if _recovered_on_restart(state_root / segment / "engine.log"):
+            recovered.append(segment)
+
+    detail = (f"{len(live)}/4 segment paper engines polling"
+              + (f" ({', '.join(live)})" if live else "")
+              + f", {len(recovered)} journalled a position recovery on restart"
+              + ("; " + "; ".join(f"{k}: {v}" for k, v in sorted(missing.items()))
+                 if missing else "")
+              + ("; the retired plumbing-momentum engine is not counted (RL-025)"
+                 if (RETIRED_PLUMBING / "heartbeat.json").is_file() else ""))
+    proof = str(state_root / "<segment>" / "heartbeat.json")
+    if not live:
+        return ProbeResult(NOT_MEASURED, detail, proof)
+    if len(live) < len(SEGMENTS):
+        return ProbeResult(PARTIAL, detail, proof)
+    return ProbeResult(OK, detail, proof)
+
+
+def _recovered_on_restart(log: Path, window_bytes: int = 2_000_000) -> bool:
+    """Whether this bot rebuilt open positions from its journal on its last start.
+
+    Read from the engine log rather than the decision journal, and bounded: the
+    decision journals reached 4.1 GB in a day, and a recovery line sits at a
+    restart point rather than at the end, so a tail of the journal would report
+    a recovery that happened as though it had not.
+    """
     try:
-        beat = json.loads(heartbeat.read_text())
-        age_s = (time.time_ns() - int(beat["written_at_ns"])) / 1e9
-    except (ValueError, OSError, KeyError) as failure:
-        return ProbeResult(NOT_MEASURED, f"unreadable heartbeat: {failure!r}",
-                           str(heartbeat))
-    detail = (f"strategy {beat.get('strategy')!r}, edge claim "
-              f"{bool(beat.get('makes_edge_claim'))}, {beat.get('fills', 0)} fill(s), "
-              f"heartbeat {age_s:.0f}s old")
-    if age_s > 600:
-        return ProbeResult(DEGRADED, detail, str(heartbeat))
-    if not beat.get("makes_edge_claim", False):
-        return ProbeResult(PARTIAL, detail, str(heartbeat))
-    return ProbeResult(OK, detail, str(heartbeat))
+        size = log.stat().st_size
+        with log.open("rb") as handle:
+            handle.seek(max(0, size - window_bytes))
+            return b"recovered" in handle.read()
+    except OSError:
+        return False
 
 
 # **The archive walk, budgeted and taken once.** Measured 2026-08-19: a plain
@@ -161,53 +206,79 @@ def count_store_fragments(dataset: Path,
 
 
 def probe_poll_scan_cost(
-    state_dir: Path = Path.home() / "capture" / "paper" / "forward",
     dataset: Path = Path.home() / "capture" / "store" / "bars_60000000000ns",
-    poll_interval_s: float = 60.0,
+    learn_root: Path = Path.home() / "capture" / "learn",
 ) -> ProbeResult:
-    """SL-14, RL-020: a 24/7 engine has to poll faster than it is asked to.
+    """SL-14, SL-15, RL-020: a read must cost what arrived, not what is archived.
 
-    Read cost is invisible in fills, orders or events. The engine goes on
-    reporting a healthy heartbeat while each poll takes longer than the interval
-    between polls, until the box kills it - which is what happened on 2026-08-17
-    (exit 137, fourth restart that day). So the cost is journalled beside the
-    findings and graded here.
+    **Repointed 2026-08-19, for the same reason as SL-12's probe.** It measured
+    the poll cost of `plumbing-momentum`, retired under RL-025, and reported
+    DEGRADED forever on a heartbeat 38 hours old. Nothing polls the store on a
+    loop any more - RL-024 moved every trading price to a live feed - so the
+    subject of the measurement changed and the property being defended did not.
 
-    NOT MEASURED when the heartbeat predates the fields. Absent is not zero, and
-    zero footers opened is the healthy answer.
+    What still reads the store on a cadence is the RETRAINER, and what makes that
+    read cheap or ruinous is the hour partitioning SL-15 built. So this measures
+    the layout directly: how many fragments a reader bounded to the newest hours
+    has to open, against how many exist. Measured here on 2026-08-19: **168,639
+    fragments across 73 hour directories**, and a reader asking for the newest
+    hour opens the fragments of that hour alone.
+
+    The number is a lower bound when the walk hits its budget, and it says so.
     """
-    beat = read_heartbeat(state_dir)
-    if beat is None:
-        return ProbeResult(NOT_MEASURED, "no heartbeat written",
-                           str(state_dir / "heartbeat.json"))
-    if beat.poll_seconds is None or beat.fragment_schema_reads is None:
-        return ProbeResult(
-            NOT_MEASURED,
-            "the last heartbeat carries no cost fields - written by an engine "
-            "from before they were recorded",
-            str(state_dir / "heartbeat.json"))
-
-    fragments, complete = count_store_fragments(dataset)
-    share = (f"{beat.fragment_schema_reads}/{fragments}"
-             f"{'' if complete else '+'} fragment footers"
-             if fragments else f"{beat.fragment_schema_reads} fragment footers")
-    detail = f"last poll {beat.poll_seconds:.1f}s, opened {share}"
-    proof = f"{state_dir / 'heartbeat.json'} and {dataset}"
-
-    if beat.poll_seconds > poll_interval_s:
+    if not dataset.is_dir():
+        return ProbeResult(NOT_MEASURED, "no bars dataset to measure",
+                           str(dataset))
+    hours = sorted(d.name for d in dataset.iterdir()
+                   if d.is_dir() and d.name.startswith("availability_hour="))
+    if not hours:
         return ProbeResult(
             DEGRADED,
-            f"{detail} - a poll costs more than the {poll_interval_s:.0f}s "
-            f"between polls, so the engine is falling behind the tape",
-            proof)
-    # A tenth of the archive re-walked on a routine poll means the cache is not
-    # holding, and the cost grows with every fragment written from here on.
-    # Against a partial count the tenth is a LOWER bound, so this grades harder
-    # rather than softer - which is the direction a half-measured probe should err.
-    if fragments and beat.fragment_schema_reads > fragments // 10:
-        return ProbeResult(DEGRADED,
-                           f"{detail} - cost is scaling with the archive rather "
-                           f"than with what arrived", proof)
+            "the bars dataset is not partitioned by availability hour, so every "
+            "read walks the whole archive (SL-15)", str(dataset))
+
+    newest = [dataset / name for name in hours[-2:]]
+    local = sum(1 for directory in newest for _ in directory.rglob("*.parquet"))
+    total, complete = count_store_fragments(dataset)
+    share = f"{local}/{total}{'' if complete else '+'}"
+
+    # What the retrainer actually paid on its last pass, when it wrote one.
+    read_costs = []
+    for report_path in sorted(learn_root.glob("*-retrain.json")):
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        read = report.get("read") or {}
+        if read.get("hours_read"):
+            read_costs.append(f"{report.get('segment')} read "
+                              f"{read['hours_read']}h -> {read.get('rows', 0):,} rows")
+
+    detail = (f"{len(hours)} hour partitions, newest two hold {share} fragments"
+              + (f"; {', '.join(read_costs)}" if read_costs else
+                 "; no retrain has recorded a read"))
+    proof = str(dataset)
+
+    # The point of the partitioning: bounding a read to recent hours must bound
+    # the fragments it opens, and that bound must not grow with the archive.
+    #
+    # **The comparison is only made against a COMPLETE count.** The archive walk
+    # is budgeted and returns a lower bound when it runs out of time, and
+    # comparing an exact numerator against a lower-bound denominator is how a
+    # healthy store gets reported as broken - which it was, on the first run of
+    # this probe, at `4288/2000+`.
+    if not complete:
+        return ProbeResult(
+            PARTIAL,
+            f"{detail} - the archive total is a lower bound, so the share of it "
+            f"a two-hour read opens cannot be computed this pass", proof)
+    expected = 2 * (total / len(hours)) if hours else 0
+    if expected and local > 4 * expected:
+        return ProbeResult(
+            DEGRADED,
+            f"{detail} - a two-hour read opens {local} fragments where two hours' "
+            f"worth is about {expected:.0f}, so recent hours are not staying "
+            f"bounded", proof)
     return ProbeResult(OK, detail, proof)
 
 
