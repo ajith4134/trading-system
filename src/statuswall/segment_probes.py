@@ -1826,6 +1826,66 @@ def probe_one_engine_not_two() -> ProbeResult:
                            f"{len(SEGMENTS)} declared segment journals", proof)
 
 
+def probe_champion_promotion_is_gated() -> ProbeResult:
+    """CG-01..CG-03 / RL-044: nothing takes a champion alias without a verdict.
+
+    Measured 2026-08-19, and the reason this probe exists: the alias was assigned
+    UNCONDITIONALLY by the training run, and the registry read the incumbent only
+    to record it. perp's edge fell from 0.01695 to 0.01227 in one swap and the bot
+    stopped selecting - and no check anywhere had an opinion.
+
+    Two things are checked, because either alone can pass while the system is
+    broken. STRUCTURALLY: the training module must not call `assign_alias` outside
+    the gated helper. HISTORICALLY: the newest assignment for each champion alias
+    must carry a verdict's words, so a hand-edited alias file is visible too.
+    """
+    trainer = REPO / "src" / "learn" / "train_segment_model.py"
+    gate = REPO / "src" / "validation" / "champion_promotion.py"
+    proof = f"{trainer} · {MODEL_ROOT / 'alias-history.ndjson'}"
+
+    if not gate.exists():
+        return ProbeResult(NOT_MEASURED, f"no champion gate at {gate}", proof)
+    if not trainer.exists():
+        return ProbeResult(NOT_MEASURED, f"no trainer at {trainer}", proof)
+
+    calls = [line.strip() for line in trainer.read_text().splitlines()
+             if "assign_alias(" in line and not line.strip().startswith("#")]
+    if len(calls) != 1:
+        return ProbeResult(
+            FAILING,
+            f"{len(calls)} assign_alias call(s) in the trainer; exactly one is "
+            f"expected and it must be the gated helper's",
+            proof)
+
+    history_path = MODEL_ROOT / "alias-history.ndjson"
+    if not history_path.exists():
+        return ProbeResult(PARTIAL,
+                           "the trainer is gated, but no alias history exists yet "
+                           "to confirm a gated assignment has actually run", proof)
+
+    newest: dict = {}
+    for row in tail_rows(history_path, rows=5_000):
+        alias = row.get("alias")
+        if alias and "champion" in alias:
+            newest[alias] = row
+
+    if not newest:
+        return ProbeResult(PARTIAL, "the trainer is gated, but no champion alias "
+                                    "has ever been assigned", proof)
+
+    ungated = [alias for alias, row in newest.items()
+               if "promoted" not in str(row.get("reason", ""))]
+    if ungated:
+        return ProbeResult(
+            DEGRADED,
+            f"the trainer is gated, but {len(ungated)} of {len(newest)} champion "
+            f"alias(es) still carry a pre-gate reason: {', '.join(sorted(ungated))} "
+            f"- they were assigned before the gate existed and no verdict backs them",
+            proof)
+    return ProbeResult(OK, f"{len(newest)} champion alias(es) each assigned by a "
+                           f"recorded verdict", proof)
+
+
 SEGMENT_PROBES = {
     "probe_segment_engine_running": probe_segment_engine_running,
     "probe_perp_engine_running": probe_perp_engine_running,
@@ -1881,6 +1941,7 @@ SEGMENT_PROBES = {
     "probe_swing_scope_is_perp_and_spot": probe_swing_scope_is_perp_and_spot,
     "probe_swing_band_is_live": probe_swing_band_is_live,
     "probe_one_engine_not_two": probe_one_engine_not_two,
+    "probe_champion_promotion_is_gated": probe_champion_promotion_is_gated,
 }
 
 

@@ -42,7 +42,8 @@ def test_the_real_spine_parses_into_its_slices_in_order():
     slices = read_master_plan(SPINE)
     keys = [s.key for s in slices]
     assert keys == ["slice-0", "bot-framework", "spot-bot", "perp-bot", "capital",
-                    "dated-bot", "options-bot", "learned-brains", "slice-5"]
+                    "champion-gate", "dated-bot", "options-bot", "learned-brains",
+                    "slice-5"]
 
 
 def test_every_row_in_the_real_spine_names_a_ruling_that_exists():

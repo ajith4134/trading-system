@@ -620,6 +620,21 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_intraday_timeframes_declared"
+  },
+  {
+   "id": "RL-044",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "do all 3",
+   "clarified_as": "All three of the offered steps: gate the champion alias assignment through a real promotion decision, never promote a model that does not beat the incumbent on the same out-of-fold measure, and only then decide what to do with the model perp is currently running.",
+   "means": "MEASURED 2026-08-19: the champion alias is assigned UNCONDITIONALLY by `learn.train_segment_model` line 247. The only check is a binomial test against the majority class; `models.model_registry.assign_alias` reads the incumbent solely to record it as `previous_version_id` and never compares. So the champion is whatever trained LAST, not what is best, and a retrain that produces a worse model silently replaces a better one. The promotion machinery already exists - `validation.promotion_gate`, `validation.promotion_pipeline`, `models.champion_challenger` - and outside their own files the only importer is a statuswall PROBE. Built, tested, and wired to nothing that promotes anything: the exact trap CLAUDE.md names with `tail_specs()`. What it cost, the same day: perp's champion moved 976ee2399a5c -> 9fa37695dae0 at 15:34 with accuracy 0.5486 both times, but the base rate rose from 0.5316 to 0.5363, so the EDGE fell from 1.70 to 1.23 percentage points on 42% fewer out-of-fold rows. The outgoing model had opened 3,352 positions; the incoming one proposed 10 times in 600 polls and selected none. NOTE the check that does NOT discriminate here: effective sample fraction was 0.0022 for the outgoing model and 0.0038 for the incoming one, so a floor on it would have blocked the BETTER model too. Any threshold on effective sample is a separate decision with the power to stop all promotion, and is the user's to set rather than one to invent inside a gate.",
+   "scope": "per-brain",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_champion_promotion_is_gated"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

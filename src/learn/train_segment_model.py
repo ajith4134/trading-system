@@ -59,6 +59,9 @@ import numpy as np
 from learn.training_set import FEATURE_NAMES
 from models.gradient_boosted_trees import train_gbt, uniqueness_weights
 from models.model_registry import ModelRegistry
+from validation.champion_promotion import (
+    ChampionVerdict, evaluate_champion, evaluate_tail_champion,
+)
 from validation.trial_registry import TrialRegistry, TrialSpec
 
 DEFAULT_REGISTRY_ROOT = Path.home() / "capture" / "models"
@@ -110,6 +113,42 @@ class TrainedModel:
             "n_out_of_fold": self.n_out_of_fold,
             "training_rows": self.rows,
         }
+
+
+def _promote_or_keep(models, alias: str, version_id: str, metrics: dict,
+                    *, evaluate, segment: str) -> "ChampionVerdict":
+    """Assign the alias only if the challenger beats what is already serving.
+
+    **CG-02 / RL-044.** This used to be a bare `assign_alias`, so the champion was
+    whatever trained LAST rather than what was best, and a retrain producing a
+    worse model silently replaced a better one. Measured 2026-08-19: perp's edge
+    fell from 0.01695 to 0.01227 in exactly that way and the bot stopped trading.
+
+    A refused promotion is NOT an error and does not raise. The trained version
+    stays in the registry with its metrics, so it can be compared again later or
+    promoted by hand; only the alias is withheld. Raising would lose the model and
+    make a routine "no improvement this cycle" look like a failed run.
+    """
+    incumbent_id = models.aliases().get(alias)
+    incumbent_metrics = None
+    if incumbent_id:
+        try:
+            incumbent_metrics = dict(models.version(incumbent_id).metrics)
+        except (KeyError, LookupError, ValueError):
+            # An alias pointing at a version the registry cannot produce is its
+            # own problem, and it must not silently read as "no incumbent" - the
+            # verdict records it as replacing an unmeasured model.
+            incumbent_metrics = None
+
+    verdict = evaluate(challenger_metrics=metrics,
+                       incumbent_metrics=incumbent_metrics,
+                       incumbent_version_id=incumbent_id)
+    if verdict.promote:
+        models.assign_alias(alias, version_id, reason=verdict.describe())
+    else:
+        print(f"champion NOT promoted for {segment} ({alias}): "
+              f"{verdict.describe()}", flush=True)
+    return verdict
 
 
 def _final_fit(features: np.ndarray, labels: np.ndarray, weights: np.ndarray,
@@ -244,8 +283,12 @@ def train_direction_model(rows, *, segment: str, venues=None,
                  "dataset": rows.describe()},
         notes=(f"pooled cross-sectional direction model for the {segment} bot; "
                f"labels are the deterministic exit policy's realised sign"))
-    models.assign_alias(CHAMPION_ALIAS.format(segment=segment), version.version_id,
-                        reason=f"trained {result.describe()}")
+    _promote_or_keep(
+        models, CHAMPION_ALIAS.format(segment=segment), version.version_id,
+        metrics={**result.as_registry_result(),
+                 "accuracy": result.accuracy, "base_rate": result.base_rate,
+                 "beats_majority_class": result.beats_majority_class},
+        evaluate=evaluate_champion, segment=segment)
 
     return TrainedModel(
         version_id=version.version_id, trial_id=trial_id, segment=segment,
@@ -328,8 +371,9 @@ def train_profit_tail_model(rows, *, segment: str,
                  "dataset": rows.describe()},
         notes=("quantile forecast of forward P&L per unit; the 0.1 quantile is the "
                "loss tail the arbiter consumes and the 0.5 is the expectancy"))
-    models.assign_alias(TAIL_ALIAS.format(segment=segment), version.version_id,
-                        reason=f"pinball loss {result['pinball_loss']}")
+    _promote_or_keep(
+        models, TAIL_ALIAS.format(segment=segment), version.version_id,
+        metrics=dict(result), evaluate=evaluate_tail_champion, segment=segment)
 
     return TrainedModel(
         version_id=version.version_id, trial_id=trial_id, segment=segment,

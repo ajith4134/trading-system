@@ -1206,6 +1206,73 @@ Design: `docs/superpowers/specs/2026-08-19-capital-leverage-excursion-design.md`
 
 ---
 
+## SLICE champion-gate — WHAT IS ALLOWED TO BECOME A CHAMPION
+
+**Measured 2026-08-19, and it is the `tail_specs()` trap again.** `learn.train_segment_model`
+line 247 assigns the champion alias UNCONDITIONALLY; `models.model_registry.assign_alias` reads
+the incumbent only to record it as `previous_version_id`. The only check anywhere on that path is
+a binomial test against the majority class. So the champion is whatever trained LAST.
+
+The machinery to do this properly already exists — `validation.promotion_gate`,
+`validation.promotion_pipeline`, `models.champion_challenger` — and outside their own files the
+only importer is a statuswall probe. Built, tested, wired to nothing that promotes anything.
+
+What it cost the same day: perp's champion moved `976ee2399a5c` to `9fa37695dae0` at 15:34.
+Accuracy was 0.5486 both times, but the base rate rose from 0.5316 to 0.5363, so the EDGE fell
+from 1.70 to 1.23 percentage points on 42% fewer out-of-fold rows. The outgoing model had opened
+3,352 positions; the incoming one proposed 10 times in 600 polls and selected none.
+
+Design: `docs/superpowers/specs/2026-08-19-capital-leverage-excursion-design.md` is a different
+slice; this one is specified by RL-044 and by the rows below.
+
+### CG-01
+  slice:      champion-gate
+  does:       own `champion_promotion`, the verdict that decides whether a freshly trained model
+              may take the champion alias from the model already serving
+  satisfies:  RL-044 RL-026 RL-013
+  sources:    RL-044
+  depends on: none
+  probe:      probe_champion_promotion_is_gated
+  accepts:    a challenger whose out-of-fold edge is below the incumbent's is refused and the
+              incumbent keeps the alias, every check reports its measured value whether it
+              passed or not, and the refusal is recorded rather than raised away
+  state:      measured by probe_champion_promotion_is_gated
+
+### CG-02
+  slice:      champion-gate
+  does:       route the direction and profit-tail alias assignments in `train_segment_model`
+              through that verdict instead of calling assign_alias directly
+  satisfies:  RL-044 RL-019
+  sources:    RL-044
+  depends on: CG-01
+  probe:      probe_champion_promotion_is_gated
+  accepts:    no path in the repository assigns a champion alias without a verdict, a refused
+              promotion leaves the serving model untouched, and the trained-but-not-promoted
+              version stays in the registry so it can be compared later
+  state:      measured by probe_champion_promotion_is_gated
+
+### CG-03
+  slice:      champion-gate
+  does:       decide what perp runs now that the gate exists, and record the comparison that
+              decided it
+  satisfies:  RL-044 RL-030
+  sources:    RL-044
+  depends on: CG-02
+  probe:      probe_champion_promotion_is_gated
+  accepts:    the alias perp serves is the one with the larger measured out-of-fold edge, the
+              losing version is retained rather than deleted, and the change applies to new
+              entries only
+  state:      measured by probe_champion_promotion_is_gated
+
+> **The check that deliberately does NOT gate: effective sample fraction.** It was 0.0022 for the
+> model that was replaced and 0.0038 for the one that replaced it, so a floor on it would have
+> blocked the BETTER model. Both are around a quarter of one percent of nominal. A threshold there
+> is a real decision with the power to stop all promotion and leave the bots on whatever they
+> happen to be running, so it is measured and reported on every verdict and is the user's to set —
+> not one to invent inside a gate.
+
+---
+
 ## SLICE dated-bot — DATED FUTURES BOT
 
 *Row inventory pending review.* `bybit` carries 48 dated contracts and `features.term_structure`

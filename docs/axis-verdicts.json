@@ -1472,6 +1472,15 @@
     "tests/test_leverage_policy.py",
     "src/segment/leverage_policy.py"
    ]
+  },
+  "validation.champion_promotion": {
+   "learning": "n/a: it compares two already-fitted models on metrics they carry. Nothing here is fitted, and that is the point - a gate that learned its own threshold would be grading its own work",
+   "reasoning": "pass: it judges EDGE, accuracy above the base rate, not accuracy. The swap it was written for had accuracy 0.5486 both ways and looked like a tie; the base rate had risen from 0.5316 to 0.5363, so the skill had fallen 28%. It also refuses to let 'no measurement' behave as 'a measurement of zero', and it says 'replacing an unmeasured model' rather than letting that read later as 'we beat it'",
+   "depth": "pass: changes what serves. A refused promotion leaves the incumbent running and keeps the trained version in the registry, so a routine 'no improvement this cycle' is not a lost model or a failed run. And it REPORTS effective sample without gating on it, because on the measured case - 0.0022 replaced by 0.0038 - a floor would have blocked the better model; a threshold with the power to stop all promotion is a human's",
+   "evidence": [
+    "tests/test_champion_promotion.py",
+    "src/validation/champion_promotion.py"
+   ]
   }
  }
 }
