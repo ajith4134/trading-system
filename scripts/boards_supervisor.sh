@@ -67,6 +67,7 @@ WALL_OUT="$BOARDS_DIR/status-wall.html"
 mkdir -p "$STATE_DIR"
 
 generator_pid=""
+wall_pid=""
 server_pid=""
 tunnel_pid=""
 blotter_pid=""
@@ -80,7 +81,7 @@ record_restart() {
 # orphaned cloudflared keeps a tunnel alive that nothing is supervising, and the
 # next start would publish a second URL to the same boards.
 stop_children() {
-  for pid in "$generator_pid" "$server_pid" "$tunnel_pid" "$blotter_pid"; do
+  for pid in "$generator_pid" "$server_pid" "$tunnel_pid" "$blotter_pid" "$wall_pid"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
   done
   wait 2>/dev/null
@@ -141,6 +142,7 @@ supervise() {
       # `statuswall.cli`, so a reader either gets the previous file or the new one.
       # Failures are recorded and retried rather than fatal: a probe that raises
       # must not leave the board frozen with nothing saying so.
+      wall_pid=""
       while true; do
         # **CHEAP BOARDS FIRST, AND NOTHING HERE BREAKS THE LOOP.** Measured
         # 2026-08-19 after a reboot: `statuswall.cli` was OOM-killed three times
@@ -169,11 +171,21 @@ supervise() {
           echo "plan board regeneration failed; see $GENERATOR_LOG" >&2
         fi
 
-        # The feature wall last, because it is the one that gets killed.
-        if ! "$PYTHON" -m statuswall.cli --out "$WALL_OUT" >> "$GENERATOR_LOG" 2>&1; then
-          printf '%s wall regeneration failed or was killed\n' \
-              "$(date -u +%FT%TZ)" >> "$GENERATOR_LOG"
-          echo "wall regeneration failed; see $GENERATOR_LOG" >&2
+        # **The feature wall runs BESIDE this loop, not inside it.** Measured
+        # 2026-08-19: one wall pass ran 25 minutes and had not finished, so the
+        # cheap boards above - which take 30 seconds between them - inherited its
+        # cadence and were half an hour stale by the time it returned. Ordering
+        # alone was not enough; the wall has to stop being the clock.
+        #
+        # At most ONE wall at a time. A second started while the first is still
+        # walking would double a footprint already measured at 11.7 GB on a 30 GB
+        # box, and OOM is how this board stopped updating in the first place.
+        if [ -n "$wall_pid" ] && kill -0 "$wall_pid" 2>/dev/null; then
+          printf '%s wall still running from an earlier pass (pid %s); not starting a second\n' \
+              "$(date -u +%FT%TZ)" "$wall_pid" >> "$GENERATOR_LOG"
+        else
+          "$PYTHON" -m statuswall.cli --out "$WALL_OUT" >> "$GENERATOR_LOG" 2>&1 &
+          wall_pid=$!
         fi
         sleep "$REGENERATE_INTERVAL"
       done &
