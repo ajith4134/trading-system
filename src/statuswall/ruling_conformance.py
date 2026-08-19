@@ -284,7 +284,9 @@ def probe_sealed_hour_compacted(
     for name in hours[:-1]:
         hour = dataset / name
         parts = sorted(hour.rglob("*.parquet"))
-        venues = {_venue_of(part) for part in parts} - {None}
+        venues: set[str] = set()
+        for part in parts[:8]:      # a compacted hour has a handful; do not walk 1,892
+            venues |= _venues_in(part)
         label = name.split("=", 1)[1]
         if not parts:
             continue
@@ -301,10 +303,29 @@ def probe_sealed_hour_compacted(
                         str(dataset))
 
 
-def _venue_of(part: Path) -> str | None:
-    """The venue a part was written by, from `part-<dataset>-<venue>-...`."""
-    pieces = part.stem.split("-")
-    return pieces[2] if len(pieces) > 2 else None
+def _venues_in(part: Path) -> set[str]:
+    """Which venues a part holds, from its BODY rather than its name.
+
+    **A converted part is named by content hash** - `part-08ab0c8032ed701f` -
+    because its snapshot id is derived from the parts that fed it. Only the
+    per-venue parts the builders write carry `part-<dataset>-<venue>-...`, so
+    reading the venue off the filename works on exactly the layout being
+    replaced and fails on the one replacing it.
+
+    Measured 2026-08-19, minutes after the funding swap: fifteen healthy hours
+    reported `2 parts for 0 venue(s) - still one per symbol`, which is the fix
+    being reported as the fault it had just removed. One column of one small
+    file answers it properly.
+    """
+    try:
+        import pyarrow.parquet as pq
+        table = pq.read_table(part, columns=["venue"])
+    except (OSError, ValueError, KeyError):
+        # No venue column, or an unreadable part. Fall back to the name, which
+        # is where the builders' own parts carry it.
+        pieces = part.stem.split("-")
+        return {pieces[2]} if len(pieces) > 2 else set()
+    return {v for v in table.column("venue").to_pylist() if v}
 
 
 def _fraction_of(met: list[str], missing: dict[str, str], total: int,

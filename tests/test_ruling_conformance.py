@@ -417,3 +417,43 @@ def test_a_dataset_with_only_one_hour_has_nothing_sealed_to_measure(tmp_path):
     dataset = _dataset(tmp_path, "funding", hours=("2026-08-17T17",))
     result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
     assert result.state == NOT_MEASURED
+
+
+def _parquet_with_venues(path: Path, venues) -> None:
+    import pyarrow as pa, pyarrow.parquet as pq
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"venue": list(venues)}), path)
+
+
+def test_a_converted_part_reports_its_venues_from_the_body(tmp_path):
+    """**Converted parts are named by content hash**, not `part-<dataset>-<venue>-…`,
+    so the venue cannot come from the filename. Measured 2026-08-19 after the
+    funding swap: fifteen healthy hours read `2 parts for 0 venue(s)` because the
+    name carried no venue, which reported the fix as the fault it replaced."""
+    dataset = tmp_path / "funding"
+    _parquet_with_venues(dataset / "availability_hour=2026-08-09T08"
+                         / "part-08ab0c8032ed701f.parquet",
+                         ["binance", "bybit", "hyperliquid"])
+    _parquet_with_venues(dataset / "availability_hour=2026-08-09T08"
+                         / "part-661a611f73b702db.parquet", ["binance"])
+    _parquet_with_venues(dataset / "availability_hour=2026-08-09T09"
+                         / "part-aaaaaaaaaaaaaaaa.parquet", ["binance"])
+
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+
+    assert result.state == OK, result.detail
+    assert "3 venue" in result.detail
+
+
+def test_a_part_per_symbol_is_still_caught_once_venues_come_from_the_body(tmp_path):
+    dataset = tmp_path / "funding"
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+        _parquet_with_venues(dataset / "availability_hour=2026-08-09T08"
+                             / f"symbol={symbol}" / "part-x.parquet", ["binance"])
+    _parquet_with_venues(dataset / "availability_hour=2026-08-09T09"
+                         / "part-y.parquet", ["binance"])
+
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+
+    assert result.state != OK
+    assert "4 parts for 1 venue" in result.detail
