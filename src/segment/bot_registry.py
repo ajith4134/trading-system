@@ -85,7 +85,12 @@ class SegmentBot:
     # uncalibrated confidence is the error `dual-agent-spec.md` names, so until the
     # brains are calibrated every order is the same size and the P&L reflects the
     # signal rather than a sizing rule nobody validated.
-    quantity: Decimal
+    # **None for a bot governed by capital.json (CL-05, RL-040).**
+    # A fixed base-asset quantity across a universe-wide scan is what made 0.002
+    # BTC ($130) and 0.002 FLOKI ($0.00000004) the same "size". The governed bots
+    # carry None so the old behaviour cannot survive by defaulting; the segments
+    # still out of scope (RL-036) keep their constant until they are converted.
+    quantity: Decimal | None
     # Passed to `segment.arbiter.select`. Per segment because the segments' evidence
     # is not equally strong: a dated basis is an observable convergence force, an
     # options IV edge is relative value against a thin chain.
@@ -243,7 +248,7 @@ def _registry() -> dict[str, SegmentBot]:
             profit_tail=perp_brains.perp_profit_tail("fast"),
             admit=perp_universe.admit_live,
             describe_universe=perp_universe.describe_live,
-            quantity=Decimal("0.002"),
+            quantity=None,   # CL-05: sized from capital.json, never a constant
             min_confidence=Decimal("0.55"), min_margin=Decimal("0.05"),
             max_loss_tail=Decimal("0.05"), band="fast",
             feature_window_ns=180_000_000_000,   # see the wide-universe note below
@@ -256,12 +261,13 @@ def _registry() -> dict[str, SegmentBot]:
             profit_tail=spot_brains.spot_profit_tail("fast"),
             admit=spot_universe.admit,
             describe_universe=spot_universe.describe,
-            quantity=Decimal("0.002"),
+            quantity=None,   # CL-05: sized from capital.json, never a constant
             min_confidence=Decimal("0.58"), min_margin=Decimal("0.06"),
             max_loss_tail=Decimal("0.05"), band="fast",
             feature_window_ns=180_000_000_000,   # see the wide-universe note below
             min_samples=10,
-            notes="No funding and no leverage; cross-venue divergence is not yet "
+            notes="Leverage is declared per trade in capital.json (RL-041) and its "
+                  "borrowed part is charged interest; cross-venue divergence is not yet "
                   "available and every decision says so."),
         DATED: SegmentBot(
             segment=DATED, venue="bybit", build_feed=_dated_feed,

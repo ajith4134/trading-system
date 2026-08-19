@@ -54,7 +54,7 @@ import json
 import signal
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -65,8 +65,16 @@ from segment.capital_accounting import DOLLAR_QUOTES, quote_currency
 from segment.bot_registry import all_segments, segment_bot
 from segment.brain import BrainOutputs
 from segment.live_features import LiveFeatureFrames
+from segment.capital_declaration import (
+    GOVERNED_SEGMENTS, NO_DECLARATION, DeclarationReloader,
+)
+from segment.capital_pool import CapitalPool
+from segment.leverage_policy import (
+    borrow_interest, choose_leverage, fit_leverage_to_stop,
+)
 from segment.profit_tail import (
     CLOSE, ENTER_NOW, HOLD, MISSED_ENTRY, RATCHET_LOCK, OpenPosition,
+    sample_excursions,
 )
 
 DEFAULT_ROOT = Path.home() / "capture" / "segment"
@@ -84,6 +92,20 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 MIN_STOP_SPREAD_MULTIPLE = Decimal("3")
 
 
+def _optional_decimal(value):
+    """A journalled number, or None when the field was not written at all.
+
+    None and zero are different facts here: None means this fill predates the
+    field, zero means it was measured and was zero.
+    """
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
 @dataclass
 class EngineCounts:
     polls: int = 0
@@ -98,6 +120,14 @@ class EngineCounts:
     closed: int = 0
     gate_refusals: int = 0
     ratchets: int = 0
+    # **CL-05: why an entry was NOT sized, counted by reason.**
+    # A bot that cannot open because the pool is empty must render as broke, never
+    # as a bot that found nothing - an abstention and an exhausted budget look
+    # identical on a tile and mean opposite things (Rule 8).
+    capital_refusals: dict = field(default_factory=dict)
+
+    def refuse_capital(self, reason: str) -> None:
+        self.capital_refusals[reason] = self.capital_refusals.get(reason, 0) + 1
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -132,6 +162,12 @@ class LiveSegmentEngine:
     # closed by another is attributable to neither, which is the same failure as
     # crediting one P&L to all 36 features that could have produced it.
     position_tails: dict = field(default_factory=dict)
+    # **CL-01 / CL-04: the declared budget, and the pool it is spent from.**
+    # The reloader is polled every cycle so an edit to capital.json takes effect
+    # without a restart, and applies to NEW ENTRIES ONLY - an open position keeps
+    # the margin and leverage it was opened under (RL-030, RL-040).
+    declarations: object = None
+    pool: object = None
 
     # ------------------------------------------------------------------ journal
 
@@ -188,7 +224,15 @@ class LiveSegmentEngine:
                             entry_price=Decimal(str(row["price"])),
                             entry_ns=int(row["at_ns"]),
                             hard_stop=Decimal(str(row["hard_stop"])),
-                            band=row.get("band", self.bot.band))
+                            band=row.get("band", self.bot.band),
+                            # CL-02: its pre-restart excursion is gone for good.
+                            excursion_from_restart=True,
+                            # CL-05: the size it was OPENED at, read back from the
+                            # fill. Re-deriving it from today's declaration would
+                            # charge the trade for a decision nobody made.
+                            margin_usdt=_optional_decimal(row.get("margin_usdt")),
+                            notional_usdt=_optional_decimal(row.get("notional_usdt")),
+                            leverage=_optional_decimal(row.get("leverage")))
                     except (KeyError, ValueError, TypeError):
                         continue
                 elif row.get("event") == "CLOSE":
@@ -311,6 +355,46 @@ class LiveSegmentEngine:
                 "minutes_to_first_decision": max(0, FEATURE_WINDOW_BARS
                                                  - max(held, default=0))}
 
+    def _capital_heartbeat(self) -> dict:
+        """What the bot currently believes it may spend, and what it holds.
+
+        Reports `governed: False` for a segment outside RL-036's scope rather than
+        omitting the block, because a missing block and an unfunded bot look the
+        same on a tile and mean opposite things.
+        """
+        if self.declarations is None:
+            return {"governed": False,
+                    "detail": "not governed by capital.json (RL-036)"}
+        # **Polled, not read.** `.current` is only populated when something calls
+        # `poll()`, and `_size_entry` calls it lazily - so a bot that has not tried
+        # to open anything yet would publish `declared: false` with no rejection,
+        # which reads as a broken declaration when the truth is that nothing has
+        # looked at it. The poll is guarded on mtime, so this costs a stat().
+        declaration = self.declarations.poll()
+        if declaration is None:
+            return {"governed": True, "declared": False,
+                    "rejection": self.declarations.rejection,
+                    "refusals": dict(self.counts.capital_refusals)}
+        try:
+            held = self.pool.held_by_segment() if self.pool else {}
+        except OSError as failure:
+            held = {"unreadable": str(failure)}
+        mine = held.get(self.bot.segment) if isinstance(held, dict) else None
+        return {
+            "governed": True,
+            "declared": True,
+            "declared_at": declaration.declared_at,
+            "portfolio_usdt": str(declaration.portfolio_usdt),
+            "bot_cap_usdt": str(declaration.cap_for(self.bot.segment)),
+            "margin_band_usdt": [str(declaration.min_margin_per_trade_usdt),
+                                 str(declaration.max_margin_per_trade_usdt)],
+            "leverage_rule": declaration.leverage_rule,
+            "leverage_ceiling": str(declaration.ceiling_for(self.bot.segment)),
+            "held_by_segment": {k: str(v) for k, v in held.items()},
+            "my_margin_usdt": None if mine is None else str(mine),
+            "refusals": dict(self.counts.capital_refusals),
+        }
+
     def _heartbeat(self, now_ns: int, note: str) -> None:
         directory = self.root / self.bot.segment
         directory.mkdir(parents=True, exist_ok=True)
@@ -345,6 +429,11 @@ class LiveSegmentEngine:
             # heartbeat rewritten every poll is the wrong place for it.
             "universe_admission": self.last_admission,
             "counts": self.counts.as_dict(),
+            # **CL-07: the budget this bot is spending, as it sees it right now.**
+            # Published on the heartbeat rather than recomputed by the board, so a
+            # tile reports the declaration the BOT loaded - if the two ever
+            # disagree, that disagreement is itself the finding.
+            "capital": self._capital_heartbeat(),
             "open_positions": len(self.positions),
             "realised_pnl": str(self.realised_pnl),
             "note": note,
@@ -475,6 +564,108 @@ class LiveSegmentEngine:
 
     # ------------------------------------------------------------------ trading
 
+    def _size_entry(self, frame, side, price, stop_fraction, now_ns: int):
+        """Turn the declared MARGIN into a quantity, or refuse and name why.
+
+        **CL-05, and the whole reason this slice exists.** Before it, size was
+        `bot_registry`'s fixed `quantity=0.002` - a base-asset amount applied to
+        every symbol in a universe-wide scan, so 0.002 BTC was $130 and 0.002 FLOKI
+        was $0.00000004. Measured over the live journals the min-to-max spread was
+        6.1e9 on perp, which is why the published P&L was the P&L of a handful of
+        BTC trades and the published winrate weighted them equally.
+
+        Returns `None` when the entry is refused, having already counted and
+        journalled the reason. Every refusal is NAMED: a bot that is out of capital
+        must not render as a bot that found nothing.
+
+        **Ordering matters and is not incidental.** The pool reservation is taken
+        BEFORE the fill is journalled, because the reverse can journal a trade the
+        pool cannot fund - and there is nothing honest to do with one afterwards.
+        """
+        venue, symbol = frame["venue"], frame["symbol"]
+
+        if self.declarations is None:
+            # A segment outside RL-036's scope - dated and options, both switched
+            # off. They keep their declared fixed quantity until they are
+            # converted, and the journal says which path sized the trade so the two
+            # can never be compared as though they were the same measurement.
+            return {"quantity": self.bot.quantity, "margin_usdt": None,
+                    "notional_usdt": None, "leverage": None,
+                    "journal": {"margin_basis": "fixed base quantity; this segment "
+                                                "is not governed by capital.json"}}
+
+        def refuse(reason, evidence=None):
+            self.counts.refuse_capital(reason)
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
+                "symbol": symbol, "outcome": "CAPITAL_REFUSED", "reason": reason,
+                "evidence": evidence or {}}, now_ns)
+            return None
+
+        declaration = self.declarations.poll() if self.declarations else None
+        if declaration is None:
+            return refuse(NO_DECLARATION,
+                          {"detail": getattr(self.declarations, "rejection", None)})
+
+        # An instrument with no journalled rate cannot be priced in the accounting
+        # currency, and trading something you cannot price is not a position - it
+        # is an unmeasured exposure. This is the 19% of spot opens that were being
+        # taken blind and then excluded from every capital figure on the tile.
+        conversion = self._usd_conversion(frame, symbol, venue)
+        rate = conversion.get("usd_rate")
+        if rate is None:
+            return refuse("NO_USD_RATE", conversion)
+        rate = Decimal(str(rate))
+
+        choice = choose_leverage(
+            declaration=declaration, segment=self.bot.segment,
+            window_volatility=frame.get("window_volatility"),
+            window_ns=frame.get("window_ns") or 0)
+        choice = fit_leverage_to_stop(choice, stop_fraction=stop_fraction,
+                                      declaration=declaration)
+        if choice.refused:
+            return refuse(choice.refusal, choice.as_dict())
+
+        # **Size at the declared maximum, and refuse below the declared minimum.**
+        # The user asked for a minimum and a maximum, not a sizing curve, so no
+        # curve is invented here. What the band actually does is bound the trade at
+        # the top and stop the bot dribbling out unmeasurable positions at the
+        # bottom when the pool runs low.
+        margin = declaration.max_margin_per_trade_usdt
+        notional = margin * choice.leverage
+        quantity = notional / (price * rate)
+        if quantity <= 0:
+            return refuse("VENUE_MIN_NOTIONAL",
+                          {"price": str(price), "usd_rate": str(rate),
+                           "margin_usdt": str(margin)})
+
+        decision = self.pool.reserve(
+            segment=self.bot.segment, venue=venue, symbol=symbol,
+            margin_usdt=margin, declaration=declaration, at_ns=now_ns)
+        if not decision.granted:
+            return refuse(decision.reason, decision.as_dict())
+
+        return {
+            "quantity": quantity,
+            "margin_usdt": margin,
+            "notional_usdt": notional,
+            "leverage": choice.leverage,
+            "journal": {
+                "margin_usdt": str(margin),
+                "notional_usdt": str(notional),
+                "margin_basis": ("the declared maximum per trade; the band bounds "
+                                 "the trade, it does not shape it"),
+                # Stated rather than left to be inferred. No venue lot size or
+                # minimum notional is modelled anywhere in this repository, so the
+                # quantity is unrounded and a real venue could reject it. Saying so
+                # is the difference between a known gap and a silent one.
+                "lot_size": None,
+                "lot_rounding": "not modelled; no venue lot size exists in this repo",
+                **choice.as_dict(),
+                "pool": decision.as_dict(),
+            },
+        }
+
     def _open(self, frame, selection, timing, now_ns: int) -> None:
         venue, symbol = frame["venue"], frame["symbol"]
         side = selection.side
@@ -482,7 +673,21 @@ class LiveSegmentEngine:
         # actually have to be lifted, never against the mid. Modelling entries at the
         # mid is the flattering direction and would show an edge that is half spread.
         price = frame["ask"] if side == "LONG" else frame["bid"]
-        quantity = self.bot.quantity
+
+        # The declared distance, or three times the spread just crossed - whichever
+        # is further from the entry. Computed BEFORE leverage because leverage has
+        # to be fitted around it: at L times leverage the position is liquidated on
+        # roughly a 1/L adverse move, so a stop wider than that can never fire.
+        declared = self.bot.hard_stop_fraction
+        spread = frame.get("relative_spread")
+        floor = (Decimal(str(spread)) * MIN_STOP_SPREAD_MULTIPLE
+                 if spread is not None else Decimal(0))
+        stop_fraction = max(declared, floor)
+
+        sizing = self._size_entry(frame, side, price, stop_fraction, now_ns)
+        if sizing is None:
+            return
+        quantity = sizing["quantity"]
 
         gate = self._risk_gate(frame, side, price, quantity, now_ns)
         if not gate["passed"]:
@@ -493,21 +698,19 @@ class LiveSegmentEngine:
                 "reason": gate["reason"], "evidence": gate}, now_ns)
             return
 
-        # The declared distance, or three times the spread just crossed - whichever
-        # is further from the entry. The floor is what stops a trade dying of its own
-        # transaction cost; the declared distance is what bounds a real adverse move.
-        declared = self.bot.hard_stop_fraction
-        spread = frame.get("relative_spread")
-        floor = (Decimal(str(spread)) * MIN_STOP_SPREAD_MULTIPLE
-                 if spread is not None else Decimal(0))
-        stop_fraction = max(declared, floor)
+        # The floor is what stops a trade dying of its own transaction cost; the
+        # declared distance is what bounds a real adverse move. Both were resolved
+        # above, before leverage was fitted around the result.
         hard_stop = (price * (1 - stop_fraction) if side == "LONG"
                      else price * (1 + stop_fraction))
 
         position = OpenPosition(
             venue=venue, symbol=symbol, side=side, quantity=quantity,
             entry_price=price, entry_ns=now_ns, hard_stop=hard_stop,
-            band=self.bot.band)
+            band=self.bot.band,
+            margin_usdt=sizing["margin_usdt"],
+            notional_usdt=sizing["notional_usdt"],
+            leverage=sizing["leverage"])
         self.positions[(venue, symbol)] = position
         # The brain that opened it owns it to the close (RL-030).
         self.position_tails[(venue, symbol)] = self.bot.profit_tail
@@ -528,6 +731,11 @@ class LiveSegmentEngine:
             # BF-11: what this position actually costs, in the instrument's own
             # currency, with the rate that turns it into USDT.
             "notional": str(quantity * price),
+            # **CL-05 / CL-06: the size, and everything needed to recompute it.**
+            # An audit that cannot rebuild the position from the journal is not an
+            # audit, so the margin, the notional, the multiple, the rule that chose
+            # it and the pool state it was granted against all go down together.
+            **sizing["journal"],
             **self._usd_conversion(frame, symbol, venue),
             "hard_stop": str(hard_stop),
             "stop_fraction": str(stop_fraction),
@@ -552,6 +760,13 @@ class LiveSegmentEngine:
             # Mark against the side the position would have to EXIT into, for the
             # same reason the entry crossed the spread.
             mark = frame["bid"] if position.side == "LONG" else frame["ask"]
+            # **CL-02 / RL-042: fold this mark into the position's peaks BEFORE
+            # anything can decide to close on it.** `manage` returns early on a
+            # breached hard stop and on max hold, so sampling inside it would miss
+            # the one poll that ends the trade - and that is the poll which decides
+            # whether the journalled peak brackets the realised result at all.
+            position = sample_excursions(position, mark)
+            self.positions[key] = position
             # **The brain that OPENED this position manages it to the close
             # (RL-030).** After a mid-run champion swap `self.bot.profit_tail` is
             # the new one, and handing it a position it never chose would split
@@ -567,12 +782,11 @@ class LiveSegmentEngine:
 
             if directive.action == RATCHET_LOCK:
                 self.counts.ratchets += 1
-                self.positions[key] = OpenPosition(
-                    venue=position.venue, symbol=position.symbol, side=position.side,
-                    quantity=position.quantity, entry_price=position.entry_price,
-                    entry_ns=position.entry_ns, hard_stop=position.hard_stop,
-                    band=position.band, locked_stop=directive.locked_stop,
-                    peak_favourable=position.peak_favourable)
+                # `replace` rather than a field-by-field rebuild: the rebuild
+                # dropped every field it did not name, which is exactly how
+                # `peak_favourable` stayed None for the life of the system.
+                self.positions[key] = replace(
+                    position, locked_stop=directive.locked_stop)
                 self._record("decisions", {
                     "at_ns": now_ns, "segment": self.bot.segment,
                     "venue": position.venue, "symbol": position.symbol,
@@ -582,6 +796,82 @@ class LiveSegmentEngine:
 
             if directive.action == CLOSE:
                 self._close(position, mark, directive, now_ns, frame, tail)
+
+    def _borrow_cost(self, position, now_ns: int) -> dict:
+        """What the borrowed part of a leveraged position cost while it was held.
+
+        **CL-06 / RL-041.** Leveraged spot is borrowed money, and not charging for
+        it does not merely understate cost - it inflates the bot's returns MORE the
+        more leverage it takes, which is an accounting error that rewards
+        recklessness and would be found by the optimiser long before a person.
+
+        Perp pays FUNDING rather than borrow, which `cost.funding_carry` already
+        models; it is not double-charged here. The field is still written for perp,
+        as an explicit zero with its reason, so a reader never has to wonder whether
+        a missing number means free or means unmeasured.
+        """
+        declaration = getattr(self.declarations, "current", None)
+        if declaration is None or position.margin_usdt is None:
+            return {"borrow_interest_usdt": None,
+                    "borrow_basis": "no declaration or no margin recorded at open"}
+        if self.bot.segment != "spot":
+            return {"borrow_interest_usdt": "0",
+                    "borrow_basis": "perpetuals pay funding, not borrow"}
+        interest = borrow_interest(
+            notional_usdt=position.notional_usdt or Decimal(0),
+            margin_usdt=position.margin_usdt,
+            annual_pct=declaration.spot_borrow_annual_pct,
+            held_ns=now_ns - position.entry_ns)
+        return {"borrow_interest_usdt": str(interest),
+                "borrow_basis": (f"{declaration.spot_borrow_annual_pct}% annual on "
+                                 f"the borrowed part of the notional")}
+
+    def _excursion_fields(self, position, frame) -> dict:
+        """The two peaks as fractions of entry, and in USDT, and the sample count.
+
+        The USDT figures are computed on the position NOTIONAL, not on margin: an
+        excursion is a move in the thing that was bought, and dividing it by the
+        margin instead would silently report an R-multiple wearing a currency sign.
+
+        A position with no rate is reported unconverted rather than converted at a
+        rate nobody recorded (RL-029), so the fractions are always present and the
+        USDT figures may be null.
+        """
+        favourable = position.peak_favourable
+        adverse = position.peak_adverse
+        if favourable is None or adverse is None:
+            # Closed on the poll it opened, before any mark was sampled. Reporting
+            # zero here would be indistinguishable from a trade that genuinely
+            # never moved, so it reports nothing and says why.
+            return {"peak_favourable_fraction": None, "peak_adverse_fraction": None,
+                    "peak_profit_usdt": None, "peak_loss_usdt": None,
+                    "excursion_samples": position.excursion_samples,
+                    "excursion_basis": (
+                        "closed before any mark was sampled"
+                        + (" after a restart" if position.excursion_from_restart
+                           else ""))}
+
+        conversion = self._usd_conversion(frame, position.symbol, position.venue)
+        rate = conversion.get("usd_rate")
+        notional = position.entry_price * position.quantity
+        if rate is None:
+            profit_usdt = loss_usdt = None
+            basis = "fraction only; no rate to convert the notional (RL-029)"
+        else:
+            rate = Decimal(str(rate))
+            profit_usdt = str(favourable * notional * rate)
+            loss_usdt = str(adverse * notional * rate)
+            basis = "sampled at the poll cadence; a lower bound on the true extreme"
+        if position.excursion_from_restart:
+            basis += (" - and only since a restart, so any move this trade made "
+                      "before it is not in these figures")
+
+        return {"peak_favourable_fraction": str(favourable),
+                "peak_adverse_fraction": str(adverse),
+                "peak_profit_usdt": profit_usdt,
+                "peak_loss_usdt": loss_usdt,
+                "excursion_samples": position.excursion_samples,
+                "excursion_basis": basis}
 
     def _close(self, position, mark, directive, now_ns: int, frame=None,
                tail=None) -> None:
@@ -600,17 +890,36 @@ class LiveSegmentEngine:
         self.positions.pop((position.venue, position.symbol), None)
         self.position_tails.pop((position.venue, position.symbol), None)
         self.counts.closed += 1
+        # **CL-04: give the margin back before anything else can ask for it.**
+        # Released on the close rather than on the next poll, because a poll that
+        # opens before it releases would see its own capital as still committed.
+        if self.pool is not None:
+            self.pool.release(segment=self.bot.segment, venue=position.venue,
+                              symbol=position.symbol, at_ns=now_ns)
         self._record("fills", {
             "at_ns": now_ns, "segment": self.bot.segment, "venue": position.venue,
             "symbol": position.symbol, "event": "CLOSE", "side": position.side,
             "quantity": str(position.quantity), "price": str(mark),
             "entry_price": str(position.entry_price),
             "gross_pnl": str(gross), "band": position.band,
+            # **CL-02 / RL-042: the best and the worst this trade ever reached.**
+            #
+            # A trade that touched +0.9% and closed at -0.2% is a profit tail that
+            # let go, and without these the journal records only the -0.2%. Across
+            # the population, peak_favourable against realised P&L measures whether
+            # the take-profit is too wide, and peak_adverse against the hard stop
+            # measures how close the winners came to stopping out.
+            #
+            # SAMPLED at the poll cadence, so each is a LOWER BOUND on the true
+            # extreme. `excursion_samples` is journalled beside them because a
+            # two-sample trade must never be read as a measured one.
+            **self._excursion_fields(position, frame),
             # The rate at the CLOSE, not the one recorded at the open: a P&L
             # realised today converts at today's price, and carrying both lets a
             # reader see when the two disagreed (RL-029).
             **self._usd_conversion(frame, position.symbol, position.venue),
             "held_ns": now_ns - position.entry_ns,
+            **self._borrow_cost(position, now_ns),
             "close_reason": directive.reason,
             "closed_by": (tail or self.bot.profit_tail).name,
             "reduce_only": directive.reduce_only,
@@ -698,7 +1007,19 @@ def build_engine(segment: str, root: Path = DEFAULT_ROOT) -> LiveSegmentEngine:
     features = LiveFeatureFrames(segment=segment,
                                  window_ns=bot.feature_window_ns,
                                  min_samples=bot.min_samples)
-    return LiveSegmentEngine(bot=bot, feed=feed, features=features, root=root)
+    # **CL-01 / CL-04: only the GOVERNED bots spend from the declared pool.**
+    #
+    # RL-036 and RL-039 put dated and options out of scope and switched them off.
+    # Wiring them to a declaration that holds no leverage ceiling for them would
+    # make every entry they attempted refuse on a config error rather than on a
+    # decision - so they keep their fixed quantity until they are converted, and
+    # `segment_bot` is what refuses to let a governed bot keep one.
+    declarations = pool = None
+    if segment in GOVERNED_SEGMENTS:
+        declarations = DeclarationReloader(state_root=root)
+        pool = CapitalPool(state_root=root)
+    return LiveSegmentEngine(bot=bot, feed=feed, features=features, root=root,
+                             declarations=declarations, pool=pool)
 
 
 def main(argv=None) -> int:
@@ -715,6 +1036,18 @@ def main(argv=None) -> int:
     recovered = engine.recover_open_positions(time.time_ns())
     if recovered:
         print(f"recovered {recovered} open position(s) from the journal", flush=True)
+    # **CL-04: reclaim this bot's reservations that no recovered position matches.**
+    # A RESERVE whose bot died before its RELEASE holds margin forever, and nothing
+    # times it out - a timeout would also release live positions that are merely
+    # long-held. Without this sweep every crash permanently shrinks the pool, and
+    # the shrinking looks exactly like a bot that has grown cautious.
+    if engine.pool is not None:
+        orphans = engine.pool.reclaim_orphans(
+            segment=args.segment, open_keys=list(engine.positions),
+            at_ns=time.time_ns())
+        if orphans:
+            print(f"reclaimed {len(orphans)} orphaned pool reservation(s): "
+                  f"{', '.join(symbol for _venue, symbol in orphans)}", flush=True)
     stopping = {"now": False}
 
     def _stop(signum, frame):        # noqa: ARG001

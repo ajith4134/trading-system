@@ -1454,6 +1454,24 @@
     "tests/test_capital_declaration.py",
     "src/segment/capital_declaration.py"
    ]
+  },
+  "segment.capital_pool": {
+   "learning": "n/a: it is a ledger and a lock. Nothing here fits, adapts or estimates - it replays what was written and answers yes or no",
+   "reasoning": "pass: it distinguishes three refusals that look identical from outside and have different fixes - the portfolio is empty, THIS bot has hit its share, or the trade is below the declared floor - and it refuses a second reservation on an instrument it already holds rather than overwriting the first and losing its margin from the total while the position stays open",
+   "depth": "pass: changes what happens when wrong. The reservation is taken before the fill is journalled, so a pool that cannot fund a trade prevents it rather than discovering it afterwards; and orphaned reservations are reclaimed at startup, without which every crash permanently shrinks the pool and the shrinking looks exactly like a bot that has grown cautious",
+   "evidence": [
+    "tests/test_capital_pool.py",
+    "src/segment/capital_pool.py"
+   ]
+  },
+  "segment.leverage_policy": {
+   "learning": "n/a: the multiple is computed from a declared target and a measured volatility. Nothing is fitted, and that is deliberate - the alternative considered was scaling leverage by brain confidence, refused because both bots journal calibrated=False",
+   "reasoning": "pass: it treats an absent volatility estimate as a reason for LESS leverage rather than more, which is the inversion most implementations get wrong; and it reduces the multiple until the hard stop fits inside the liquidation distance before it refuses, because a 5% stop is fine at 3x and impossible at 20x - it is the leverage that did not fit, not the trade",
+   "depth": "pass: changes what is charged and what is allowed. Borrow interest is billed on notional minus margin, so an unleveraged position pays exactly zero rather than a number that reads as rounding; and without it a leveraged spot bot's returns inflate MORE the more leverage it takes, an error that rewards recklessness",
+   "evidence": [
+    "tests/test_leverage_policy.py",
+    "src/segment/leverage_policy.py"
+   ]
   }
  }
 }

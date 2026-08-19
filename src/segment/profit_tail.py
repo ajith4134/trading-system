@@ -59,7 +59,7 @@ distribution of forward P&L, not the fraction of trades that end green.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace, field
 from decimal import Decimal
 
 # Position actions. Strings because they are journalled, rendered on a tile and read
@@ -177,7 +177,33 @@ class OpenPosition:
     hard_stop: Decimal
     band: str
     locked_stop: Decimal | None = None
+    # **The best and the worst this position ever got while it was open (RL-042).**
+    #
+    # `peak_favourable` existed here before and was assigned NOWHERE in the tree, so
+    # it was `None` for every position that has ever existed - a field that read as
+    # built and was not. Both are now written by `sample_excursions` on every poll.
+    #
+    # They are SAMPLED, not true extremes. The engine polls every six seconds and
+    # cannot see between polls, so each is a LOWER BOUND on the real excursion, and
+    # `excursion_samples` is carried beside them so a two-sample trade is never read
+    # as a measured one.
     peak_favourable: Decimal | None = None
+    peak_adverse: Decimal | None = None
+    excursion_samples: int = 0
+    # True when this position was rebuilt from the journal after a restart. Its
+    # peaks then cover only the time SINCE the restart, and the move it made
+    # before is gone - unrecoverable, because the marks that would show it were
+    # never journalled. Carried so the close can say so rather than publish a
+    # partial peak as if it were the whole trade's.
+    excursion_from_restart: bool = False
+    # **What this position was sized at (CL-05, CL-06).** Carried on the position
+    # rather than looked up at close, because the declaration can be edited while a
+    # trade is open and a reload applies to NEW ENTRIES ONLY - charging a close
+    # against a multiple the trade was never opened at would bill it for a decision
+    # nobody made.
+    margin_usdt: Decimal | None = None
+    notional_usdt: Decimal | None = None
+    leverage: Decimal | None = None
 
 
 def _is_stop_breached(position: OpenPosition, mark: Decimal) -> bool:
@@ -192,6 +218,34 @@ def _favourable_excursion(position: OpenPosition, mark: Decimal) -> Decimal:
         return Decimal(0)
     move = (mark - position.entry_price) / position.entry_price
     return move if position.side == "LONG" else -move
+
+
+def sample_excursions(position: OpenPosition, mark: Decimal) -> OpenPosition:
+    """Fold one observed mark into this position's best and worst, and count it.
+
+    Returns a NEW position rather than mutating, because `OpenPosition` is frozen
+    by construction so that a brain cannot quietly rewrite the trade it is judging.
+
+    **Called before `manage`, never inside it.** `manage` returns early on a
+    breached hard stop and on max hold, so an excursion updated inside it would
+    miss the very poll that closes the trade - which is the one poll that decides
+    whether the journalled peak brackets the realised result at all.
+
+    Both figures are non-negative magnitudes: `peak_favourable` is how far it ever
+    went the right way, `peak_adverse` how far the wrong way. A trade that never
+    went green has `peak_favourable` of zero, not a negative number, so the two
+    columns never have to be read against each other's sign.
+    """
+    excursion = _favourable_excursion(position, mark)
+    favourable = max(excursion, Decimal(0))
+    adverse = max(-excursion, Decimal(0))
+    return replace(
+        position,
+        peak_favourable=(favourable if position.peak_favourable is None
+                         else max(favourable, position.peak_favourable)),
+        peak_adverse=(adverse if position.peak_adverse is None
+                      else max(adverse, position.peak_adverse)),
+        excursion_samples=position.excursion_samples + 1)
 
 
 @dataclass

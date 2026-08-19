@@ -137,15 +137,23 @@ is deleted rather than defaulted, so nothing can silently keep the old fixed-qua
 
 ```
 leverage  = choose_leverage(...)                       # §4, clamped to [floor, ceiling]
-margin    = clamp(target_margin, min_margin, max_margin)
+margin    = max_margin_per_trade_usdt                  # see below
 notional  = margin × leverage                          # USDT
 quantity  = notional / (price × usd_rate)              # base asset
-quantity  = round_down_to_lot(quantity, venue_lot_size)
 ```
 
-Then **re-derive** `notional` and `margin` from the rounded quantity, because the rounding is
-what actually trades. A margin figure computed before rounding is a number that describes a
-position nobody took.
+**Margin is the declared maximum, and the minimum is a refusal floor.** The user asked for a
+minimum and a maximum, not a sizing curve, so no curve is invented: the band bounds the trade at
+the top and stops the bot dribbling out unmeasurable positions at the bottom once the pool runs
+low. A sizing rule — risk-parity off the stop distance, or confidence-scaled — is a separate
+decision and gets its own row when it is taken.
+
+**Lot rounding is NOT implemented, and the journal says so.** *Measured 2026-08-19: no venue lot
+size, step size or minimum notional exists anywhere in this repository.* There is nothing to
+round to. So the quantity is unrounded, every OPEN carries `lot_size: null` and
+`lot_rounding: "not modelled"`, and a real venue could reject the size. That is a known gap
+stated on every fill rather than a silent one — and it needs its own plan row before this system
+could place a real order.
 
 Three refusals fall out of this, and each is a trade the current system takes blindly:
 - rounded quantity is `0` → `VENUE_MIN_NOTIONAL`

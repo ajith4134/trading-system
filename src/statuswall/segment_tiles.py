@@ -170,6 +170,115 @@ def _pct(value) -> str:
     return f"<span class='{klass}'>{value:+.2f}%</span>"
 
 
+def _declared_capital_block(capital) -> str:
+    """The declared budget, what is held against it, and every named refusal.
+
+    **CL-07 / Rule 8.** A rejected declaration renders as its own state and is
+    never green, and a bot refusing entries because the pool is empty renders as
+    BROKE - because on a tile "found nothing" and "cannot afford anything" look
+    identical and mean opposite things.
+    """
+    if not isinstance(capital, dict):
+        return ("<p class='why unmeasured'>NOT MEASURED &mdash; this bot has not "
+                "published a capital block.</p>")
+    if not capital.get("governed"):
+        return (f"<p class='why thin'>Not governed by <code>capital.json</code>: "
+                f"{html.escape(str(capital.get('detail', 'out of scope')))}</p>")
+    if not capital.get("declared"):
+        return ("<p class='why failing'><strong>NO CAPITAL DECLARATION</strong> "
+                f"&mdash; {html.escape(str(capital.get('rejection') or 'unreadable'))}. "
+                "This bot is not opening new positions.</p>")
+
+    low, high = capital.get("margin_band_usdt", ["?", "?"])
+    portfolio = float(capital.get("portfolio_usdt") or 0)
+    cap = float(capital.get("bot_cap_usdt") or 0)
+    mine = capital.get("my_margin_usdt")
+    held_total = sum(float(v) for v in (capital.get("held_by_segment") or {}).values()
+                     if str(v).replace(".", "", 1).replace("-", "", 1).isdigit())
+    headroom = portfolio - held_total
+
+    refusals = capital.get("refusals") or {}
+    if refusals:
+        refusal_html = " &middot; ".join(
+            f"<span class='thin'>{html.escape(str(name))}</span> {count}"
+            for name, count in sorted(refusals.items(), key=lambda kv: -kv[1]))
+    else:
+        refusal_html = "<span class='thin'>none</span>"
+
+    return f"""
+    <div class="capital">
+      <div><span class="n">{portfolio:,.0f}</span><span class="l">portfolio USDT</span></div>
+      <div><span class="n">{cap:,.0f}</span><span class="l">this bot's cap</span></div>
+      <div><span class="n">{float(mine) if mine is not None else 0:,.2f}</span><span class="l">margin in use</span></div>
+      <div><span class="n">{headroom:,.2f}</span><span class="l">pool headroom</span></div>
+    </div>
+    <p class="why">Margin per trade {html.escape(str(low))}&ndash;{html.escape(str(high))} USDT
+       &middot; leverage {html.escape(str(capital.get('leverage_rule')))} up to
+       {html.escape(str(capital.get('leverage_ceiling')))}x
+       &middot; declared {html.escape(str(capital.get('declared_at')))}</p>
+    <p class="why">Entries refused: {refusal_html}</p>"""
+
+
+# ---------------------------------------------------------------- CL-03 cells
+#
+# **Every one of these reads a JOURNALLED field and computes nothing.** A display
+# that recomputes can disagree with the journal, and then neither is trustworthy -
+# so a fill that does not carry the field renders an em-dash, never a zero and
+# never a value derived some other way. An em-dash here means "this bot was not
+# journalling that yet", which is a true statement about the trade.
+
+
+def _capital_cell(fill) -> str:
+    """The USDT actually committed to this trade (CL-05), or why it is unknown."""
+    margin = fill.get("margin_usdt")
+    if margin is None:
+        return "<span class='thin'>&mdash;</span>"
+    try:
+        return f"{float(margin):,.2f}"
+    except (TypeError, ValueError):
+        return "<span class='thin'>&mdash;</span>"
+
+
+def _leverage_cell(fill) -> str:
+    """The multiple this position was opened at (CL-06)."""
+    leverage = fill.get("leverage")
+    if leverage is None:
+        return "<span class='thin'>&mdash;</span>"
+    try:
+        return f"{float(leverage):g}x"
+    except (TypeError, ValueError):
+        return "<span class='thin'>&mdash;</span>"
+
+
+def _excursion_cell(fill, usdt_field: str, fraction_field: str) -> str:
+    """One peak, in USDT where a rate existed and as a percentage always.
+
+    **The sample count is shown when it is small.** These are sampled at the poll
+    cadence and are a LOWER BOUND on the true extreme (RL-042), so a peak drawn
+    from two observations is not the same claim as one drawn from two hundred, and
+    a bare number would present them as though it were.
+    """
+    fraction = fill.get(fraction_field)
+    if fraction is None:
+        return "<span class='thin'>&mdash;</span>"
+    try:
+        percent = f"{float(fraction) * 100:+.2f}%"
+    except (TypeError, ValueError):
+        return "<span class='thin'>&mdash;</span>"
+
+    usdt = fill.get(usdt_field)
+    if usdt is not None:
+        try:
+            percent = f"{float(usdt):,.4f} <span class='thin'>{percent}</span>"
+        except (TypeError, ValueError):
+            pass
+
+    samples = fill.get("excursion_samples")
+    if isinstance(samples, int) and samples < 5:
+        percent += f" <span class='thin'>({samples} sample{'' if samples == 1 else 's'})</span>"
+    return percent
+
+
 def _capital_block(report) -> str:
     """BF-12 / RL-028: three denominators side by side, or none of them.
 
@@ -238,6 +347,10 @@ def _tile(measured: dict) -> str:
             f"<td>{html.escape(str(fill.get('symbol', '')))}</td>"
             f"<td>{html.escape(str(fill.get('side', '')))}</td>"
             f"<td>{html.escape(str(fill.get('price', '')))}</td>"
+            f"<td>{_capital_cell(fill)}</td>"
+            f"<td>{_leverage_cell(fill)}</td>"
+            f"<td class='up'>{_excursion_cell(fill, 'peak_profit_usdt', 'peak_favourable_fraction')}</td>"
+            f"<td class='down'>{_excursion_cell(fill, 'peak_loss_usdt', 'peak_adverse_fraction')}</td>"
             f"<td>{html.escape(str(fill.get('close_reason') or fill.get('selection_reason') or ''))}</td>"
             f"<td class='{'up' if pnl_cell and float(pnl_cell) > 0 else 'down' if pnl_cell and float(pnl_cell) < 0 else ''}'>"
             f"{html.escape(str(pnl_cell)) if pnl_cell is not None else ''}</td>"
@@ -245,8 +358,11 @@ def _tile(measured: dict) -> str:
     table = ("<p class='why'>No fills yet. The bot is polling; nothing has met its "
              "entry rules.</p>" if not rows else
              "<table><thead><tr><th>when</th><th>event</th><th>symbol</th><th>side</th>"
-             "<th>price</th><th>reason</th><th>P&amp;L</th></tr></thead><tbody>"
+             "<th>price</th><th>capital</th><th>lev</th><th>peak +</th><th>peak &minus;</th>"
+             "<th>reason</th><th>P&amp;L</th></tr></thead><tbody>"
              + "".join(rows) + "</tbody></table>")
+
+    capital_block = _declared_capital_block(heartbeat.get("capital"))
 
     edge_claim = heartbeat.get("makes_edge_claim")
     learned = heartbeat.get("learned")
@@ -327,11 +443,17 @@ def _tile(measured: dict) -> str:
         frames refused {counts.get('frames_refused', 0)}</p>
       {live_row}
       {_capital_block(measured.get("capital"))}
+      {capital_block}
       {table}
     </section>"""
 
 
 _CSS = """
+.capital{display:flex;gap:1.4rem;flex-wrap:wrap;margin:.6rem 0}
+.capital .n{font-size:1.15rem;font-weight:600;display:block}
+.capital .l{font-size:.72rem;opacity:.65;display:block}
+.why.failing{color:#ff6b6b}
+.why.unmeasured{opacity:.6}
 :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3;
         --dim:#8b949e; --up:#3fb950; --down:#f85149; --warn:#d29922; }
 * { box-sizing:border-box; }
