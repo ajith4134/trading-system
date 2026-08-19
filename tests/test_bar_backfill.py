@@ -201,20 +201,79 @@ def test_a_page_that_does_not_advance_stops_the_walk():
     assert len(fetch.urls) == 2
 
 
-def test_the_walk_stops_when_the_rate_budget_refuses():
+def test_a_permanently_spent_budget_stops_the_walk_and_names_why():
     """This shares a weight allowance with the pollers that keep live capture
-    alive - a backfill must not be able to starve them."""
+    alive - a backfill must not be able to starve them.
+
+    It waits first, and only gives up at the wait cap. What it must never do is
+    give up SILENTLY: the truncation is reported so a five-month result against a
+    twelve-month request cannot be read as a symbol that listed five months ago.
+    """
     class _Spent:
         def try_spend(self, weight):
             return False
 
     fetch = _Pages(_page(_kline_at(BAR_OPEN_MS)))
+    progress = {}
+    slept = []
     got = fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + 10 * MINUTE_NS,
                              budget=_Spent(), fetch=fetch,
-                             now_ns=lambda: FETCHED_NS)
+                             now_ns=lambda: FETCHED_NS,
+                             budget_wait_seconds=0.2, sleep=slept.append,
+                             progress=progress)
 
     assert got == []
-    assert fetch.urls == []
+    assert fetch.urls == [], "a request was made after the budget refused"
+    assert progress["truncated_by"] == "budget"
+    assert slept, "it gave up without ever waiting for the bucket to refill"
+
+
+def test_a_budget_that_refills_lets_the_walk_finish_instead_of_truncating():
+    """The regression that made this whole change necessary.
+
+    Measured 2026-08-19 on the first real run: a batch of 50 symbols returned
+    360 bars each with a last bar in February against a window ending in August,
+    because the walk abandoned the moment the bucket was empty. Pacing is what a
+    rate budget is FOR.
+    """
+    class _RefillsAfterOne:
+        def __init__(self):
+            self.refusals = 0
+
+        def try_spend(self, weight):
+            if self.refusals < 3:
+                self.refusals += 1
+                return False
+            return True
+
+        def blocked_for(self):
+            return 0.01
+
+    fetch = _Pages(_page(_kline_at(BAR_OPEN_MS)))
+    progress = {}
+    got = fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + MINUTE_NS,
+                             budget=_RefillsAfterOne(), fetch=fetch,
+                             now_ns=lambda: FETCHED_NS,
+                             budget_wait_seconds=30.0, sleep=lambda _s: None,
+                             progress=progress)
+
+    assert len(got) == 1
+    assert progress["truncated_by"] is None
+    assert fetch.urls, "the walk never made its request after waiting"
+
+
+def test_the_page_cap_is_reported_rather_than_silently_ending_the_walk():
+    # At 1,500 bars a page a year of 15m bars needs 24, but a year of 1m bars
+    # needs 350 - so this cap IS reachable and was previously an unreported stop.
+    fetch = _Pages(*[_page(_kline_at(BAR_OPEN_MS + i * 60_000))
+                     for i in range(4)])
+    progress = {}
+    fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + 1000 * MINUTE_NS,
+                       fetch=fetch, now_ns=lambda: FETCHED_NS, pages=2,
+                       progress=progress)
+
+    assert progress["truncated_by"] == "page_cap"
+    assert progress["pages"] == 2
 
 
 def test_an_interval_binance_has_no_kline_for_raises():
@@ -248,7 +307,10 @@ def test_a_backfill_lands_as_one_labelled_partition(tmp_path):
     assert result == {"dataset": dataset_name(), "venue": "binance",
                       "symbols": 1, "bars": 2, "appended": True,
                       "first_bar_ns": BAR_OPEN_NS,
-                      "last_bar_ns": BAR_OPEN_NS + MINUTE_NS}
+                      "last_bar_ns": BAR_OPEN_NS + MINUTE_NS,
+                      # An empty object rather than an absent key: a clean run
+                      # and a run that forgot to look must not read alike.
+                      "truncated": {}, "truncated_symbols": {}}
     stored = ClockGatedReader(tmp_path, dataset_name()).read_as_of(FETCHED_NS)
     assert stored["is_reconstructed"].all()
 
@@ -437,16 +499,18 @@ class _BudgetRefusingEverything:
         return False
 
 
-def test_an_exhausted_budget_stops_the_backfill_before_it_requests():
+def test_an_exhausted_budget_never_lets_a_request_through():
     # The bucket is shared with live capture. A backfill that ignored it would
-    # spend weight the pollers cannot see against the same egress IP.
+    # spend weight the pollers cannot see against the same egress IP, whose
+    # overage escalates to a three-day ban.
     budget = _BudgetRefusingEverything()
     fetch = _Pages()
 
     got = fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + MINUTE_NS,
                              budget=budget, fetch=fetch,
-                             now_ns=lambda: FETCHED_NS)
+                             now_ns=lambda: FETCHED_NS,
+                             budget_wait_seconds=0.2, sleep=lambda _s: None)
 
     assert got == []
     assert fetch.urls == [], "a request was made after the budget refused"
-    assert budget.asked == [10]
+    assert set(budget.asked) == {10}

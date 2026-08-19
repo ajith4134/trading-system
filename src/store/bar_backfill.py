@@ -103,6 +103,40 @@ _REQUEST_WEIGHT_BY_VENUE = {"binance": 10, "binance-spot": 2}
 _REQUEST_WEIGHT = 10          # the conservative default for an unlisted venue
 
 
+def acquire_page_budget(budget, venue: str, wait_seconds: float,
+                        sleep=time.sleep) -> bool:
+    """Spend one page's weight, WAITING for the bucket rather than giving up.
+
+    Returns False only when the wait cap is reached, and the caller must then
+    report the walk as truncated rather than returning what it happens to have.
+
+    **Waiting is the point.** The previous behaviour returned partial history
+    that looked complete: measured 2026-08-19 on the first real run, a batch of
+    50 symbols came back with 360 bars each and a last bar in February against a
+    window ending in August, and nothing in the output said so. Pacing is what a
+    rate budget is FOR - abandoning the walk is not pacing, it is silent
+    truncation wearing a budget's name.
+    """
+    if budget is None:
+        return True
+    waited = 0.0
+    while not budget.try_spend(request_weight(venue)):
+        # `blocked_for` is how long the bucket says it needs. Floored so a busy
+        # spin is impossible, capped so one long block cannot swallow the whole
+        # wait allowance in a single sleep.
+        # `blocked_for` is optional: any object with `try_spend` is a budget as
+        # far as this is concerned, and a caller's simpler double should not have
+        # to grow a method to be usable.
+        blocked_for = getattr(budget, "blocked_for", None)
+        wait_hint = blocked_for() if callable(blocked_for) else 0.05
+        delay = min(max(wait_hint, 0.05), 5.0)
+        if waited + delay > wait_seconds:
+            return False
+        sleep(delay)
+        waited += delay
+    return True
+
+
 def kline_endpoint(venue: str) -> str:
     """The klines URL for one venue, or a refusal naming the ones that exist."""
     try:
@@ -254,7 +288,9 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
                        venue: str = "binance",
                        interval_ns: int = DEFAULT_INTERVAL_NS,
                        budget=None, fetch=_fetch, now_ns=time.time_ns,
-                       pages: int = 64) -> list[ReconstructedBar]:
+                       pages: int = 512, budget_wait_seconds: float = 300.0,
+                       progress: dict | None = None,
+                       sleep=time.sleep) -> list[ReconstructedBar]:
     """One symbol's bars over [start_ns, end_ns), walked forward a page at a time.
 
     Forward rather than backward, unlike the funding backfill: a bar gap has two
@@ -285,11 +321,15 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
     cursor_ms = int(start_ns) // _MS_TO_NS
     end_ms = int(end_ns) // _MS_TO_NS
 
+    truncated_by = None
+    pages_used = 0
     for _ in range(max(1, pages)):
         if cursor_ms >= end_ms:
             break
-        if budget is not None and not budget.try_spend(request_weight(venue)):
+        if not acquire_page_budget(budget, venue, budget_wait_seconds, sleep):
+            truncated_by = "budget"
             break
+        pages_used += 1
         url = (f"{endpoint}?symbol={quote(venue_symbol)}"
                f"&interval={interval_name}&limit={_PAGE_LIMIT}"
                f"&startTime={cursor_ms}&endTime={end_ms}")
@@ -297,6 +337,7 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
             page = parse_binance_klines(fetch(url), symbol, venue, fetched_at,
                                         interval_ns)
         except (urllib.error.URLError, OSError, TimeoutError):
+            truncated_by = "network"
             break
         if not page:
             break
@@ -305,9 +346,21 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
             collected[bar.bar_open_ns] = bar
         next_cursor = newest_ns // _MS_TO_NS + 1
         if next_cursor <= cursor_ms:
+            truncated_by = "no_progress"
             break              # the page did not advance; stop rather than spin
         cursor_ms = next_cursor
+    else:
+        # The `for` ran out of pages without reaching `end_ms`. At 1,500 bars a
+        # page a year of 15m bars needs 24, but a year of 1m bars needs 350 -
+        # so this cap IS reachable and was previously an unreported stop.
+        if cursor_ms < end_ms:
+            truncated_by = "page_cap"
 
+    if progress is not None:
+        progress.update({"symbol": symbol, "pages": pages_used,
+                         "truncated_by": truncated_by,
+                         "reached_ns": cursor_ms * _MS_TO_NS,
+                         "wanted_ns": end_ns})
     return [collected[key] for key in sorted(collected)]
 
 
@@ -323,9 +376,20 @@ def backfill_bars(store_root: Path, symbols: Sequence[str],
     """
     started_ns = now_ns()
     rows: list[ReconstructedBar] = []
+    # **No silent caps.** Every symbol whose walk stopped early is named with the
+    # reason, and the summary carries the count. A backfill that quietly returned
+    # five months of a twelve-month request is indistinguishable from a symbol
+    # that only listed five months ago, and the difference decides whether a model
+    # trained on it is looking at a gap or at history.
+    truncated: dict[str, list[str]] = {}
     for index, symbol in enumerate(symbols, start=1):
+        progress: dict = {}
         rows.extend(fetch_binance_bars(symbol, start_ns, end_ns, venue,
-                                       interval_ns, budget, fetch, now_ns))
+                                       interval_ns, budget, fetch, now_ns,
+                                       progress=progress))
+        reason = progress.get("truncated_by")
+        if reason:
+            truncated.setdefault(reason, []).append(symbol)
         if on_progress is not None:
             on_progress(index, len(symbols), len(rows))
 
@@ -336,14 +400,21 @@ def backfill_bars(store_root: Path, symbols: Sequence[str],
         # window - the venue had nothing, or every bar was refused - and a
         # zero-row partition would look like a completed one.
         return {"dataset": dataset, "venue": venue, "symbols": len(symbols),
-                "bars": 0, "appended": False}
+                "bars": 0, "appended": False,
+                "truncated": {k: len(v) for k, v in truncated.items()},
+                "truncated_symbols": truncated}
 
     append_partition(store_root, dataset, frame,
                      snapshot_id=f"{dataset}-{venue}-{started_ns}")
     return {"dataset": dataset, "venue": venue, "symbols": len(symbols),
             "bars": int(len(frame)), "appended": True,
             "first_bar_ns": int(frame[EVENT_TIME].min()),
-            "last_bar_ns": int(frame[EVENT_TIME].max())}
+            "last_bar_ns": int(frame[EVENT_TIME].max()),
+            # Counts on the face, the names underneath. A run that truncated
+            # nothing publishes an empty object rather than omitting the key,
+            # because a missing field and a clean run must not look alike.
+            "truncated": {k: len(v) for k, v in truncated.items()},
+            "truncated_symbols": truncated}
 
 
 def compare_reconstructed_to_observed(store_root: Path, as_of_ns: int,
