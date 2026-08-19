@@ -1653,18 +1653,19 @@ def probe_leverage_declared_and_bounded() -> ProbeResult:
 def probe_intraday_timeframes_declared() -> ProbeResult:
     """RL-043: the intraday timeframes are 1m, 5m, 15m and 30m, and are fetchable.
 
-    RL-043 named four timeframes and restored RL-018. Two of the four cannot be
-    backfilled today: `store.bar_backfill` maps only 1m, 5m and 1h to a venue
-    kline interval, so 15m and 30m are named in a ruling and absent from the code
-    that would have to fetch them.
+    RL-043 named four timeframes and restored RL-018. When this probe was written
+    two of the four could not be backfilled at all - `bar_backfill` mapped only 1m,
+    5m and 1h to a venue kline interval, so 15m and 30m existed in a ruling and
+    nowhere in the code that would have to fetch them. They were added the same
+    day, and this probe stays as the thing that would notice them going away.
     """
-    from store.bar_backfill import _INTERVAL_NAME_BY_NS
+    from store.bar_backfill import INTERVAL_NAME_BY_NS as _INTERVAL_NAME_BY_NS
 
     required = {"1m": 60_000_000_000, "5m": 300_000_000_000,
                 "15m": 900_000_000_000, "30m": 1_800_000_000_000}
     known = set(_INTERVAL_NAME_BY_NS.values())
     absent = sorted(name for name in required if name not in known)
-    proof = "store.bar_backfill._INTERVAL_NAME_BY_NS"
+    proof = "store.bar_backfill.INTERVAL_NAME_BY_NS"
 
     if absent:
         return ProbeResult(

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from store.bar_backfill import (
-    DEFAULT_INTERVAL_NS, ReconstructedBar, backfill_bars,
+    DEFAULT_INTERVAL_NS, INTERVAL_NAME_BY_NS, ReconstructedBar, backfill_bars,
     build_reconstructed_bars_frame, compare_reconstructed_to_observed,
     dataset_name, fetch_binance_bars, parse_binance_klines,
 )
@@ -328,3 +328,62 @@ def test_an_empty_store_compares_to_nothing_rather_than_raising(tmp_path):
     summary = compare_reconstructed_to_observed(tmp_path, int(time.time_ns()))
     assert summary == {"observed_bars": 0, "reconstructed_bars": 0,
                        "reconstructed_rows_in_observed": 0, "overlapping": 0}
+
+
+# --- RL-043's four intraday timeframes -------------------------------------
+
+
+def test_every_timeframe_the_intraday_ruling_names_can_be_fetched():
+    """RL-043 names 1m, 5m, 15m and 30m as the bots' intraday timeframes.
+
+    A ruling that names a timeframe the backfill cannot ask for is a plan with a
+    hole in it, and the hole is invisible until something tries to train on the
+    missing bars.
+    """
+    assert {"1m", "5m", "15m", "30m"} <= set(INTERVAL_NAME_BY_NS.values())
+
+
+def test_every_declared_interval_is_a_real_binance_kline_name():
+    # A name the venue does not publish comes back as an error page that parses
+    # to zero bars, which reads on a board as a market with no trades.
+    binance_klines = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h",
+                      "8h", "12h", "1d", "3d", "1w", "1M"}
+
+    assert set(INTERVAL_NAME_BY_NS.values()) <= binance_klines
+
+
+def test_each_interval_key_is_its_own_length_in_nanoseconds():
+    # The key IS the duration - `parse_binance_klines` drops the unclosed bar by
+    # comparing `bar_open_ns + interval_ns` against the fetch time, so a key that
+    # disagreed with its name would silently keep a bar that is still forming.
+    seconds = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}
+    for interval_ns, name in INTERVAL_NAME_BY_NS.items():
+        assert interval_ns == seconds[name] * 1_000_000_000, name
+
+
+def test_a_fifteen_minute_page_asks_the_venue_for_fifteen_minute_klines():
+    fetch = _Pages()
+    fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + 900_000_000_000,
+                       interval_ns=900_000_000_000, fetch=fetch,
+                       now_ns=lambda: FETCHED_NS)
+
+    assert fetch.urls, "no request was made"
+    assert "interval=15m" in fetch.urls[0]
+
+
+def test_a_thirty_minute_page_asks_the_venue_for_thirty_minute_klines():
+    fetch = _Pages()
+    fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + 1_800_000_000_000,
+                       interval_ns=1_800_000_000_000, fetch=fetch,
+                       now_ns=lambda: FETCHED_NS)
+
+    assert fetch.urls, "no request was made"
+    assert "interval=30m" in fetch.urls[0]
+
+
+def test_each_interval_writes_its_own_dataset():
+    # Two timeframes sharing a dataset name would interleave 15-minute and
+    # 30-minute bars into one series that is neither.
+    names = {dataset_name(ns) for ns in INTERVAL_NAME_BY_NS}
+
+    assert len(names) == len(INTERVAL_NAME_BY_NS)

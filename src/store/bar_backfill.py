@@ -81,8 +81,26 @@ _PAGE_LIMIT = 1500
 # pollers that keep live capture alive.
 _REQUEST_WEIGHT = 10
 DEFAULT_INTERVAL_NS = 60_000_000_000
-_INTERVAL_NAME_BY_NS = {60_000_000_000: "1m", 300_000_000_000: "5m",
-                        3_600_000_000_000: "1h"}
+# **The intervals this backfill can ask a venue for, keyed by their length in ns.**
+#
+# 1m, 5m, 15m and 30m are the four RL-043 named as the bots' intraday timeframes;
+# 1h predates that ruling and is kept because the store's hourly layout and the
+# funding-carry work both read it. Every key here must be a real Binance kline
+# interval - a name the venue does not publish comes back as an error page that
+# parses to zero bars, which reads on a board as a market with no trades.
+#
+# PUBLIC on purpose. `statuswall.segment_probes.probe_intraday_timeframes_declared`
+# reads this map to check the ruling against the code, and a probe reaching into a
+# private name is a check that breaks silently the day the name changes.
+INTERVAL_NAME_BY_NS = {
+    60_000_000_000: "1m",
+    300_000_000_000: "5m",
+    900_000_000_000: "15m",
+    1_800_000_000_000: "30m",
+    3_600_000_000_000: "1h",
+}
+# The old private spelling, kept so nothing that imported it breaks mid-run.
+_INTERVAL_NAME_BY_NS = INTERVAL_NAME_BY_NS
 
 
 def dataset_name(interval_ns: int = DEFAULT_INTERVAL_NS) -> str:
@@ -214,11 +232,11 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
     """
     from capture.venue_recorder import decode_path_token
 
-    interval_name = _INTERVAL_NAME_BY_NS.get(interval_ns)
+    interval_name = INTERVAL_NAME_BY_NS.get(interval_ns)
     if interval_name is None:
         raise ValueError(
             f"no binance kline interval for {interval_ns}ns - known: "
-            f"{sorted(_INTERVAL_NAME_BY_NS)}")
+            f"{sorted(INTERVAL_NAME_BY_NS)}")
 
     # The archive stores path-unsafe symbols encoded; the venue has never heard
     # of that name. Asking for `_b32_...` returns an empty list, which reads as
