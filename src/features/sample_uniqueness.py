@@ -224,3 +224,66 @@ def sequential_bootstrap(spans: Sequence[LabelSpan], n_bars: int, size: int,
             drawn_counts[index] += 1
 
     return picks
+
+
+def average_uniqueness_by_group(spans: Sequence[LabelSpan],
+                                groups: Sequence) -> list[float]:
+    """Uniqueness computed WITHIN each series, then reassembled in input order.
+
+    **The defect this exists to fix, measured 2026-08-19.** `learn.training_set`
+    builds every span with an index local to its own symbol - `event_index=i`
+    where `i` restarts at 0 for each symbol - and then appends them all into one
+    flat list. Handing that to `average_uniqueness` counts concurrency on ONE
+    SHARED TIMELINE, so symbol A's bar 500 and symbol B's bar 500 are treated as
+    the same bar. Uniqueness then divides by the number of symbols:
+
+        1 symbol, genuine 10-deep overlap   mean uniqueness 0.10000
+        10 symbols, identical labels                        0.01000
+        100 symbols, identical labels                       0.00100
+        800 symbols, identical labels                       0.00013
+
+    Identical labels; only the symbol count changes. The live perp model reported
+    0.00223 over 573 symbols and spot 0.00186 over 1,318 - and dividing those back
+    out gives implied per-symbol uniqueness of 1.28 and 2.45, both ABOVE the 1.0
+    ceiling uniqueness has, which is the arithmetic proof that the pooling did it.
+
+    **Why it is wrong in principle, not just in scale.** Uniqueness measures how
+    much a label's information window overlaps OTHER LABELS ON THE SAME PRICE
+    PATH: two events three bars apart with ten-bar horizons share seven bars of
+    one story. Two symbols labelled at the same instant share no bars at all -
+    they are two observations. Pooling them conflates "we watch many symbols"
+    with "we were told one story many times", so the metric ends up measuring the
+    size of the universe.
+
+    Cross-sectional correlation IS real and severe in crypto - 800 correlated
+    streams are not 800 independent bets - but that is a CORRELATION haircut and
+    belongs where the promotion gate applies its effective-breadth multiplier. It
+    is not the same quantity as label overlap, and collapsing the two into one
+    number leaves neither measurable.
+    """
+    if len(spans) != len(groups):
+        raise ValueError(
+            f"{len(spans)} span(s) against {len(groups)} group label(s). Refused "
+            f"rather than zipped short - a misaligned grouping silently computes "
+            f"uniqueness across the wrong series")
+    if not spans:
+        raise ValueError(
+            "no labels supplied. Returning an empty weight vector would let a "
+            "training run proceed with no samples and no complaint")
+
+    by_group: dict = {}
+    for position, (span, group) in enumerate(zip(spans, groups)):
+        by_group.setdefault(group, []).append((position, span))
+
+    out: list[float] = [0.0] * len(spans)
+    for members in by_group.values():
+        member_spans = [span for _position, span in members]
+        # Each series gets its OWN length, not the pooled maximum. Using the
+        # pooled length would leave every short symbol padded with bars nothing
+        # covers, which does not change its concurrency but does invite the same
+        # class of confusion this function exists to remove.
+        n_bars = max(span.touched_at_index for span in member_spans) + 1
+        for (position, _span), value in zip(members,
+                                            average_uniqueness(member_spans, n_bars)):
+            out[position] = value
+    return out

@@ -33,9 +33,12 @@ structural: draws made sequentially must achieve measurably higher average
 uniqueness than uniform draws on the same overlapping spans. A "sequential
 bootstrap" that does not beat uniform sampling is an expensive loop.
 """
+import statistics
+
 import pytest
 
 from features.sample_uniqueness import (
+    average_uniqueness_by_group,
     LabelSpan,
     UnresolvedLabel,
     average_uniqueness,
@@ -266,3 +269,64 @@ def test_an_empty_label_set_is_refused_rather_than_returning_nothing():
 def test_a_bootstrap_of_size_zero_is_refused():
     with pytest.raises(ValueError):
         sequential_bootstrap(_spans([(0, 1)]), n_bars=2, size=0, seed=1)
+
+
+# --- pooling a cross-section onto one timeline (fixed 2026-08-19) -----------
+
+
+def test_pooling_a_cross_section_divides_uniqueness_by_the_symbol_count():
+    """The defect. Identical labels; only the symbol count changes."""
+    one = [LabelSpan(event_index=i, touched_at_index=i + 10) for i in range(20)]
+    pooled_1 = statistics.mean(average_uniqueness(one, 31))
+    pooled_50 = statistics.mean(average_uniqueness(one * 50, 31))
+
+    # The claim is the RATIO, not the absolute: pooling N identical copies
+    # divides uniqueness by exactly N, whatever the single-series value is.
+    # (It is not exactly 1/10 here because the first and last bars of the series
+    # carry fewer overlapping labels than the middle.)
+    assert pooled_50 == pytest.approx(pooled_1 / 50, rel=1e-9)
+
+
+def test_grouping_by_series_recovers_the_real_per_symbol_uniqueness():
+    one = [LabelSpan(event_index=i, touched_at_index=i + 10) for i in range(20)]
+    spans = one * 50
+    groups = [s for s in range(50) for _ in one]
+
+    grouped = statistics.mean(average_uniqueness_by_group(spans, groups))
+
+    # Every symbol has the same 10-deep overlap, so the answer is that overlap -
+    # not that overlap divided by how many symbols happen to be watched.
+    assert grouped == pytest.approx(statistics.mean(average_uniqueness(one, 31)),
+                                    rel=1e-9)
+
+
+def test_uniqueness_is_bounded_by_one_however_many_series_are_pooled():
+    # The bound that proved the live figures wrong: perp reported 0.00223 over
+    # 573 symbols, an implied per-symbol 1.28, which this bound forbids.
+    spans, groups = [], []
+    for symbol in range(30):
+        spans.append(LabelSpan(event_index=0, touched_at_index=5))
+        groups.append(symbol)
+
+    values = average_uniqueness_by_group(spans, groups)
+
+    assert all(0 < v <= 1.0 for v in values)
+    assert values[0] == pytest.approx(1.0), "a lone label in its series is unique"
+
+
+def test_each_series_is_measured_against_its_own_length():
+    # A short symbol padded to the pooled maximum would not change its
+    # concurrency, but it invites exactly the confusion this function removes.
+    spans = [LabelSpan(event_index=0, touched_at_index=2),
+             LabelSpan(event_index=0, touched_at_index=900)]
+
+    values = average_uniqueness_by_group(spans, ["short", "long"])
+
+    assert values == pytest.approx([1.0, 1.0])
+
+
+def test_a_misaligned_grouping_is_refused_rather_than_zipped_short():
+    spans = [LabelSpan(event_index=0, touched_at_index=2)] * 3
+
+    with pytest.raises(ValueError, match="span"):
+        average_uniqueness_by_group(spans, ["a", "b"])

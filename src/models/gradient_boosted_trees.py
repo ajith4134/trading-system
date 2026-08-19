@@ -96,7 +96,7 @@ from typing import Sequence
 
 import numpy as np
 
-from features.sample_uniqueness import LabelSpan, average_uniqueness
+from features.sample_uniqueness import average_uniqueness_by_group, LabelSpan, average_uniqueness
 from models.openmp_runtime import ensure_openmp
 from validation.purged_cross_validation import CpcvFold, combinatorial_purged_folds
 from validation.superior_predictive_ability import (
@@ -274,7 +274,8 @@ def train_gbt(features, labels, spans: Sequence[LabelSpan] | None, *,
               params: dict | None = None,
               boost_rounds: int = DEFAULT_BOOST_ROUNDS,
               seed: int = 0, n_groups: int = 6, k_test: int = 2,
-              uniform_weights: bool = False) -> GbtResult:
+              uniform_weights: bool = False,
+              span_groups: Sequence | None = None) -> GbtResult:
     """Fit and score one LightGBM configuration, counted and purged.
 
     `spans` are the triple-barrier label spans for each row, in the same order —
@@ -317,6 +318,15 @@ def train_gbt(features, labels, spans: Sequence[LabelSpan] | None, *,
     if uniform_weights:
         weights = np.ones(len(features))
         effective_fraction = 1.0
+    elif span_groups is not None:
+        # **Per series, because a span index is local to its own series.**
+        # Pooling a cross-section onto one timeline makes symbol A's bar 500 and
+        # symbol B's bar 500 the same bar, and uniqueness then divides by the
+        # symbol count rather than by genuine label overlap. Measured 2026-08-19:
+        # perp reported 0.00223 over 573 symbols, an implied per-symbol figure of
+        # 1.28 - above the 1.0 ceiling uniqueness has, which is the proof.
+        weights = np.asarray(
+            average_uniqueness_by_group(spans, span_groups), dtype=float)
     else:
         weights = np.asarray(uniqueness_weights(spans, len(features)), dtype=float)
         if len(weights) != len(features):

@@ -57,7 +57,8 @@ from pathlib import Path
 import numpy as np
 
 from learn.training_set import FEATURE_NAMES
-from models.gradient_boosted_trees import train_gbt, uniqueness_weights
+from features.sample_uniqueness import average_uniqueness_by_group
+from models.gradient_boosted_trees import train_gbt
 from models.model_registry import ModelRegistry
 from validation.champion_promotion import (
     ChampionVerdict, evaluate_champion, evaluate_tail_champion,
@@ -182,8 +183,14 @@ def train_direction_model(rows, *, segment: str, venues=None,
 
     features = np.asarray(rows.features, dtype=float)
     labels = np.asarray(rows.labels, dtype=int)
-    n_bars = max((span.touched_at_index for span in rows.spans), default=0) + 1
-    weights = np.asarray(uniqueness_weights(rows.spans, n_bars), dtype=float)
+    # **Uniqueness WITHIN each symbol, never across the pooled cross-section.**
+    # Every span's index is local to its own symbol, so a single pooled timeline
+    # treats symbol A's bar 500 and symbol B's bar 500 as the same bar and divides
+    # uniqueness by the symbol count. Measured 2026-08-19: perp reported 0.00223
+    # over 573 symbols, whose implied per-symbol uniqueness of 1.28 is above the
+    # 1.0 ceiling the quantity has - the arithmetic proof that pooling did it.
+    weights = np.asarray(
+        average_uniqueness_by_group(rows.spans, rows.symbols), dtype=float)
 
     trials = TrialRegistry(Path(trials_root))
     params = params or {
@@ -201,7 +208,7 @@ def train_direction_model(rows, *, segment: str, venues=None,
     # `registry.evaluate`, so an exception still leaves a counted, abandoned trial.
     # §1a L7: the count keys on candidates EVALUATED, never on candidates retained.
     result = train_gbt(
-        features, labels, rows.spans,
+        features, labels, rows.spans, span_groups=rows.symbols,
         family=FAMILY_DIRECTION, registry=trials,
         trial_name=f"{segment}-direction-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
         params=params, boost_rounds=boost_rounds, seed=seed)
@@ -324,8 +331,14 @@ def train_profit_tail_model(rows, *, segment: str,
 
     features = np.asarray(rows.features, dtype=float)
     outcomes = np.asarray(rows.outcomes, dtype=float)
-    n_bars = max((span.touched_at_index for span in rows.spans), default=0) + 1
-    weights = np.asarray(uniqueness_weights(rows.spans, n_bars), dtype=float)
+    # **Uniqueness WITHIN each symbol, never across the pooled cross-section.**
+    # Every span's index is local to its own symbol, so a single pooled timeline
+    # treats symbol A's bar 500 and symbol B's bar 500 as the same bar and divides
+    # uniqueness by the symbol count. Measured 2026-08-19: perp reported 0.00223
+    # over 573 symbols, whose implied per-symbol uniqueness of 1.28 is above the
+    # 1.0 ceiling the quantity has - the arithmetic proof that pooling did it.
+    weights = np.asarray(
+        average_uniqueness_by_group(rows.spans, rows.symbols), dtype=float)
 
     trials = TrialRegistry(Path(trials_root))
     spec = TrialSpec(
