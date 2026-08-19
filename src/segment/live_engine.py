@@ -125,6 +125,13 @@ class LiveSegmentEngine:
     # the pair. Held rather than recomputed: `describe_universe` counts the
     # decisions of the poll that just ran, not a fresh listing call.
     last_admission: dict = field(default_factory=dict)
+    # **(venue, symbol) -> the PROFIT-TAIL that opened this position (LB-09,
+    # RL-030).** A champion that arrives mid-position does not take it over: the
+    # position runs out on the brains that opened it, so its P&L stays
+    # attributable to the model that earned it. A trade opened by one model and
+    # closed by another is attributable to neither, which is the same failure as
+    # crediting one P&L to all 36 features that could have produced it.
+    position_tails: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------ journal
 
@@ -223,6 +230,59 @@ class LiveSegmentEngine:
         return {"quote_currency": currency, "usd_rate": str(underlying),
                 "rate_source": "venue underlying price on the deciding frame"}
 
+    def _adopt_new_champion(self, now_ns: int) -> None:
+        """Decide from the champion registered NOW, without a restart (LB-09).
+
+        The check is a small file read on every poll and the model is loaded only
+        when the version id actually changed (RL-030). Before this, a bot resolved
+        its champion once at process start while the retrainer refit every four
+        hours and the bots ran 24/7 - so every model fitted between two restarts
+        was registered and never used, and the heartbeat published the version the
+        bot had LOADED rather than the one that existed.
+
+        Open positions are untouched: `position_tails` holds the brain that opened
+        each one and `_manage_open_positions` uses it until the position closes.
+        """
+        from learn.learned_brains import registered_champion_id
+
+        registered = registered_champion_id(self.bot.segment)
+        if not registered or registered == self.bot.model_version:
+            return
+        from segment.bot_registry import segment_bot
+        try:
+            swapped = segment_bot(self.bot.segment)
+        except Exception as failure:                     # noqa: BLE001
+            # A champion that cannot be loaded leaves the bot exactly as it was.
+            # Trading on the previous model is correct; stopping is not.
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment,
+                "outcome": "CHAMPION_SWAP_REFUSED", "reason": type(failure).__name__,
+                "evidence": {"registered": registered,
+                             "running": self.bot.model_version,
+                             "detail": str(failure)[:200]}}, now_ns)
+            return
+        if not swapped.learned or swapped.model_version != registered:
+            # The provenance check refused it. That refusal is the point of
+            # `_with_learned_brains` and it is recorded rather than retried.
+            self._record("decisions", {
+                "at_ns": now_ns, "segment": self.bot.segment,
+                "outcome": "CHAMPION_SWAP_REFUSED", "reason": "NOT_ADOPTED",
+                "evidence": {"registered": registered,
+                             "running": self.bot.model_version,
+                             "champion_refused": swapped.extra.get("champion_refused")}},
+                         now_ns)
+            return
+
+        previous = self.bot.model_version or "none"
+        self.bot = swapped
+        self._record("decisions", {
+            "at_ns": now_ns, "segment": self.bot.segment,
+            "outcome": "CHAMPION_SWAPPED", "reason": "NEW_CHAMPION_REGISTERED",
+            "evidence": {"from_model": previous, "to_model": registered,
+                         "open_positions_kept_on_their_own_brains":
+                             len(self.position_tails),
+                         "authority": "new entries only (RL-030)"}}, now_ns)
+
     def _warm_up(self) -> dict | None:
         """How far a LEARNED bot is from being able to decide at all.
 
@@ -295,6 +355,7 @@ class LiveSegmentEngine:
 
     def poll_once(self, now_ns: int) -> dict:
         self.counts.polls += 1
+        self._adopt_new_champion(now_ns)
         ticks = self.feed.poll()
         self.counts.ticks += len(ticks)
         self.features.update(ticks)
@@ -448,6 +509,8 @@ class LiveSegmentEngine:
             entry_price=price, entry_ns=now_ns, hard_stop=hard_stop,
             band=self.bot.band)
         self.positions[(venue, symbol)] = position
+        # The brain that opened it owns it to the close (RL-030).
+        self.position_tails[(venue, symbol)] = self.bot.profit_tail
         self.pending.pop((venue, symbol), None)
         self.counts.opened += 1
         raw = (selection.evidence.get("bull", {}).get("evidence", {})
@@ -489,7 +552,14 @@ class LiveSegmentEngine:
             # Mark against the side the position would have to EXIT into, for the
             # same reason the entry crossed the spread.
             mark = frame["bid"] if position.side == "LONG" else frame["ask"]
-            directive = self.bot.profit_tail.manage(
+            # **The brain that OPENED this position manages it to the close
+            # (RL-030).** After a mid-run champion swap `self.bot.profit_tail` is
+            # the new one, and handing it a position it never chose would split
+            # that trade's P&L across two models - attributable to neither.
+            # Falls back to the current tail for a position recovered from the
+            # journal after a restart, where the object that opened it is gone.
+            tail = self.position_tails.get(key, self.bot.profit_tail)
+            directive = tail.manage(
                 position=position, mark=mark, now_ns=now_ns, frame=frame)
 
             if directive.action == HOLD:
@@ -511,9 +581,10 @@ class LiveSegmentEngine:
                 continue
 
             if directive.action == CLOSE:
-                self._close(position, mark, directive, now_ns, frame)
+                self._close(position, mark, directive, now_ns, frame, tail)
 
-    def _close(self, position, mark, directive, now_ns: int, frame=None) -> None:
+    def _close(self, position, mark, directive, now_ns: int, frame=None,
+               tail=None) -> None:
         gross = ((mark - position.entry_price) * position.quantity
                  if position.side == "LONG"
                  else (position.entry_price - mark) * position.quantity)
@@ -527,6 +598,7 @@ class LiveSegmentEngine:
         # retraining" rather than adaptive.
         self._learn_from_close(position, gross, now_ns)
         self.positions.pop((position.venue, position.symbol), None)
+        self.position_tails.pop((position.venue, position.symbol), None)
         self.counts.closed += 1
         self._record("fills", {
             "at_ns": now_ns, "segment": self.bot.segment, "venue": position.venue,
@@ -540,7 +612,7 @@ class LiveSegmentEngine:
             **self._usd_conversion(frame, position.symbol, position.venue),
             "held_ns": now_ns - position.entry_ns,
             "close_reason": directive.reason,
-            "closed_by": self.bot.profit_tail.name,
+            "closed_by": (tail or self.bot.profit_tail).name,
             "reduce_only": directive.reduce_only,
             "makes_edge_claim": False,
             "evidence": directive.evidence}, now_ns)

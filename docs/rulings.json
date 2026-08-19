@@ -407,6 +407,21 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_capital_and_pnl_reported"
+  },
+  {
+   "id": "RL-030",
+   "date": "2026-08-19",
+   "session": "be72d4ff",
+   "source": "interview",
+   "verbatim": "[interview answer] New entries only; check the alias file every poll and load only when the id changed",
+   "clarified_as": "When a new champion registers while a bot is running, the bot picks it up WITHOUT a restart, and the swap applies to NEW ENTRIES ONLY: a position already open keeps the brains that opened it until it closes. The bot checks the champion alias on every poll - a stat of a small file - and loads a model only when the version id actually changed.",
+   "means": "A trade whose P&L is split across two models is attributable to neither, which is the same failure as crediting one P&L to 36 features. Every fill already carries its brains by name, and this keeps that record true. A bot that only picks up a champion at process start is a bot that never uses most of what the retrainer fits.",
+   "scope": "per-brain",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_champion_reload_current"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

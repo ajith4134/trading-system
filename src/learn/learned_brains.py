@@ -132,6 +132,28 @@ def _check_feature_contract(names) -> None:
             f"plausible predictions from values fed to the wrong splits")
 
 
+def registered_champion_id(segment: str, *,
+                           registry_root: Path = DEFAULT_REGISTRY_ROOT) -> str | None:
+    """The champion version id on disk, WITHOUT loading the model (LB-09, RL-030).
+
+    A bot checks this every poll, so it has to cost a small file read and nothing
+    else - the model itself is loaded only when the id it returns differs from
+    the one the bot is already deciding with.
+
+    None when no champion is registered for this segment, which is a state a bot
+    starts in rather than an error.
+    """
+    from models.model_registry import ALIASES_FILE
+
+    try:
+        aliases = json.loads((Path(registry_root) / ALIASES_FILE).read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = aliases.get(CHAMPION_ALIAS.format(segment=segment))
+    return version or None
+
+
 def load_champion(segment: str, *, registry_root: Path = DEFAULT_REGISTRY_ROOT
                   ) -> LoadedModel:
     """The registered direction champion for one segment."""

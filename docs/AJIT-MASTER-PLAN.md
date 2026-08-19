@@ -1135,13 +1135,14 @@ regime is not a regime change. L6 is recorded as FAILING rather than skipped.
   slice:      learned-brains
   does:       make a bot decide from the champion that is registered NOW, not the one that
               was registered when its process started
-  satisfies:  RL-026 RL-020 RL-012
-  sources:    2026-08-08-final-project-goal-design.md#1a
+  satisfies:  RL-030 RL-026 RL-020 RL-012
+  sources:    docs/rulings.json#RL-030
   depends on: LB-08
   probe:      probe_champion_reload_current
   accepts:    a champion registered while a bot is running becomes the model it decides from
               without anybody restarting anything, the swap is journalled with both version
-              ids, and a bot deciding from a superseded model reads as superseded rather
+              ids, a position already open is managed to its close by the brains that opened
+              it, and a bot deciding from a superseded model reads as superseded rather
               than as learned
   state:      measured by probe_champion_reload_current
 
@@ -1156,11 +1157,17 @@ regime is not a regime change. L6 is recorded as FAILING rather than skipped.
 > `model_version` against the registry's current alias, so the gap is on the board while the
 > reload is still unbuilt. **A row nobody can see is how this one survived.**
 >
-> **The reload itself is not a swap of an object.** A bot holding open positions took them
-> on one model's evidence, and PROFIT-TAIL owns them to the close (RL-023). The design
-> question that has to be answered before this row is built is whether a reload applies to
-> new entries only while open positions run out on the model that opened them - which is
-> what the journal already supports, since every fill carries its brains by name.
+> **The design question is settled: RL-030, 2026-08-19.** A reload applies to NEW ENTRIES
+> ONLY - a position already open is managed to its close by the brains that opened it - and
+> the bot checks the champion alias on every poll, loading a model only when the version id
+> actually changed. The user chose both. **A trade opened by one model and closed by another
+> is attributable to neither**, which is the same failure as the live system in
+> `DECISIONS.md` that credited one P&L to all 36 of its features; every fill already carries
+> its brains by name and this keeps that record true.
+>
+> A champion that fails to load, or that the provenance check refuses, leaves the bot trading
+> on the model it already had and journals `CHAMPION_SWAP_REFUSED`. Trading on the previous
+> model is correct there; stopping is not.
 
 > **The modules these rows build.**
 >
