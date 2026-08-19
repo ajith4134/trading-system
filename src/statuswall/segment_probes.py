@@ -1370,6 +1370,461 @@ def probe_probes_implemented() -> ProbeResult:
     return ProbeResult(OK, detail, proof)
 
 
+# ---------------------------------------------------------------------------
+# SLICE capital (CL-01 .. CL-07) — RL-040, RL-041, RL-042, and RL-037/RL-043.
+#
+# Six of these measure work that is NOT BUILT YET, and they exist anyway. That is
+# the point of Rule 8: absence of evidence is its own state and must be reachable
+# in the design. A probe written only once its subject works has never been seen
+# reporting the failure it is supposed to catch.
+#
+# The bots these govern are perp and spot only (RL-036, RL-039).
+# ---------------------------------------------------------------------------
+
+GOVERNED = ("perp", "spot")
+
+
+def _open_fills(segment: str) -> list:
+    """Every OPEN in this bot's journals, newest window first."""
+    rows = []
+    for path in journal_paths(segment, "fills"):
+        rows.extend(tail_rows(path, rows=200_000, max_bytes=64_000_000))
+    return [r for r in rows if r.get("event") == "OPEN"]
+
+
+def _close_fills(segment: str) -> list:
+    rows = []
+    for path in journal_paths(segment, "fills"):
+        rows.extend(tail_rows(path, rows=200_000, max_bytes=64_000_000))
+    return [r for r in rows if r.get("event") == "CLOSE"]
+
+
+def probe_capital_declaration_is_enforced() -> ProbeResult:
+    """CL-01 / CL-07 / RL-040: the declared budget parses, and the gate reads it.
+
+    Two separate facts, and conflating them is the failure this probe is for. A
+    declaration that PARSES says only that a number was written down. It becomes a
+    limit when a fill is sized from it, and until CL-05 lands nothing is - so a
+    green tile here before then would be reporting a budget that no bot spends.
+    """
+    from segment.capital_declaration import DeclarationReloader, declaration_path
+
+    path = declaration_path()
+    reloader = DeclarationReloader(path)
+    declaration = reloader.poll()
+    proof = str(path)
+
+    if declaration is None:
+        return ProbeResult(NOT_MEASURED, reloader.rejection or "no declaration", proof)
+
+    summary = (f"declared {declaration.portfolio_usdt} USDT, per-bot cap "
+               f"{declaration.cap_for('perp')}, margin per trade "
+               f"{declaration.min_margin_per_trade_usdt}-"
+               f"{declaration.max_margin_per_trade_usdt}, stamped "
+               f"{declaration.declared_at}")
+
+    sized = [s for s in GOVERNED if any("margin_usdt" in r for r in _open_fills(s))]
+    if not sized:
+        return ProbeResult(
+            PARTIAL,
+            f"{summary} - but NO bot sizes from it: no OPEN carries margin_usdt, "
+            f"so the declaration is still only a denominator (CL-05 unbuilt)",
+            proof)
+    if len(sized) < len(GOVERNED):
+        absent = ", ".join(s for s in GOVERNED if s not in sized)
+        return ProbeResult(PARTIAL, f"{summary} - not enforced on: {absent}", proof)
+    return ProbeResult(OK, f"{summary} - enforced on {', '.join(sized)}", proof)
+
+
+def probe_excursions_journalled_on_close() -> ProbeResult:
+    """CL-02 / CL-03 / RL-042: every trade records its best and its worst.
+
+    Also checks the invariant that makes the two figures trustworthy:
+    `peak_favourable >= realised return >= -peak_adverse`. A violation means the
+    sampler missed the close, so the journalled peak is not merely a lower bound -
+    it is wrong.
+    """
+    missing, checked, violations = [], 0, []
+    for segment in GOVERNED:
+        closes = _close_fills(segment)
+        if not closes:
+            missing.append(f"{segment}: no CLOSE journalled")
+            continue
+        carrying = [r for r in closes if "peak_favourable_fraction" in r]
+        if not carrying:
+            missing.append(f"{segment}: {len(closes)} CLOSEs, none carry excursions")
+            continue
+        for row in carrying:
+            try:
+                favourable = float(row["peak_favourable_fraction"])
+                adverse = float(row["peak_adverse_fraction"])
+                entry = float(row["entry_price"])
+                exit_price = float(row["price"])
+                if entry <= 0:
+                    continue
+                realised = (exit_price - entry) / entry
+                if row.get("side") == "SHORT":
+                    realised = -realised
+            except (KeyError, TypeError, ValueError):
+                continue
+            checked += 1
+            if not (favourable + 1e-12 >= realised >= -adverse - 1e-12):
+                violations.append(f"{segment} {row.get('symbol')}")
+
+    if violations:
+        return ProbeResult(
+            FAILING,
+            f"{len(violations)} closed trade(s) breach "
+            f"peak_favourable >= realised >= -peak_adverse: "
+            f"{', '.join(violations[:5])}",
+            "fills journals")
+    if missing and checked == 0:
+        return ProbeResult(NOT_MEASURED, "; ".join(missing), "fills journals")
+    if missing:
+        return ProbeResult(PARTIAL,
+                           f"{checked} trade(s) carry excursions; {'; '.join(missing)}",
+                           "fills journals")
+    return ProbeResult(OK, f"{checked} closed trade(s) carry both excursions and hold "
+                           f"the ordering invariant", "fills journals")
+
+
+def probe_pool_never_overcommits() -> ProbeResult:
+    """CL-04 / RL-040: two bot processes never reserve more than the portfolio.
+
+    The failure this exists for is a LOST UPDATE, not an arithmetic slip. perp and
+    spot are independent processes polling the same six seconds; if each computes
+    headroom from its own view, both can read the same free balance and both open.
+    """
+    from segment.capital_declaration import DeclarationReloader, declaration_path
+
+    ledger = STATE_ROOT / "pool.ndjson"
+    if not ledger.exists():
+        return ProbeResult(NOT_MEASURED,
+                           f"no reservation ledger at {ledger} (CL-04 unbuilt)",
+                           str(ledger))
+
+    declaration = DeclarationReloader(declaration_path()).poll()
+    if declaration is None:
+        return ProbeResult(NOT_MEASURED,
+                           "a ledger exists but no declaration bounds it",
+                           str(ledger))
+
+    held, peak = {}, 0.0
+    for row in tail_rows(ledger, rows=200_000, max_bytes=64_000_000):
+        key = (row.get("segment"), row.get("venue"), row.get("symbol"))
+        if row.get("event") == "RESERVE":
+            held[key] = float(row.get("margin_usdt") or 0)
+        elif row.get("event") == "RELEASE":
+            held.pop(key, None)
+        peak = max(peak, sum(held.values()))
+
+    portfolio = float(declaration.portfolio_usdt)
+    if peak > portfolio:
+        return ProbeResult(FAILING,
+                           f"reservations peaked at {peak:,.2f} USDT against a "
+                           f"declared portfolio of {portfolio:,.2f}",
+                           str(ledger))
+    return ProbeResult(OK, f"reservations peaked at {peak:,.2f} of {portfolio:,.2f} "
+                           f"USDT declared", str(ledger))
+
+
+def probe_margin_per_trade_within_band() -> ProbeResult:
+    """CL-05 / RL-040: capital per trade sits inside the declared min/max band.
+
+    **This is the acceptance test for the whole capital slice.** Measured
+    2026-08-19 before any of it was built: the median OPEN used 0.00014 USDT on
+    perp and 0.00066 on spot against a maximum near 130 on both - six and a half
+    orders of magnitude, from `bot_registry`'s fixed `quantity=0.002` base-asset
+    size applied across a universe-wide scan. While that holds, the published P&L
+    is the P&L of a handful of BTC trades and the winrate weights a $130 trade
+    equally with a $0.0000001 one.
+    """
+    from segment.capital_accounting import usd_rate_of
+    from segment.capital_declaration import DeclarationReloader, declaration_path
+
+    declaration = DeclarationReloader(declaration_path()).poll()
+    if declaration is None:
+        return ProbeResult(NOT_MEASURED, "no declaration to measure against",
+                           str(declaration_path()))
+
+    low = float(declaration.min_margin_per_trade_usdt)
+    high = float(declaration.max_margin_per_trade_usdt)
+    lines, unsized, outside = [], [], 0
+    for segment in GOVERNED:
+        opens = _open_fills(segment)
+        if not opens:
+            lines.append(f"{segment}: no OPEN journalled")
+            continue
+        values, declared_field = [], False
+        for row in opens:
+            if "margin_usdt" in row:
+                declared_field = True
+                try:
+                    values.append(float(row["margin_usdt"]))
+                except (TypeError, ValueError):
+                    continue
+                continue
+            rate = usd_rate_of(row)
+            if rate is None or rate <= 0:
+                continue
+            try:
+                values.append(float(row["quantity"]) * float(row["price"]) * float(rate))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not values:
+            lines.append(f"{segment}: no OPEN could be priced in USDT")
+            continue
+        values.sort()
+        median = values[len(values) // 2]
+        spread = values[-1] / values[0] if values[0] > 0 else float("inf")
+        lines.append(f"{segment} {len(values)} OPENs, median {median:.6f}, "
+                     f"min {values[0]:.8f}, max {values[-1]:.2f} USDT, "
+                     f"spread {spread:,.0f}x")
+        if not declared_field:
+            unsized.append(segment)
+        outside += sum(1 for v in values if v < low or v > high)
+
+    detail = f"declared band {low}-{high} USDT; " + "; ".join(lines)
+    if unsized:
+        return ProbeResult(
+            DEGRADED,
+            f"{detail} - {', '.join(unsized)} still size from a fixed base "
+            f"quantity, so no OPEN carries margin_usdt (CL-05 unbuilt)",
+            "fills journals")
+    if outside:
+        return ProbeResult(FAILING, f"{detail} - {outside} OPEN(s) outside the band",
+                           "fills journals")
+    return ProbeResult(OK, detail, "fills journals")
+
+
+def probe_leverage_declared_and_bounded() -> ProbeResult:
+    """CL-06 / RL-041: leverage is journalled, under its ceiling, and survivable.
+
+    The check that matters is the last one. At L times leverage an isolated
+    position liquidates on roughly a 1/L adverse move less maintenance margin, so a
+    hard stop wider than that CAN NEVER FIRE - the position is liquidated first and
+    the risk gate believes in protection it does not have.
+    """
+    from segment.capital_declaration import DeclarationReloader, declaration_path
+
+    declaration = DeclarationReloader(declaration_path()).poll()
+    if declaration is None:
+        return ProbeResult(NOT_MEASURED, "no declaration to bound leverage",
+                           str(declaration_path()))
+
+    maintenance = float(declaration.maintenance_margin_rate)
+    absent, over_ceiling, unreachable_stop, counted = [], [], [], 0
+    for segment in GOVERNED:
+        opens = _open_fills(segment)
+        carrying = [r for r in opens if "leverage" in r]
+        if not carrying:
+            absent.append(f"{segment}: {len(opens)} OPENs, none journal leverage")
+            continue
+        ceiling = float(declaration.ceiling_for(segment))
+        for row in carrying:
+            try:
+                leverage = float(row["leverage"])
+                stop_fraction = float(row["stop_fraction"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            counted += 1
+            if leverage > ceiling:
+                over_ceiling.append(f"{segment} {row.get('symbol')} at {leverage}x")
+            if leverage > 0 and stop_fraction >= (1 / leverage) - maintenance:
+                unreachable_stop.append(f"{segment} {row.get('symbol')}")
+
+    if over_ceiling or unreachable_stop:
+        return ProbeResult(
+            FAILING,
+            f"{len(over_ceiling)} above ceiling, {len(unreachable_stop)} with a hard "
+            f"stop beyond the liquidation distance: "
+            f"{', '.join((over_ceiling + unreachable_stop)[:5])}",
+            "fills journals")
+    if absent and counted == 0:
+        return ProbeResult(NOT_MEASURED, "; ".join(absent) + " (CL-06 unbuilt)",
+                           "fills journals")
+    if absent:
+        return ProbeResult(PARTIAL, f"{counted} OPEN(s) bounded; {'; '.join(absent)}",
+                           "fills journals")
+    return ProbeResult(OK, f"{counted} OPEN(s) within ceiling with a reachable stop",
+                       "fills journals")
+
+
+def probe_intraday_timeframes_declared() -> ProbeResult:
+    """RL-043: the intraday timeframes are 1m, 5m, 15m and 30m, and are fetchable.
+
+    RL-043 named four timeframes and restored RL-018. Two of the four cannot be
+    backfilled today: `store.bar_backfill` maps only 1m, 5m and 1h to a venue
+    kline interval, so 15m and 30m are named in a ruling and absent from the code
+    that would have to fetch them.
+    """
+    from store.bar_backfill import _INTERVAL_NAME_BY_NS
+
+    required = {"1m": 60_000_000_000, "5m": 300_000_000_000,
+                "15m": 900_000_000_000, "30m": 1_800_000_000_000}
+    known = set(_INTERVAL_NAME_BY_NS.values())
+    absent = sorted(name for name in required if name not in known)
+    proof = "store.bar_backfill._INTERVAL_NAME_BY_NS"
+
+    if absent:
+        return ProbeResult(
+            DEGRADED,
+            f"RL-043 names 1m, 5m, 15m, 30m; bar_backfill knows "
+            f"{', '.join(sorted(known))} - absent: {', '.join(absent)}",
+            proof)
+    return ProbeResult(OK, "all four intraday timeframes are fetchable", proof)
+
+
+def probe_no_stored_bar_on_decision_path() -> ProbeResult:
+    """RL-037 / RL-024: history may train, but may never price a fill.
+
+    RL-037 admits backfilled bars as a TRAINING and RESEARCH input while leaving
+    RL-024 intact - every fill stays priced on live venue data. The line between
+    the two is only real if something checks it, and the check is that the live
+    engine does not import the store at all.
+    """
+    engine = REPO / "src" / "segment" / "live_engine.py"
+    if not engine.exists():
+        return ProbeResult(NOT_MEASURED, f"no engine at {engine}", str(engine))
+
+    offenders = [line.strip() for line in engine.read_text().splitlines()
+                 if line.strip().startswith(("import store", "from store"))]
+    if offenders:
+        return ProbeResult(
+            FAILING,
+            f"the live engine imports the store, so a stored bar can reach a "
+            f"decision: {'; '.join(offenders)}",
+            str(engine))
+    return ProbeResult(OK, "the live engine imports nothing from the store",
+                       str(engine))
+
+
+# A bot whose heartbeat is older than this is not running. Six-second polls, so
+# two minutes is twenty missed polls - long enough that a slow venue response or a
+# supervisor restart does not read as a stopped bot.
+STOPPED_AFTER_SECONDS = 120
+
+
+def probe_only_perp_and_spot_running() -> ProbeResult:
+    """RL-039: perp and spot run; dated and options are deliberately off.
+
+    Measures BOTH halves, because they fail differently and only one of them is
+    obvious. A dated bot still trading is a scope breach. A dated bot merely
+    stopped, with no OFF file beside it, is INDISTINGUISHABLE FROM A CRASH - and
+    that is the state the file exists to prevent, so its absence is a finding even
+    when the bot is correctly not running.
+    """
+    running, breaches, undeclared = [], [], []
+    for segment in SEGMENTS:
+        payload, age = heartbeat(segment)
+        alive = age is not None and age < STOPPED_AFTER_SECONDS
+        off_switch = STATE_ROOT / segment / "OFF"
+        if segment in GOVERNED:
+            if alive:
+                running.append(f"{segment} {age:.0f}s ago")
+            else:
+                breaches.append(f"{segment} is governed but not running")
+            if off_switch.exists():
+                breaches.append(f"{segment} has an OFF switch set")
+            continue
+        if alive:
+            breaches.append(f"{segment} still running {age:.0f}s ago")
+        elif not off_switch.exists():
+            undeclared.append(f"{segment} is stopped with no OFF file, so it reads "
+                              f"as crashed rather than as deliberately off")
+
+    proof = str(STATE_ROOT)
+    if breaches:
+        return ProbeResult(FAILING, "; ".join(breaches), proof)
+    if undeclared:
+        return ProbeResult(DEGRADED, "; ".join(undeclared), proof)
+    if not running:
+        return ProbeResult(NOT_MEASURED, "no governed bot has written a heartbeat",
+                           proof)
+    return ProbeResult(OK, f"running: {', '.join(running)}; dated and options off "
+                           f"by their own OFF files", proof)
+
+
+def probe_swing_scope_is_perp_and_spot() -> ProbeResult:
+    """RL-036: whatever is converted is converted on perp and spot, nowhere else.
+
+    A scope ruling is only worth measuring where the scope could drift, so this
+    reads the same OFF switches rather than restating the tuple in code.
+    """
+    out_of_scope = [s for s in SEGMENTS if s not in GOVERNED
+                    and not (STATE_ROOT / s / "OFF").exists()]
+    proof = str(STATE_ROOT)
+    if out_of_scope:
+        return ProbeResult(DEGRADED,
+                           f"in scope: {', '.join(GOVERNED)}; but "
+                           f"{', '.join(out_of_scope)} carries no OFF file",
+                           proof)
+    return ProbeResult(OK, f"scope is {', '.join(GOVERNED)}; "
+                           f"dated and options are switched off", proof)
+
+
+def probe_swing_band_is_live() -> ProbeResult:
+    """RL-035, SHELVED the same day by RL-043. This probe records that it is.
+
+    The probe is kept rather than deleted because RL-035 was shelved, not declined:
+    its measurement and design document stand, and if the intraday numbers do not
+    improve the conversion is picked up rather than re-derived. A deleted probe
+    would make a shelved decision look like one that was never taken.
+
+    It also guards the reverse drift. If a band named `swing` ever appears in a
+    live heartbeat while RL-043 stands, that is a horizon nobody ruled for.
+    """
+    live = []
+    for segment in GOVERNED:
+        payload, age = heartbeat(segment)
+        if not isinstance(payload, dict) or age is None:
+            continue
+        if age < STOPPED_AFTER_SECONDS and str(payload.get("band", "")).lower() == "swing":
+            live.append(segment)
+
+    proof = str(STATE_ROOT)
+    if live:
+        return ProbeResult(
+            FAILING,
+            f"{', '.join(live)} reports a swing band while RL-043 restored "
+            f"intraday; no ruling stands for that horizon",
+            proof)
+    return ProbeResult(NOT_MEASURED,
+                       "RL-035 was shelved by RL-043 on 2026-08-19; the bots are "
+                       "intraday and no swing band is live", proof)
+
+
+def probe_one_engine_not_two() -> ProbeResult:
+    """RL-038: the change edits the running system; it does not grow a second one.
+
+    The shape this refuses is the one the work naturally wants to take - a new
+    engine built beside the old one until it is ready - because that shape ends
+    with two engines, two journals and two boards, and the old one never dies.
+
+    Measured structurally: one engine module, and no segment state directory
+    outside the four the registry declares.
+    """
+    segment_src = REPO / "src" / "segment"
+    engines = sorted(path.name for path in segment_src.glob("*engine*.py"))
+    strays = sorted(path.name for path in STATE_ROOT.glob("*")
+                    if path.is_dir() and path.name not in SEGMENTS)
+
+    proof = f"{segment_src} · {STATE_ROOT}"
+    if len(engines) > 1:
+        return ProbeResult(FAILING,
+                           f"{len(engines)} engine modules exist: {', '.join(engines)}",
+                           proof)
+    if not engines:
+        return ProbeResult(NOT_MEASURED, f"no engine module under {segment_src}", proof)
+    if strays:
+        return ProbeResult(DEGRADED,
+                           f"one engine ({engines[0]}), but state directories outside "
+                           f"the declared segments: {', '.join(strays)}",
+                           proof)
+    return ProbeResult(OK, f"one engine ({engines[0]}) writing "
+                           f"{len(SEGMENTS)} declared segment journals", proof)
+
+
 SEGMENT_PROBES = {
     "probe_segment_engine_running": probe_segment_engine_running,
     "probe_perp_engine_running": probe_perp_engine_running,
@@ -1414,6 +1869,17 @@ SEGMENT_PROBES = {
     "probe_permanent_rules_present": probe_permanent_rules_present,
     "probe_build_order_current": probe_build_order_current,
     "probe_probes_implemented": probe_probes_implemented,
+    "probe_capital_declaration_is_enforced": probe_capital_declaration_is_enforced,
+    "probe_excursions_journalled_on_close": probe_excursions_journalled_on_close,
+    "probe_pool_never_overcommits": probe_pool_never_overcommits,
+    "probe_margin_per_trade_within_band": probe_margin_per_trade_within_band,
+    "probe_leverage_declared_and_bounded": probe_leverage_declared_and_bounded,
+    "probe_intraday_timeframes_declared": probe_intraday_timeframes_declared,
+    "probe_no_stored_bar_on_decision_path": probe_no_stored_bar_on_decision_path,
+    "probe_only_perp_and_spot_running": probe_only_perp_and_spot_running,
+    "probe_swing_scope_is_perp_and_spot": probe_swing_scope_is_perp_and_spot,
+    "probe_swing_band_is_live": probe_swing_band_is_live,
+    "probe_one_engine_not_two": probe_one_engine_not_two,
 }
 
 

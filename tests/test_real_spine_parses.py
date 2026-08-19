@@ -20,7 +20,7 @@ SPINE = REPO / "docs" / "AJIT-MASTER-PLAN.md"
 REGISTER = REPO / "docs" / "rulings.json"
 
 
-def test_the_real_spine_parses_into_the_eight_slices():
+def test_the_real_spine_parses_into_its_slices_in_order():
     """`bot-framework` was added 2026-08-18 between governance and the segments.
 
     slice-0 deliberately left the shared bot framework out, to be planned when a
@@ -28,11 +28,21 @@ def test_the_real_spine_parses_into_the_eight_slices():
     market data path to a live feed and RL-023 fixed the brain count at three - so
     the shared harness became a slice rather than being smuggled into whichever
     segment happened to be built first.
+
+    `capital` was added 2026-08-19 after the two bots it governs. It is its own
+    slice rather than rows inside `perp-bot` and `spot-bot` because the capital
+    pool is SHARED between the two processes, and a resource owned by neither bot
+    belongs in neither bot's slice.
+
+    The count is deliberately no longer in this test's name. It was, and adding a
+    slice then meant editing a name that described nothing about what was being
+    checked - which is the ORDER, because a slice inserted in the wrong place is a
+    dependency that runs before what it depends on.
     """
     slices = read_master_plan(SPINE)
     keys = [s.key for s in slices]
-    assert keys == ["slice-0", "bot-framework", "spot-bot", "perp-bot", "dated-bot",
-                    "options-bot", "learned-brains", "slice-5"]
+    assert keys == ["slice-0", "bot-framework", "spot-bot", "perp-bot", "capital",
+                    "dated-bot", "options-bot", "learned-brains", "slice-5"]
 
 
 def test_every_row_in_the_real_spine_names_a_ruling_that_exists():

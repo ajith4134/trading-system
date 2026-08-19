@@ -477,6 +477,46 @@ its own plan when slice 1's row inventory is reviewed.
 > forced by the layout rather than chosen — and it is the column this store has already lost
 > once, silently, on 2026-08-09.
 
+### SL-18
+  slice:      slice-0
+  does:       bound the wall's expensive probes to recent hours, and put the window on the tile
+  satisfies:  RL-033 RL-012 RL-008 RL-020
+  sources:    ~/research/DECISIONS.md#15.5 The scan is the hot spot, not the walk
+  depends on: SL-16
+  probe:      probe_wall_pass_completes
+  accepts:    a wall pass finishes and writes status-wall.html, every expensive
+              probe has a cache entry, and each bounded tile names the window it
+              measured rather than presenting it as the whole archive
+  state:      measured by probe_wall_pass_completes
+
+> **Converting the store did not unfreeze the wall, and this row says why.** After
+> `funding` went from 63,063 fragments to 81 and `option_chain` from 25,023 to 20, a wall
+> pass still climbed to **7.07 GB in nine minutes without finishing**, and it was reading
+> `bars_60000000000ns` the whole time — **208,880 fragments**, now the largest thing in
+> the store. It was stopped at 7.07 GB with 5 GB free rather than allowed to reach the
+> 7.8 GB where three earlier passes were OOM-killed, because the kernel picks the victim
+> and the four bots were candidates.
+>
+> **Bars is not a conversion candidate and compaction barely helps it.** The bots read
+> bars one symbol at a time, which is exactly what a `symbol=` level is for, so converting
+> it would make every bot slower to make one board faster. And it is already near the
+> compaction target: 2,713 fragments per hour across ~2,230 symbols is about 1.2 parts per
+> (hour, symbol), so SL-15's merge would return almost nothing here.
+>
+> **RL-033 settles it: bound the read, and say what was bounded.** The five expensive
+> probes answer day-scale questions — observed days of history, symbols in the store, bar
+> validity across the archive — and hour partitioning, which SL-16 has now enabled on all
+> eight datasets, is what makes a bounded read cheap. The Rule 8 line is that the tile
+> STATES THE WINDOW: a number whose scope is on its face is a measurement, while the same
+> number presented as covering everything is an assertion. This is the same line
+> `measured_periodically` already draws by appending the age of a cached answer.
+>
+> **The failure being repaired is not slowness, it is silence.** `status-wall.html` last
+> completed 2026-08-17 13:38 and the probe cache directory had never been created — the
+> proof that no expensive probe had ever returned, since the cache is written on first
+> success. A board that never returns reports nothing at all, which is worse than a board
+> reporting a bounded number honestly.
+
 ---
 
 ## SLICE bot-framework — SHARED LIVE BOT FRAMEWORK
@@ -1043,6 +1083,126 @@ picked the method in advance would be the hard-coded instruction-following RL-01
               only non-plumbing strategy file in the repo. Its holding period is not intraday,
               so RL-018 has to be reconciled with it before this row is built
   state:      BLOCKED
+
+---
+
+## SLICE capital — DECLARED CAPITAL, LEVERAGE AND EXCURSIONS
+
+Cross-cutting across the perp and spot bots only (RL-036, RL-039). It is its own slice rather
+than rows inside `perp-bot` and `spot-bot` because the pool is SHARED between the two processes
+and a shared resource owned by neither bot belongs to neither slice.
+
+**Why this slice comes before any horizon change.** Measured 2026-08-19 from the live journals
+with the system's own `usd_rate_of` rule: median margin per trade is 0.00014 USDT on perp and
+0.00066 on spot, against a maximum of ~130 on both. The min-to-max spread is 6.1e9 on perp and
+3.3e9 on spot — nine orders of magnitude — from
+`bot_registry`'s fixed `quantity=0.002` base-asset size applied across a
+universe-wide scan. The published P&L is therefore the P&L of a handful of BTC trades and the
+published winrate weights a $130 trade equally with a $0.0000001 one. Until this slice lands the
+system cannot answer whether it makes money, so no horizon or brain change can be judged.
+
+Design: `docs/superpowers/specs/2026-08-19-capital-leverage-excursion-design.md`
+
+### CL-01
+  slice:      capital
+  does:       own `capital_declaration`, the single parsed and live-reloaded declaration of
+              portfolio capital, per-bot cap and the min/max margin band
+  satisfies:  RL-040 RL-030 RL-038
+  sources:    2026-08-19-capital-leverage-excursion-design.md#1. The declaration
+  depends on: none
+  probe:      probe_capital_declaration_is_enforced
+  accepts:    a malformed or missing file names the offending field and yields no declaration,
+              a mtime change is picked up without a restart and applies to new entries only,
+              and a JSON float is refused rather than rounded
+  state:      measured by probe_capital_declaration_is_enforced
+
+### CL-02
+  slice:      capital
+  does:       track and journal each trade's peak favourable and peak adverse excursion, in
+              fraction of entry and in USDT, with the sample count beside them
+  satisfies:  RL-042 RL-038
+  sources:    2026-08-19-capital-leverage-excursion-design.md#5. Peak profit and loss per trade
+  depends on: none
+  probe:      probe_excursions_journalled_on_close
+  accepts:    every CLOSE carries both excursions and `excursion_samples`, they are labelled
+              sampled rather than true extremes, and `peak_favourable >= realised return >=
+              -peak_adverse` holds on every closed trade in the live journal
+  state:      measured by probe_excursions_journalled_on_close
+
+> **`peak_favourable` looked built and was not.** Measured 2026-08-19: it is declared at
+> `profit_tail.py:180` and copied at `live_engine.py:575` and is assigned nowhere in the tree, so
+> it has been `None` for every position that has ever existed, and there is no adverse
+> counterpart. A field that reads as built is worse than an absent one.
+
+### CL-03
+  slice:      capital
+  does:       show margin, leverage and both excursions as columns in the segment tile event
+              table and the blotter, sourced from the journal and never recomputed at render
+  satisfies:  RL-042 RL-028 RL-012
+  sources:    2026-08-19-capital-leverage-excursion-design.md#6. What the board shows
+  depends on: CL-02
+  probe:      probe_excursions_journalled_on_close
+  accepts:    every displayed figure traces to a journalled field, and a trade with too few
+              samples renders its sample count rather than a bare number
+  state:      measured by probe_excursions_journalled_on_close
+
+### CL-04
+  slice:      capital
+  does:       own `capital_pool`, the flock-guarded reservation ledger two independent bot
+              processes reserve margin against, with a startup sweep that reclaims orphans
+  satisfies:  RL-040 RL-038
+  sources:    2026-08-19-capital-leverage-excursion-design.md#2. The shared pool
+  depends on: CL-01
+  probe:      probe_pool_never_overcommits
+  accepts:    two concurrent reservation loops against one pool file never reserve more than the
+              declared portfolio in total, a reservation is taken before the fill is journalled,
+              and a reservation with no matching open position is reclaimed at startup
+  state:      measured by probe_pool_never_overcommits
+
+### CL-05
+  slice:      capital
+  does:       size every entry from declared margin instead of a fixed base quantity, deleting
+              `SegmentBot.quantity` so the old behaviour cannot survive by default
+  satisfies:  RL-040 RL-028 RL-038
+  sources:    2026-08-19-capital-leverage-excursion-design.md#3. Sizing
+  depends on: CL-01 CL-04
+  probe:      probe_margin_per_trade_within_band
+  accepts:    probe_margin_per_trade_within_band goes from degraded to ok, the distribution
+              collapsing from a 6.1e9 spread into the declared min/max band, margin and notional are re-derived after lot rounding, and
+              every refused entry carries one of the named reasons rather than an abstention
+  state:      measured by probe_margin_per_trade_within_band
+
+### CL-06
+  slice:      capital
+  does:       own `leverage_policy`, choosing per-trade leverage under the declared rule and
+              ceiling, checking liquidation distance against the hard stop, and charging spot
+              borrow interest at close
+  satisfies:  RL-041 RL-038
+  sources:    2026-08-19-capital-leverage-excursion-design.md#4. Per-trade leverage
+  depends on: CL-01 CL-05
+  probe:      probe_leverage_declared_and_bounded
+  accepts:    no journalled OPEN has a hard stop beyond its leverage's liquidation distance,
+              leverage is reduced before it is refused and both are journalled with their
+              numbers, and no leveraged spot position closes without an interest charge
+  state:      measured by probe_leverage_declared_and_bounded
+
+### CL-07
+  slice:      capital
+  does:       show the declaration itself on each tile — portfolio, this bot's cap, margin in
+              use, headroom, each named refusal count, and the declaration's own timestamp
+  satisfies:  RL-040 RL-012 RL-008
+  sources:    2026-08-19-capital-leverage-excursion-design.md#6. What the board shows
+  depends on: CL-01 CL-04
+  probe:      probe_capital_declaration_is_enforced
+  accepts:    a rejected declaration renders as NO CAPITAL DECLARATION and is never green, and
+              a bot refusing entries because the pool is exhausted is visibly broke rather than
+              visibly idle
+  state:      measured by probe_capital_declaration_is_enforced
+
+> **RL-043 shelved the swing conversion the same day it was ruled, and this slice is unaffected.**
+> Nothing in these seven rows depends on the holding period. The swing analysis and its design
+> document stand and are picked up if the intraday numbers do not improve; the intraday
+> timeframes are now named as 1m, 5m, 15m and 30m.
 
 ---
 

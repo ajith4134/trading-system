@@ -243,7 +243,8 @@
    "recorded_in": [
     "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3a"
    ],
-   "probe": "probe_intraday_data_lag"
+   "probe": "probe_intraday_data_lag",
+   "history": "Superseded by RL-035 on 2026-08-19 and RESTORED the same day by RL-043, which also named its timeframes as 1m, 5m, 15m, 30m. Binding on all four segments again."
   },
   {
    "id": "RL-019",
@@ -452,6 +453,173 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_sealed_hour_compacted"
+  },
+  {
+   "id": "RL-033",
+   "date": "2026-08-19",
+   "session": "5a148238",
+   "source": "interview",
+   "verbatim": "[interview answer] Probes read a bounded window, not the whole archive",
+   "clarified_as": "The status wall's expensive probes are bounded to the newest hours of a dataset rather than materialising the whole archive, and each tile STATES THE WINDOW IT MEASURED. A number whose scope is on its face is a measurement; the same number presented as covering everything is an assertion.",
+   "means": "The wall could not finish a pass at all: it last completed 2026-08-17 13:38 and its probe cache had never been created, because the five expensive probes materialise the whole bars dataset - 208,880 fragments - reaching 7 GB before the kernel killed them. A board that never returns reports nothing, which is worse than a board reporting a bounded number honestly. Hour partitioning is what makes the bound cheap, and bars keeps its per-symbol layout because the bots read it that way.",
+   "scope": "shared",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_wall_pass_completes"
+  },
+  {
+   "id": "RL-034",
+   "date": "2026-08-19",
+   "session": "5a148238",
+   "source": "interview",
+   "verbatim": "[interview answer] Convert bars, and widen the wall window back out",
+   "clarified_as": "Bars is converted to the hour-only layout like funding and the option chain, and once it is, the wall's expensive probes stop needing a tight window: the tiles report over a long window, or the whole record, because the read is cheap rather than because the scope was narrowed.",
+   "means": "The premise of keeping a symbol partition was that some reader prunes by it. Nothing does: `ClockGatedReader` applies `symbols` to the already-materialised frame, and the only pushdown filters in the store are on availability time and the hour. So the symbol level cost bars 208,880 fragments and pruned for nobody. A window that exists because the data is badly laid out is a narrowed claim paying for an avoidable cost; once the layout is fixed the honest answer is also the cheap one.",
+   "scope": "shared",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_wall_pass_completes"
+  },
+  {
+   "id": "RL-035",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "interview",
+   "verbatim": "I need you after reading and understanding all the design and type of trading in this crypto trading project turn them or change them in to a swing trade or now normal crypto trading how professional crypto traders trade with all the other features / [interview answer] Swing default, intraday kept off",
+   "clarified_as": "Swing trading becomes the live configuration of the converted bots. The intraday brains, tails and bands stay in the repository and stay tested, but no supervisor runs them. Reversible by switching the band back, and no double compute is paid meanwhile.",
+   "means": "SUPERSEDES RL-018 for the segments named in RL-036. The holding period is no longer bounded by the trading day, so six things change together and none of them is optional: the data axis moves from 180-second tick windows to 4h/1d bars; the features move from order-flow imbalance and mid momentum to trend structure, ATR, multi-timeframe alignment and a BTC-led regime filter; risk gains overnight gap, multi-day funding cost, ATR-derived sizing, portfolio heat and a correlation cap; exits become structural stop, R-multiple partials and a trail, with the clock stop measured in days; open positions must survive a supervisor restart, which they never had to before; and the learning labels move to a daily triple-barrier horizon with the purge and embargo scaled to match. A larger max_hold_ns alone is not this ruling and does not discharge it.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_swing_band_is_live",
+   "superseded_by": "RL-043",
+   "history": "Shelved rather than declined, hours after it was ruled. Its measurement and its design document stand and are picked up if the intraday numbers do not improve."
+  },
+  {
+   "id": "RL-036",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "interview",
+   "verbatim": "futures and spot botes",
+   "clarified_as": "The perp bot and the spot bot convert to swing. The dated bot and the options bot are not in scope for this change and keep running exactly as they are.",
+   "means": "The denominator for RL-035 is two segment slices, not four. Dated and options are DEFERRED, not declined - dated in particular already records in its own code that its convergence edge acts over weeks and is being clamped to two hours, so it is the strongest candidate for the next conversion and gets a plan row so it is revisited rather than forgotten.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_swing_scope_is_perp_and_spot"
+  },
+  {
+   "id": "RL-037",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "interview",
+   "verbatim": "do all",
+   "clarified_as": "All three history options at once: backfill historical klines, use them for feature research and offline validation, and keep every paper fill priced on live venue data.",
+   "means": "AMENDS RL-024 without breaking it. RL-024 governs FILLS and is untouched - no fill is ever priced off a stored bar. What is added is history as a TRAINING and RESEARCH input: 4h and 1d klines backfilled from the venues' free REST, held in the store, read by label construction, feature design and offline validation only. The reason this is not optional under RL-035 is arithmetic: a live-only record produces roughly one swing label per symbol per week, so a swing edge would take months to become statistically readable and could never be checked before it went live. Any module that reads a stored bar on the decision path is a defect, and integrity must be able to say which side of that line each reader is on.",
+   "scope": "shared",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_no_stored_bar_on_decision_path"
+  },
+  {
+   "id": "RL-038",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "Before you change I have a double why how can I know how much capital is being used fore each trade and first insted of changing let's edits the current system",
+   "clarified_as": "RL-035's swing conversion is done by EDITING the running system in place, not by building a new one beside it. The existing four-segment engine, journal format, capital accounting, risk gate and board are the thing being changed; nothing is rewritten from scratch and nothing is replaced wholesale.",
+   "means": "This is a constraint on METHOD, not on scope. It rules out the shape the swing change naturally wants to take - a parallel swing engine that runs beside the intraday one until it is ready - because that shape ends with two systems, two journals and two boards, and the old one never dies. Every step of the conversion must leave one running system that still passes its probes. Concretely: the brains, the profit tail, the feature window and the sizing are edited in `src/perp/` and `src/spot/`; `src/segment/live_engine.py`, `src/segment/capital_accounting.py` and the board keep their identity and gain fields. A new module is allowed only where no existing module owns the responsibility.",
+   "scope": "system",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_one_engine_not_two"
+  },
+  {
+   "id": "RL-039",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "Let's foucs on spot and future segment bots and rest turn off",
+   "clarified_as": "The dated bot and the options bot are switched OFF, not merely left out of the swing conversion. Only perp and spot run. Executed 2026-08-19 via the designed per-segment off switch, `~/capture/segment/<segment>/OFF`, so both render as deliberately off rather than as crashed, and capture for bybit and deribit keeps running untouched.",
+   "means": "Sharpens RL-036 from 'not in scope' to 'not running'. It also sharpens RL-022's one-edge-at-a-time discipline onto the segment axis: two bots are judged on measured winrate and profit before any third is restarted. Nothing is deleted - the dated and options brains, tails and universes stay in the repository and stay tested, and removing the OFF file restarts either bot. Two consequences to hold: the four-segment comparison RL-006 asked for is paused, not abandoned; and the dated bot's own recorded tension - a convergence edge acting over weeks clamped to two hours - is now deferred rather than live, which is the honest place for it until the swing horizon it needs actually exists.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_only_perp_and_spot_running"
+  },
+  {
+   "id": "RL-040",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "interview",
+   "verbatim": "I need you to create a edit option on top of the 2 spot and future segment bots of the total papper capital from the total portfolio that the 2 segment bots can use and the min and max capital per trade / [interview answers] A config file the bots re-read live; Shared pool with a per-bot cap; Margin posted",
+   "clarified_as": "One editable JSON file, `~/capture/segment/capital.json`, is the single declaration of how much paper capital the perp and spot bots may use. It holds the portfolio total, the fraction of it either single bot may hold at once, and the minimum and maximum MARGIN per trade. Both bots re-read it live on the poll after its mtime changes - no restart - the same way the model alias file is reloaded under RL-030.",
+   "means": "OVERTURNS the line in `src/segment/capital_accounting.py` that reads *'It is a measurement base, not a limit - the risk gate owns limits and does not read it.'* The declared capital becomes a BUDGET that is actually spent and can actually be exhausted, and the gate now reads it. Three consequences that are not optional. First, the pool is SHARED across two independent OS processes, so headroom must be reserved under a real lock on the pool file, not computed from each bot's own view - two bots reading a stale balance and both opening is how a shared pool silently overshoots. Second, capital per trade means MARGIN POSTED, so with leverage the position notional is a multiple of it and every P&L, drawdown and excursion figure is denominated on the notional while the pool is debited the margin; mixing the two is the unit error this whole ruling exists to prevent. Third, a missing or malformed file must STOP the bots opening rather than fall back to a default - capital silently chosen by a default is capital chosen by nobody.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_capital_declaration_is_enforced"
+  },
+  {
+   "id": "RL-041",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "interview",
+   "verbatim": "And the spot and futures have leverage option s like 5x or 10x or 20x / [interview answer] Both bots, chosen per trade",
+   "clarified_as": "Both the perp bot and the spot bot size positions with leverage, and the multiple is chosen per trade rather than fixed per bot, under a ceiling declared per segment in `capital.json`. Warned at the time that this is the most demanding of the four options and needs a borrow-cost model, per-trade sizing and a liquidation-distance check before it is safe; the user chose it with that stated.",
+   "means": "Leverage does not exist anywhere in the codebase today - zero references to leverage, margin, liquidation or isolated/cross - so this is new construction, not a setting to expose. Three prerequisites are part of this ruling and may not be deferred, because each one is a way for leverage to report a profit that is not real. (1) SPOT BORROW COST: leveraged spot is borrowed money, and not charging interest on it makes the spot bot's returns a free loan that inflates every figure it publishes. (2) LIQUIDATION DISTANCE: at L times leverage an isolated position liquidates on roughly a 1/L adverse move, so a hard stop wider than that is a stop that can never fire - the position dies first. The gate must refuse, or reduce leverage until the stop fits, and name which it did. (3) THE CHOOSING RULE MUST BE DECLARED AND JOURNALLED: the default is volatility-targeted, leverage = target risk over the instrument's realised volatility, clamped to the declared ceiling - NOT confidence-scaled, because the perp and spot brains currently journal `calibrated=False` and scaling leverage by an uncalibrated confidence compounds the miscalibration exactly where it costs most. The rule is named in the config file so it can be changed without a code change.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_leverage_declared_and_bounded"
+  },
+  {
+   "id": "RL-042",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "and a data coloum of peak profit and loss that the trade reach after placed",
+   "clarified_as": "Every trade records the best and the worst it ever got while it was open - maximum favourable excursion and maximum adverse excursion - journalled on CLOSE and shown as columns beside the realised P&L.",
+   "means": "Measured 2026-08-19: `peak_favourable` is declared on `OpenPosition` and copied on ratchet but NEVER ASSIGNED anywhere in the codebase, so it has been `None` for every position that has ever existed, and there is no adverse counterpart at all. A field that looks built and is not is worse than an absent one. Both excursions are tracked on every poll, as a fraction of entry AND in USDT on the position notional, and both are journalled on CLOSE. They must be labelled SAMPLED: the engine polls every six seconds and cannot see the true extreme between polls, so the journalled figure is a lower bound on the real excursion and the sample count is recorded beside it. This is what makes the exit policy auditable - a trade that reached +0.9% before closing at -0.2% is a profit tail that let go, and without these two columns that failure is invisible.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_excursions_journalled_on_close"
+  },
+  {
+   "id": "RL-043",
+   "date": "2026-08-19",
+   "session": "c05c1e5d",
+   "source": "transcript",
+   "verbatim": "2 for now we will continue intrady wit 1m,5m,15m,30m intrady as it is",
+   "clarified_as": "The swing conversion is SHELVED, not built. The perp and spot bots stay intraday, and the intraday timeframes are named for the first time: 1m, 5m, 15m, 30m. Everything else agreed this session - the declared capital budget, the shared pool, per-trade leverage, and the excursion columns - proceeds unchanged, because none of it depended on the horizon.",
+   "means": "REVERSES RL-035 and RESTORES RL-018 to full force on perp and spot. RL-035 is not deleted: its analysis stands and its design document stays, so if the intraday numbers do not improve the conversion is picked up rather than re-derived. Two things follow. First, RL-037's history backfill keeps its justification but changes its target - the intervals that matter are now 1m, 5m, 15m and 30m, and `src/store/bar_backfill.py` today knows only 1m, 5m and 1h, so 15m and 30m are missing. Second, naming four timeframes is itself new: the bots currently see ONE 180-second tick window and have no bar timeframes at all, so 'as it is' describes the horizon, not the feature axis. Which of those two the user meant is the open question recorded against this ruling and must be answered before any feature work starts.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_intraday_timeframes_declared"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
