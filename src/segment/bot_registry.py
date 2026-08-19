@@ -301,6 +301,26 @@ def _with_learned_brains(bot: SegmentBot) -> SegmentBot:
     except (NoChampionRegistered, Exception):            # noqa: BLE001
         return bot
 
+    # **A champion must prove it was fitted on THIS segment's venues.**
+    #
+    # Existence of a champion is not evidence of its provenance. Measured
+    # 2026-08-18: spot's own-venue fit found no edge and was correctly refused,
+    # while an earlier POOLED model still occupied its champion alias - so the
+    # spot bot was deciding from a model fitted partly on binance futures bars.
+    # RL-019 makes each segment its own bot with its own data, and a check that
+    # runs at load is the only place that can hold once an alias exists.
+    from learn.training_set import SEGMENT_VENUES
+    expected = SEGMENT_VENUES.get(bot.segment)
+    fitted_on = model.metrics.get("fitted_on_venues")
+    if expected is None or fitted_on != sorted(expected):
+        # Rule brains, and the reason is on the record rather than in a log line.
+        return replace(bot, extra={**bot.extra, "champion_refused": {
+            "model_version": model.version_id,
+            "fitted_on_venues": fitted_on,
+            "segment_venues": sorted(expected) if expected else None,
+            "why": ("a champion fitted on other venues would make this segment "
+                    "decide from another segment's data (RL-019)")}})
+
     calibration = OnlineCalibration.load(
         Path(str(CALIBRATION_PATH).format(segment=bot.segment)),
         segment=bot.segment)

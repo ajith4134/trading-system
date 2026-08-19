@@ -123,7 +123,7 @@ def _final_fit(features: np.ndarray, labels: np.ndarray, weights: np.ndarray,
                      dataset, num_boost_round=boost_rounds)
 
 
-def train_direction_model(rows, *, segment: str,
+def train_direction_model(rows, *, segment: str, venues=None,
                           registry_root: Path = DEFAULT_REGISTRY_ROOT,
                           trials_root: Path = DEFAULT_TRIALS_ROOT,
                           params: dict | None = None,
@@ -233,6 +233,14 @@ def train_direction_model(rows, *, segment: str,
                  # the model metadata and is not a place to store a dataset.
                  "conformal_scores": calibration_scores[-500:],
                  "conformal_split": "time-ordered 80/20 holdout",
+                 # **The venues this model was fitted on, recorded so a segment
+                 # cannot load a champion trained on somebody else's data.**
+                 # Measured 2026-08-18: spot's own-venue fit found nothing
+                 # (p=0.4645) while an earlier POOLED model sat in its champion
+                 # alias, so the spot bot was running a model fitted partly on
+                 # binance futures bars. RL-019 makes that wrong, and existence of
+                 # a champion is not evidence of its provenance - this field is.
+                 "fitted_on_venues": sorted(venues) if venues else "POOLED",
                  "dataset": rows.describe()},
         notes=(f"pooled cross-sectional direction model for the {segment} bot; "
                f"labels are the deterministic exit policy's realised sign"))
@@ -361,12 +369,15 @@ def retrain_segment(segment: str, *, n_hours: int = 14,
 
     venues = SEGMENT_VENUES.get(segment)
     if venues is None:
-        raise NothingLearned(
-            f"{segment}: no venue set is declared for this segment in "
-            f"SEGMENT_VENUES. Its brains reason about inputs a bar does not carry "
-            f"- basis and time to expiry for dated, implied volatility for options "
-            f"- so a bar-fitted direction model would be answering a question they "
-            f"do not ask. It keeps its rule brains until it has its own dataset")
+        # A NORMAL outcome, reported rather than raised. dated and options reason
+        # about basis, time to expiry and implied volatility, none of which is in a
+        # bar, so there is nothing here for them to be fitted on yet. Raising made
+        # the supervisor log an error every cycle for a state that is correct.
+        return {"segment": segment, "skipped": "NO_DATASET_FOR_THIS_SEGMENT",
+                "why": ("its brains reason about inputs a bar does not carry; a "
+                        "bar-fitted direction model would answer a question they "
+                        "do not ask. Rule brains stand until it has its own dataset"),
+                "keeps": "rule brains"}
 
     started = time.time()
     bars, read_report = read_recent_bars(n_hours=n_hours, venues=venues)
@@ -375,7 +386,7 @@ def retrain_segment(segment: str, *, n_hours: int = 14,
               "dataset": rows.describe(), "seconds": round(time.time() - started, 1)}
 
     try:
-        direction = train_direction_model(rows, segment=segment,
+        direction = train_direction_model(rows, segment=segment, venues=venues,
                                           registry_root=registry_root,
                                           trials_root=trials_root)
         report["direction"] = direction.as_fit_reference()
