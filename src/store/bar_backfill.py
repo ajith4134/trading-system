@@ -67,19 +67,56 @@ import pandas as pd
 
 from store.clock_gated_reader import ClockGatedReader
 from store.parquet_partition import append_partition
+from ops.rate_budget import RateBudget
 from store.temporal_schema import (
     AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE,
 )
 
 _MS_TO_NS = 1_000_000
-_BINANCE_KLINES = "https://fapi.binance.com/fapi/v1/klines"
-# Binance's documented maximum for this endpoint. One request covers 25 hours of
-# minute bars, so a day's gap on one symbol is a single call.
+
+# **The kline endpoint per venue, and the venue is NOT just a label.**
+#
+# This was one constant pointing at `fapi` while `venue` was written into every
+# row as provenance. A `--venue binance-spot` backfill therefore fetched PERPETUAL
+# FUTURES klines and stored them labelled spot - a whole dataset that is real data
+# about the wrong instrument, which is worse than missing data because nothing
+# downstream can tell. Perp and spot prices differ by the basis, which is exactly
+# what `features.funding_basis` exists to measure.
+#
+# An unknown venue RAISES rather than falling back to either one. A default here
+# is how the bug above happens again under a different name.
+_KLINE_ENDPOINTS = {
+    "binance": "https://fapi.binance.com/fapi/v1/klines",
+    "binance-spot": "https://api.binance.com/api/v3/klines",
+}
+
+# Binance's documented maximum for these endpoints. One request covers 25 hours
+# of minute bars, so a day's gap on one symbol is a single call.
 _PAGE_LIMIT = 1500
-# The endpoint's weight at this limit, per binance's own table. Passed to the
-# rate budget rather than assumed free: this shares a weight allowance with the
-# pollers that keep live capture alive.
-_REQUEST_WEIGHT = 10
+
+# The endpoint's weight at this limit, per binance's own table, PER VENUE - the
+# two are not the same and assuming the higher one everywhere would throttle spot
+# to a fifth of its real allowance. Passed to the rate budget rather than assumed
+# free: this shares a weight allowance with the pollers that keep live capture
+# alive, and the cost of overage is a three-day ban on the egress IP.
+_REQUEST_WEIGHT_BY_VENUE = {"binance": 10, "binance-spot": 2}
+_REQUEST_WEIGHT = 10          # the conservative default for an unlisted venue
+
+
+def kline_endpoint(venue: str) -> str:
+    """The klines URL for one venue, or a refusal naming the ones that exist."""
+    try:
+        return _KLINE_ENDPOINTS[venue]
+    except KeyError:
+        raise ValueError(
+            f"no kline endpoint for venue {venue!r} - known: "
+            f"{sorted(_KLINE_ENDPOINTS)}. Falling back to another venue's "
+            f"endpoint would store real data about the wrong instrument") from None
+
+
+def request_weight(venue: str) -> int:
+    """What one page costs this venue's rate budget."""
+    return _REQUEST_WEIGHT_BY_VENUE.get(venue, _REQUEST_WEIGHT)
 DEFAULT_INTERVAL_NS = 60_000_000_000
 # **The intervals this backfill can ask a venue for, keyed by their length in ns.**
 #
@@ -241,6 +278,7 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
     # The archive stores path-unsafe symbols encoded; the venue has never heard
     # of that name. Asking for `_b32_...` returns an empty list, which reads as
     # a delisting rather than as us sending our own filename.
+    endpoint = kline_endpoint(venue)
     venue_symbol = decode_path_token(symbol)
     fetched_at = now_ns()
     collected: dict[int, ReconstructedBar] = {}
@@ -250,9 +288,9 @@ def fetch_binance_bars(symbol: str, start_ns: int, end_ns: int,
     for _ in range(max(1, pages)):
         if cursor_ms >= end_ms:
             break
-        if budget is not None and not budget.try_spend(_REQUEST_WEIGHT):
+        if budget is not None and not budget.try_spend(request_weight(venue)):
             break
-        url = (f"{_BINANCE_KLINES}?symbol={quote(venue_symbol)}"
+        url = (f"{endpoint}?symbol={quote(venue_symbol)}"
                f"&interval={interval_name}&limit={_PAGE_LIMIT}"
                f"&startTime={cursor_ms}&endTime={end_ms}")
         try:
@@ -376,14 +414,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval-ns", type=int, default=DEFAULT_INTERVAL_NS)
     parser.add_argument("--compare", action="store_true",
                         help="after writing, report the distance from observed bars")
+    parser.add_argument("--no-budget", action="store_true",
+                        help="spend no rate budget - ONLY for a single-symbol probe, "
+                             "never for a bulk backfill sharing the egress IP")
     args = parser.parse_args(argv)
 
     start_ns = int(pd.Timestamp(args.start).value)
     end_ns = int(pd.Timestamp(args.end).value)
     symbols = [s for s in args.symbols.split(",") if s]
 
+    # **The budget is the default, and its absence has to be asked for.**
+    #
+    # This CLI used to pass none at all, so a bulk backfill spent weight the live
+    # pollers could not see, against the same egress IP whose overage - per
+    # `ops.rate_budget`'s own measured note - escalates to a THREE-DAY BAN. That
+    # ban would take capture down with it, and capture is what RL-024 requires
+    # every paper fill to be priced from.
+    #
+    # The bucket is file-backed and shared, so this backfill queues behind live
+    # capture rather than racing it.
+    budget = None
+    if not args.no_budget:
+        budget = RateBudget(Path(args.store_root).parent / "rate-budgets",
+                            args.venue)
+
     result = backfill_bars(Path(args.store_root), symbols, start_ns, end_ns,
-                           venue=args.venue, interval_ns=args.interval_ns)
+                           venue=args.venue, interval_ns=args.interval_ns,
+                           budget=budget)
     print(json.dumps(result))
     if args.compare:
         print(json.dumps(compare_reconstructed_to_observed(

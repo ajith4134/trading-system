@@ -19,7 +19,8 @@ import pytest
 from store.bar_backfill import (
     DEFAULT_INTERVAL_NS, INTERVAL_NAME_BY_NS, ReconstructedBar, backfill_bars,
     build_reconstructed_bars_frame, compare_reconstructed_to_observed,
-    dataset_name, fetch_binance_bars, parse_binance_klines,
+    dataset_name, fetch_binance_bars, kline_endpoint, parse_binance_klines,
+    request_weight,
 )
 from store.clock_gated_reader import ClockGatedReader
 from store.parquet_partition import append_partition
@@ -387,3 +388,65 @@ def test_each_interval_writes_its_own_dataset():
     names = {dataset_name(ns) for ns in INTERVAL_NAME_BY_NS}
 
     assert len(names) == len(INTERVAL_NAME_BY_NS)
+
+
+# --- the endpoint is chosen by venue, not assumed ---------------------------
+
+
+def test_each_venue_has_its_own_kline_endpoint():
+    # This was one constant pointing at fapi while `venue` was written into every
+    # row as provenance, so a spot backfill stored PERPETUAL FUTURES klines
+    # labelled spot - real data about the wrong instrument, which is worse than
+    # missing data because nothing downstream can tell.
+    assert "fapi.binance.com" in kline_endpoint("binance")
+    assert "api.binance.com/api/v3" in kline_endpoint("binance-spot")
+    assert kline_endpoint("binance") != kline_endpoint("binance-spot")
+
+
+def test_an_unknown_venue_refuses_rather_than_defaulting_to_futures():
+    with pytest.raises(ValueError, match="no kline endpoint"):
+        kline_endpoint("kraken")
+
+
+def test_a_spot_backfill_asks_the_spot_endpoint():
+    fetch = _Pages()
+    fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + MINUTE_NS,
+                       venue="binance-spot", fetch=fetch,
+                       now_ns=lambda: FETCHED_NS)
+
+    assert fetch.urls
+    assert "api.binance.com/api/v3/klines" in fetch.urls[0]
+    assert "fapi" not in fetch.urls[0]
+
+
+def test_spot_and_futures_pages_cost_their_own_weight():
+    # Assuming the futures weight everywhere would throttle spot to a fifth of
+    # its real allowance; assuming the spot weight everywhere would overspend
+    # futures fivefold, which is the direction that ends in a ban.
+    assert request_weight("binance") == 10
+    assert request_weight("binance-spot") == 2
+    assert request_weight("unlisted-venue") == 10       # conservative default
+
+
+class _BudgetRefusingEverything:
+    def __init__(self):
+        self.asked = []
+
+    def try_spend(self, weight):
+        self.asked.append(weight)
+        return False
+
+
+def test_an_exhausted_budget_stops_the_backfill_before_it_requests():
+    # The bucket is shared with live capture. A backfill that ignored it would
+    # spend weight the pollers cannot see against the same egress IP.
+    budget = _BudgetRefusingEverything()
+    fetch = _Pages()
+
+    got = fetch_binance_bars("BTCUSDT", BAR_OPEN_NS, BAR_OPEN_NS + MINUTE_NS,
+                             budget=budget, fetch=fetch,
+                             now_ns=lambda: FETCHED_NS)
+
+    assert got == []
+    assert fetch.urls == [], "a request was made after the budget refused"
+    assert budget.asked == [10]
