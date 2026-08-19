@@ -30,6 +30,12 @@ from statuswall.master_plan_board import render_master_plan_page
 from statuswall.ruling_conformance import (
     PROBES, assess_rulings, render_ruling_conformance_page,
 )
+from statuswall.segment_probes import SEGMENT_PROBES
+
+# BF-10: one registry, assembled here. The segment and learned-brain probes read
+# journals and model registries and are deliberately not imported by
+# `ruling_conformance`, which several boards import for its renderer alone.
+ALL_PROBES = {**PROBES, **SEGMENT_PROBES}
 
 REPO = Path(__file__).resolve().parents[2]
 SPINE = REPO / "docs" / "AJIT-MASTER-PLAN.md"
@@ -54,13 +60,14 @@ def measure_rows(slices) -> dict[str, ProbeResult]:
                     NOT_MEASURED, "no probe is named for this row",
                     "docs/AJIT-MASTER-PLAN.md")
                 continue
-            if row.probe not in PROBES:
+            if row.probe not in ALL_PROBES:
                 results[row.id] = ProbeResult(
                     NOT_MEASURED, f"{row.probe} is named but not implemented",
-                    "statuswall.ruling_conformance.PROBES")
+                    "statuswall.ruling_conformance.PROBES + "
+                    "statuswall.segment_probes.SEGMENT_PROBES")
                 continue
             try:
-                results[row.id] = PROBES[row.probe]()
+                results[row.id] = ALL_PROBES[row.probe]()
             except Exception as failure:
                 results[row.id] = ProbeResult(
                     NOT_MEASURED,
@@ -107,7 +114,8 @@ def main() -> int:
     (args.out_dir / "ajit-master-plan.html").write_text(
         render_master_plan_page(slices, results, resolutions, now_s, stamp))
     (args.out_dir / "ruling-conformance.html").write_text(
-        render_ruling_conformance_page(assess_rulings(rulings, slices), now_s))
+        render_ruling_conformance_page(
+            assess_rulings(rulings, slices, ALL_PROBES), now_s))
 
     unassigned = sum(1 for r in resolutions if r.outcome == "unassigned")
     print(json.dumps({

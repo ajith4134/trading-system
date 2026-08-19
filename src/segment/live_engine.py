@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
+from live import universe_discovery
 from live.live_feed import LIVE, NEVER_DELIVERED, QUIET
 from segment.arbiter import ABSTAIN, select
 from segment.bot_registry import all_segments, segment_bot
@@ -117,6 +118,12 @@ class LiveSegmentEngine:
     # calibration would learn from outcomes it cannot attribute to a prediction.
     opened_scores: dict = field(default_factory=dict)
     realised_pnl: Decimal = Decimal(0)
+    # **What the last poll admitted, and why it excluded the rest (BF-09, BF-10).**
+    # The engine is the only place that knows both the universe it was handed and
+    # what survived admission this poll, so it is the only place that can publish
+    # the pair. Held rather than recomputed: `describe_universe` counts the
+    # decisions of the poll that just ran, not a fresh listing call.
+    last_admission: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------ journal
 
@@ -205,11 +212,19 @@ class LiveSegmentEngine:
             "learned": self.bot.learned,
             "model_version": self.bot.model_version,
             "tail_model_version": self.bot.tail_model_version,
+            # **Why a bot is running rule brains, when a champion exists and was
+            # refused.** Without this the board can only say `not learned`, which
+            # reads as `nobody has trained one yet` - a different fact.
+            "champion_refused": self.bot.extra.get("champion_refused"),
             # §1a L2: what the LIVE loop fitted, kept apart from what the retrainer
             # set, because the two are different claims.
             "live_fitted": (self.bot.extra["calibration"].realised_coverage()
                             if self.bot.extra.get("calibration") else None),
             "feed": self.feed.describe(now_ns),
+            # Admission, with its denominator. Counts only: the admitted symbol
+            # list is thousands of entries on the spot and options boards and a
+            # heartbeat rewritten every poll is the wrong place for it.
+            "universe_admission": self.last_admission,
             "counts": self.counts.as_dict(),
             "open_positions": len(self.positions),
             "realised_pnl": str(self.realised_pnl),
@@ -252,6 +267,9 @@ class LiveSegmentEngine:
 
         decisions = self.bot.admit(frames)
         admitted = {(d.venue, d.symbol) for d in decisions if d.admitted}
+        self.last_admission = {k: v for k, v
+                               in self.bot.describe_universe(decisions).items()
+                               if k != "admitted_symbols"}
 
         # Positions are managed BEFORE any new entry is considered, so the bot can
         # never open something new while failing to close something old.
@@ -509,8 +527,34 @@ class LiveSegmentEngine:
                 "open_notional": str(open_notional)}
 
 
+def record_venue_listing(segment: str, root: Path = DEFAULT_ROOT) -> dict:
+    """Write what the VENUE lists for this segment, once, at start (BF-09).
+
+    Separate from the admission counts in the heartbeat, and they answer different
+    questions: this is the size of the board the venue offers, the heartbeat is
+    what survived one poll of it. Publishing only the second would let a bot that
+    admitted 40 symbols out of 40 read as complete coverage of 570.
+
+    A listing call that fails is recorded as a FAILED DISCOVERY rather than left
+    absent, because an absent file and an empty venue are indistinguishable to a
+    probe and only one of them is a market with nothing in it.
+    """
+    directory = root / segment
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {"segment": segment, "discovered_at_ns": time.time_ns(),
+               "source": "live.universe_discovery - a venue listing call"}
+    try:
+        payload["listing"] = universe_discovery.discover(segment).describe()
+    except Exception as failure:                        # noqa: BLE001
+        payload["discovery_failed"] = f"{type(failure).__name__}: {failure}"
+    (directory / "universe.json").write_text(json.dumps(payload, indent=2,
+                                                        default=str))
+    return payload
+
+
 def build_engine(segment: str, root: Path = DEFAULT_ROOT) -> LiveSegmentEngine:
     bot = segment_bot(segment)
+    record_venue_listing(segment, root)
     feed = bot.build_feed().start()
     features = LiveFeatureFrames(segment=segment,
                                  window_ns=bot.feature_window_ns,

@@ -547,7 +547,16 @@
         "src/risk/drawdown_distribution.py"
       ]
     },
-    "statuswall.evidence": {
+    "statuswall.segment_probes": {
+   "learning": "n/a: a probe learns nothing and must not. Every number it reports is read from the running system on the pass it runs - a probe that fitted anything would be a second model nobody validated, reporting on the first",
+   "reasoning": "pass: it distinguishes states that look identical from outside. A bot that never started, one whose heartbeat stopped advancing, and one switched off deliberately produce the same absence of trades and are reported as three different things; a bear declining for exactly the bull's reasons is reported as a negation rather than as a second brain",
+   "depth": "pass: the master test. Against a state root with nothing in it, twenty-four journal-backed probes are asserted never to return OK, so a missing measurement changes the board rather than being absorbed by it. The reads are bounded tails, which is what lets it run beside a 4 GB journal at all",
+   "evidence": [
+    "tests/test_segment_probes.py",
+    "src/statuswall/segment_probes.py"
+   ]
+  },
+  "statuswall.evidence": {
       "learning": "n/a: probes measure; nothing is fitted",
       "reasoning": "pass: every probe returns what it found and names where the answer came from, and a feature with no probe is NOT_BUILT by construction rather than by omission",
       "depth": "pass: one raising probe fails its own tile and leaves the board standing, because a board that renders nothing is useless exactly when something is wrong",

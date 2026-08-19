@@ -14,6 +14,7 @@ from pathlib import Path
 from plan.master_plan import PlanRow, PlanSlice
 from plan.rulings import Ruling
 from statuswall.evidence import NOT_MEASURED, OK, ProbeResult
+from statuswall import ruling_conformance
 from statuswall.ruling_conformance import (
     PROBES,
     assess_rulings,
@@ -99,3 +100,37 @@ def test_memory_probe_reports_what_it_found_either_way():
     result = probe_memory_reachable()
     assert result.state
     assert result.proof
+
+
+def test_the_archive_walk_returns_a_lower_bound_rather_than_never_returning(tmp_path):
+    """Measured 2026-08-19: an unbudgeted walk of the bars store did not finish in
+    120 seconds, and the plan board called it once per row - so the board froze for
+    43 hours while its own loop reported nothing wrong. A partial count rendered as
+    `N+` is a measurement; a walk that never returns is not."""
+    dataset = tmp_path / "bars"
+    for i in range(600):
+        part = dataset / f"hour={i // 50}" / f"symbol=S{i}"
+        part.mkdir(parents=True, exist_ok=True)
+        (part / "part.parquet").write_bytes(b"")
+
+    seen, complete = ruling_conformance.count_store_fragments(dataset, budget_s=0.0)
+
+    assert not complete, "a walk past its budget must say it did not finish"
+    assert 0 < seen <= 600
+
+
+def test_the_archive_is_walked_once_per_process_not_once_per_row(tmp_path):
+    dataset = tmp_path / "bars"
+    (dataset / "hour=1").mkdir(parents=True)
+    (dataset / "hour=1" / "a.parquet").write_bytes(b"")
+
+    first = ruling_conformance.count_store_fragments(dataset)
+    (dataset / "hour=1" / "b.parquet").write_bytes(b"")
+    second = ruling_conformance.count_store_fragments(dataset)
+
+    assert first == (1, True)
+    assert second == first, "a second call in the same pass must not re-walk"
+
+
+def test_a_dataset_that_does_not_exist_counts_zero_and_says_the_walk_finished(tmp_path):
+    assert ruling_conformance.count_store_fragments(tmp_path / "absent") == (0, True)

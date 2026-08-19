@@ -489,6 +489,51 @@ absolutely.
 > the aggressor side cannot be recovered without one. `capture.venues.shard_by_url_budget`
 > already exists for that split and is reused rather than re-derived.
 
+### BF-10
+  slice:      bot-framework
+  does:       implement the probes the framework and learned-brain rows name, so their
+              state is measured rather than permanently unmeasured
+  satisfies:  RL-021 RL-012 RL-008 RL-004
+  sources:    2026-08-17-ajit-master-plan-design.md#8. Progress reporting
+  depends on: BF-06 BF-08
+  probe:      probe_probes_implemented
+  accepts:    every probe a row names either exists and measures the running system, or is
+              reported as unimplemented rather than rendering as passed, and no probe here
+              reports whether a test passed instead of what is true on this box now
+  state:      measured by probe_probes_implemented
+
+> **Builds `statuswall/segment_probes.py`, and the audit that produced this row is the
+> point of it.** Measured 2026-08-18: the spine's rows named **43 distinct probes and 29
+> of them had no implementation anywhere**. Everything the bot framework and the learned
+> brains had built was running, journalling and trading — and not one of those rows could
+> light up, because `ruling_conformance` renders NOT MEASURED for a probe that is named
+> and absent.
+>
+> That is the plan working, not a reporting bug. A row whose probe does not exist has not
+> been measured, and Rule 8 says an unmeasured thing renders unmeasured. What was missing
+> was the measurement, so this row supplies it.
+>
+> **Kept out of `statuswall/ruling_conformance.py` deliberately.** That module is imported
+> by the boards generator, which measured 4.8 GB resident on 2026-08-17 and 11.7 GB on
+> 2026-08-18. Probes that open model registries and journals have no business inflating
+> it; they live in their own module and register by name.
+>
+> **Every journal read here is a bounded tail seek.** The options bot wrote 4.1 GB of
+> decisions on 2026-08-18 alone. A probe that read one end to end would cost more each day
+> it ran and would eventually take the boards process down with it, which is the failure
+> immediately below.
+>
+> **What `probe_board_generated` found on its first run, 2026-08-19.** One of five boards
+> was under six hours old: the plan board was **43 hours** stale and the segment wall
+> **15**, while the bots they describe were trading. Cause was in
+> `scripts/boards_supervisor.sh`: the generator ran the expensive feature wall FIRST and
+> `break`-ed its own loop when that wall failed, so an OOM-killed wall stopped the two
+> cheap boards from ever regenerating - directly under a comment saying failures are
+> "recorded and retried rather than fatal". The cheap boards now run first and nothing in
+> that loop is fatal. **A board that silently stops updating is the Rule 8 failure the
+> whole supervisor exists to prevent, and only a probe measuring the board's own age
+> could see it.**
+
 > **The modules these rows build.** Named here so the row and the file cannot drift apart, and so
 > `require-plan-row.sh` admits them:
 >
@@ -503,6 +548,7 @@ absolutely.
 > | BF-07 | `segment/bot_registry.py` |
 > | BF-08 | `statuswall/segment_tiles.py` |
 > | BF-09 | `live/universe_discovery.py` |
+> | BF-10 | `statuswall/segment_probes.py` |
 > | SB-01 | `spot/tradable_universe.py` |
 > | SB-02 | `spot/segment_brains.py` |
 > | DB-01 | `dated/tradable_universe.py` |
@@ -1003,6 +1049,37 @@ regime is not a regime change. L6 is recorded as FAILING rather than skipped.
               NOT MEASURED rather than green
   state:      measured by probe_retrainer_running
 
+### LB-09
+  slice:      learned-brains
+  does:       make a bot decide from the champion that is registered NOW, not the one that
+              was registered when its process started
+  satisfies:  RL-026 RL-020 RL-012
+  sources:    2026-08-08-final-project-goal-design.md#1a
+  depends on: LB-08
+  probe:      probe_champion_reload_current
+  accepts:    a champion registered while a bot is running becomes the model it decides from
+              without anybody restarting anything, the swap is journalled with both version
+              ids, and a bot deciding from a superseded model reads as superseded rather
+              than as learned
+  state:      measured by probe_champion_reload_current
+
+> **Found by measurement on 2026-08-19, which is the point of BF-10.** `bot_registry`
+> resolves the champion once, inside `segment_bot()`, so the swap happens at process start
+> and never again. The retrainer refits every four hours (LB-08) and the bots run 24/7
+> (RL-020), so **every model fitted between two restarts is registered and never used** -
+> and nothing said so, because the heartbeat published the version the bot loaded rather
+> than the version that exists.
+>
+> The probe is implemented ahead of the reload deliberately: it compares each bot's running
+> `model_version` against the registry's current alias, so the gap is on the board while the
+> reload is still unbuilt. **A row nobody can see is how this one survived.**
+>
+> **The reload itself is not a swap of an object.** A bot holding open positions took them
+> on one model's evidence, and PROFIT-TAIL owns them to the close (RL-023). The design
+> question that has to be answered before this row is built is whether a reload applies to
+> new entries only while open positions run out on the model that opened them - which is
+> what the journal already supports, since every fill carries its brains by name.
+
 > **The modules these rows build.**
 >
 > | row | module |
@@ -1015,6 +1092,7 @@ regime is not a regime change. L6 is recorded as FAILING rather than skipped.
 > | LB-06 | `learn/learned_brains.py` (the PROFIT-TAIL half) |
 > | LB-07 | `learn/axis_probes.py` |
 > | LB-08 | `scripts/retrain_supervisor.sh` |
+> | LB-09 | `segment/bot_registry.py` (the reload), `statuswall/segment_probes.py` (the gap) |
 >
 > **What RL-027 makes this slice responsible for.** The user's words: *"lots of futer featues and
 > intelliences learnin will be connectin to tis"*. So `learn/belief.py` is deliberately the widest

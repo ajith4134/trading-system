@@ -142,29 +142,38 @@ supervise() {
       # Failures are recorded and retried rather than fatal: a probe that raises
       # must not leave the board frozen with nothing saying so.
       while true; do
-        if ! "$PYTHON" -m statuswall.cli --out "$WALL_OUT" >> "$GENERATOR_LOG" 2>&1; then
-          echo "wall regeneration failed; see $GENERATOR_LOG" >&2
-          break
+        # **CHEAP BOARDS FIRST, AND NOTHING HERE BREAKS THE LOOP.** Measured
+        # 2026-08-19 after a reboot: `statuswall.cli` was OOM-killed three times
+        # (11.7 GB resident on a 30 GB box), and because the failure broke this
+        # loop the segment and plan boards had not regenerated for 15 and 43
+        # hours - while the code above them said in words that a failure is
+        # "recorded and retried rather than fatal". A board that stops
+        # regenerating is the Rule 8 failure this whole supervisor exists to
+        # prevent, and it was caused by the ordering, not by the probes.
+        #
+        # BF-08: the four segment bots' wall. Cheap - four heartbeats and the
+        # day's fill journals.
+        if ! "$PYTHON" -m statuswall.segment_tiles --out-dir "$BOARDS_DIR" \
+                >> "$GENERATOR_LOG" 2>&1; then
+            printf '%s segment_tiles failed\n' "$(date -u +%FT%TZ)" >> "$GENERATOR_LOG"
         fi
+
         # The plan and ruling-conformance boards, in their OWN short-lived
         # process rather than inside `statuswall.cli`. Measured 2026-08-17:
         # statuswall.cli holds 4.8 GB while capture holds ~9 GB on a 30 GB box
         # with no swap, and the kernel OOM-killed the forward paper engine at
         # 09:49:54Z (exit 137). Folding a 2,738-member corpus sweep into that
         # same process would buy a tidier pass at the cost of the thing the
-        # system exists to run. A failure here is recorded and does NOT break
-        # the loop: the wall must keep regenerating even if the plan board
-        # cannot.
-        # BF-08: the four segment bots' wall. Its own invocation, and cheap - it
-        # reads four heartbeats and the day's fill journals, so it is regenerated on
-        # every pass rather than sharing the wall's slower cadence.
-        if ! "$PYTHON" -m statuswall.segment_tiles --out-dir "$BOARDS_DIR" \
-                >> "$GENERATOR_LOG" 2>&1; then
-            printf '%s segment_tiles failed\n' "$(date -u +%FT%TZ)" >> "$GENERATOR_LOG"
-        fi
-
+        # system exists to run.
         if ! "$PYTHON" -m plan.cli --out-dir "$BOARDS_DIR" >> "$GENERATOR_LOG" 2>&1; then
           echo "plan board regeneration failed; see $GENERATOR_LOG" >&2
+        fi
+
+        # The feature wall last, because it is the one that gets killed.
+        if ! "$PYTHON" -m statuswall.cli --out "$WALL_OUT" >> "$GENERATOR_LOG" 2>&1; then
+          printf '%s wall regeneration failed or was killed\n' \
+              "$(date -u +%FT%TZ)" >> "$GENERATOR_LOG"
+          echo "wall regeneration failed; see $GENERATOR_LOG" >&2
         fi
         sleep "$REGENERATE_INTERVAL"
       done &

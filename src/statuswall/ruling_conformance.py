@@ -123,6 +123,43 @@ def probe_paper_engine_running(
     return ProbeResult(OK, detail, str(heartbeat))
 
 
+# **The archive walk, budgeted and taken once.** Measured 2026-08-19: a plain
+# `rglob("*.parquet")` over the bars store did not finish in 120 seconds, and the
+# plan board calls this probe once per row that names it - so a single pass spent
+# its whole cadence counting files, in uninterruptible IO, and the plan board sat
+# 43 hours stale while the loop above it looked healthy.
+#
+# Two changes, both of which keep the number honest. The walk is CACHED for the
+# life of the process, because every row in one pass is describing the same
+# archive at the same instant. And it is BUDGETED: past the deadline it returns
+# what it counted with `complete=False`, and the caller renders that as `N+`
+# rather than as N. A lower bound is a measurement; a count that never returns is
+# not, and it takes the board with it.
+_FRAGMENT_COUNT: dict = {}
+
+
+def count_store_fragments(dataset: Path,
+                          budget_s: float = 20.0) -> tuple[int, bool]:
+    """(fragments seen, whether the walk finished). Cached per process."""
+    key = str(dataset)
+    if key in _FRAGMENT_COUNT:
+        return _FRAGMENT_COUNT[key]
+    if not dataset.is_dir():
+        _FRAGMENT_COUNT[key] = (0, True)
+        return _FRAGMENT_COUNT[key]
+    deadline = time.monotonic() + budget_s
+    seen, complete = 0, True
+    for _ in dataset.rglob("*.parquet"):
+        seen += 1
+        # Checked per 500 rather than per file: the clock read is cheap, but not
+        # cheaper than the stat it would be guarding on a fast directory.
+        if seen % 500 == 0 and time.monotonic() > deadline:
+            complete = False
+            break
+    _FRAGMENT_COUNT[key] = (seen, complete)
+    return _FRAGMENT_COUNT[key]
+
+
 def probe_poll_scan_cost(
     state_dir: Path = Path.home() / "capture" / "paper" / "forward",
     dataset: Path = Path.home() / "capture" / "store" / "bars_60000000000ns",
@@ -150,8 +187,9 @@ def probe_poll_scan_cost(
             "from before they were recorded",
             str(state_dir / "heartbeat.json"))
 
-    fragments = sum(1 for _ in dataset.rglob("*.parquet")) if dataset.is_dir() else 0
-    share = (f"{beat.fragment_schema_reads}/{fragments} fragment footers"
+    fragments, complete = count_store_fragments(dataset)
+    share = (f"{beat.fragment_schema_reads}/{fragments}"
+             f"{'' if complete else '+'} fragment footers"
              if fragments else f"{beat.fragment_schema_reads} fragment footers")
     detail = f"last poll {beat.poll_seconds:.1f}s, opened {share}"
     proof = f"{state_dir / 'heartbeat.json'} and {dataset}"
@@ -164,6 +202,8 @@ def probe_poll_scan_cost(
             proof)
     # A tenth of the archive re-walked on a routine poll means the cache is not
     # holding, and the cost grows with every fragment written from here on.
+    # Against a partial count the tenth is a LOWER bound, so this grades harder
+    # rather than softer - which is the direction a half-measured probe should err.
     if fragments and beat.fragment_schema_reads > fragments // 10:
         return ProbeResult(DEGRADED,
                            f"{detail} - cost is scaling with the archive rather "
@@ -423,22 +463,28 @@ PROBES = {
 
 
 def assess_rulings(
-    rulings: list[Ruling], slices: list[PlanSlice],
+    rulings: list[Ruling], slices: list[PlanSlice], probes: dict | None = None,
 ) -> list[tuple[Ruling, Coverage, ProbeResult]]:
-    """Coverage from the plan, state from the probe, neither from the ruling."""
+    """Coverage from the plan, state from the probe, neither from the ruling.
+
+    `probes` is passed in so the segment and learned-brain probes can be merged by
+    the caller (BF-10) without this module importing the registries and journals
+    they open. A caller that passes nothing measures with what is defined here.
+    """
+    probes = PROBES if probes is None else probes
     assessments: list[tuple[Ruling, Coverage, ProbeResult]] = []
     for ruling in rulings:
         coverage = cover_ruling(ruling, slices)
         if ruling.probe is None:
             result = ProbeResult(NOT_MEASURED, "no probe is named for this ruling",
                                  "docs/rulings.json")
-        elif ruling.probe not in PROBES:
+        elif ruling.probe not in probes:
             result = ProbeResult(
                 NOT_MEASURED, f"{ruling.probe} is named but not implemented",
                 "statuswall.ruling_conformance.PROBES")
         else:
             try:
-                result = PROBES[ruling.probe]()
+                result = probes[ruling.probe]()
             except Exception as failure:
                 # A broken probe measures nothing. It must not take the board
                 # down: a board that fails to render tells the reader less than

@@ -43,7 +43,7 @@ why the systems that shipped them never noticed. See the addendum in
 ## Working rules for this repo
 
 - **Python 3.12** via `uv`. Never system Python (3.14.4 — too new for polars).
-- Tests: `.venv/bin/python -m pytest -q`. Baseline **857 passed, 1 skipped** (2026-08-09).
+- Tests: `.venv/bin/python -m pytest -q`. Baseline **2,192 passed, 1 skipped** (2026-08-19); it takes ~10 minutes on this box while the bots are trading.
 - **Every RESEARCH and TRAINING market-data read goes through `store.clock_gated_reader`.** No
   direct Parquet reads. That is the whole reason Layer 1 exists, and it is unchanged for anything
   that learns, backtests, validates or promotes.
