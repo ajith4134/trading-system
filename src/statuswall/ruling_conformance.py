@@ -205,6 +205,122 @@ def count_store_fragments(dataset: Path,
     return _FRAGMENT_COUNT[key]
 
 
+STORE_ROOT = Path.home() / "capture" / "store"
+
+# The migration renames the old copy aside rather than deleting it, so a retired
+# copy is EVIDENCE the migration finished and must never be counted against the
+# live dataset. `quarantine` holds rows the builders refused and is not a dataset
+# anything reads.
+_NOT_A_LIVE_DATASET = (".legacy-symbol-layout", ".hourly-building")
+
+
+def _live_datasets(store_root: Path) -> list[Path]:
+    """The dataset directories a reader would actually open."""
+    if not store_root.is_dir():
+        return []
+    return sorted(
+        d for d in store_root.iterdir()
+        if d.is_dir() and d.name != "quarantine"
+        and not any(d.name.endswith(suffix) for suffix in _NOT_A_LIVE_DATASET))
+
+
+def probe_hour_pruning_enabled(store_root: Path = STORE_ROOT) -> ProbeResult:
+    """SL-16, RL-032: hour pruning is off for any dataset still part-migrated.
+
+    `_is_partitioned_by_hour` disables pruning for a WHOLE dataset while a
+    top-level `symbol=` directory remains, and that is deliberate: hive
+    partitioning gives a legacy part a NULL hour, `NULL >= '<hour>'` is null
+    rather than true, and every legacy row would vanish from a bounded read with
+    no error. Correct and slow beats fast and wrong.
+
+    So a dataset in both layouts is a MIGRATION THAT HAS NOT FINISHED, not a
+    dataset that is merely slow, and this says which ones and how much of the old
+    layout is left. Measured 2026-08-19: `funding` held 16 hour directories
+    beside 1,271 legacy symbol ones and `option_chain` 16 beside 1,520, so
+    SL-15's speed-up was switched off for the two largest datasets while only
+    `bars_60000000000ns` had ever been migrated.
+    """
+    datasets = _live_datasets(store_root)
+    if not datasets:
+        return ProbeResult(NOT_MEASURED, "no dataset under the store to measure",
+                           str(store_root))
+    pruned, missing = [], {}
+    for dataset in datasets:
+        legacy = sum(1 for _ in dataset.glob("symbol=*"))
+        if legacy:
+            plural = "y remains" if legacy == 1 else "ies remain"
+            missing[dataset.name] = f"{legacy} legacy symbol director{plural}"
+        else:
+            pruned.append(dataset.name)
+    return _fraction_of(pruned, missing, len(datasets),
+                        "datasets with hour pruning enabled", str(store_root))
+
+
+def probe_sealed_hour_compacted(
+    dataset: Path = STORE_ROOT / "funding",
+) -> ProbeResult:
+    """SL-17, RL-032: a sealed hour holds one part per venue, not one per symbol.
+
+    Measured 2026-08-19: one sealed funding hour held **1,892 fragments for
+    26,015 rows and 16.2 MiB** - 13.8 rows and 8.8 KiB per file - at 29 ms each
+    to open, so the whole 850 MB dataset cost 30.6 minutes to read and grew by
+    ~1,021 files an hour. Column pushdown filters rows; it cannot prune files.
+
+    **The newest hour is never judged.** It is the one still being written and
+    compaction only touches sealed hours, so measuring it would report every
+    healthy store as failing, once an hour.
+    """
+    if not dataset.is_dir():
+        return ProbeResult(NOT_MEASURED, f"no {dataset.name} dataset to measure",
+                           str(dataset))
+    hours = sorted(d.name for d in dataset.iterdir()
+                   if d.is_dir() and d.name.startswith("availability_hour="))
+    if len(hours) < 2:
+        return ProbeResult(NOT_MEASURED,
+                           "no sealed hour yet - the only hour is still being written",
+                           str(dataset))
+
+    compacted, missing = [], {}
+    for name in hours[:-1]:
+        hour = dataset / name
+        parts = sorted(hour.rglob("*.parquet"))
+        venues = {_venue_of(part) for part in parts} - {None}
+        label = name.split("=", 1)[1]
+        if not parts:
+            continue
+        if len(parts) <= max(len(venues), 1):
+            compacted.append(f"{label}: {len(parts)} part(s), {len(venues)} venue(s)")
+        else:
+            missing[label] = (f"{len(parts)} parts for {len(venues)} venue(s) - "
+                              f"still one per symbol")
+    if not compacted and not missing:
+        return ProbeResult(NOT_MEASURED, "no sealed hour holds any part",
+                           str(dataset))
+    return _fraction_of(compacted, missing, len(compacted) + len(missing),
+                        f"sealed {dataset.name} hours compacted to one part per venue",
+                        str(dataset))
+
+
+def _venue_of(part: Path) -> str | None:
+    """The venue a part was written by, from `part-<dataset>-<venue>-...`."""
+    pieces = part.stem.split("-")
+    return pieces[2] if len(pieces) > 2 else None
+
+
+def _fraction_of(met: list[str], missing: dict[str, str], total: int,
+                 subject: str, proof: str) -> ProbeResult:
+    """A fraction that names its gap, the shape every probe here reports in."""
+    detail = f"{len(met)}/{total} {subject}"
+    if missing:
+        named = "; ".join(f"{k}: {v}" for k, v in list(missing.items())[:4])
+        more = len(missing) - 4
+        detail += f" - {named}" + (f"; and {more} more" if more > 0 else "")
+        return ProbeResult(PARTIAL if met else DEGRADED, detail, proof)
+    if met:
+        detail += " - " + "; ".join(met[:3])
+    return ProbeResult(OK, detail, proof)
+
+
 def probe_poll_scan_cost(
     dataset: Path = Path.home() / "capture" / "store" / "bars_60000000000ns",
     learn_root: Path = Path.home() / "capture" / "learn",
@@ -549,6 +665,8 @@ PROBES = {
     "probe_memory_reachable": probe_memory_reachable,
     "probe_paper_engine_running": probe_paper_engine_running,
     "probe_poll_scan_cost": probe_poll_scan_cost,
+    "probe_hour_pruning_enabled": probe_hour_pruning_enabled,
+    "probe_sealed_hour_compacted": probe_sealed_hour_compacted,
     "probe_enforcement_live": probe_enforcement_live,
     "probe_rulings_register_loads": probe_rulings_register_loads,
     "probe_spine_parses": probe_spine_parses,

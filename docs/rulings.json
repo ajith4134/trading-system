@@ -437,6 +437,21 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_scope_arithmetic"
+  },
+  {
+   "id": "RL-032",
+   "date": "2026-08-19",
+   "session": "5a148238",
+   "source": "interview",
+   "verbatim": "[interview answer] Repartition: one file per hour per venue",
+   "clarified_as": "A whole-universe dataset - funding and the option chain, where every consumer wants all symbols for a window rather than one symbol - is partitioned by availability hour and compacted to ONE PART PER VENUE within that hour, not one per symbol. The symbol moves into the file body, because the path no longer carries it. Datasets that are read per-symbol, bars and book, keep their symbol layout.",
+   "means": "Per-symbol parts of a poll-wide dataset are too small to be worth opening: one sealed funding hour held 1,892 fragments for 26,015 rows and 16.2 MiB - 13.8 rows per file - at 29 ms each, so the whole 850 MB dataset cost 30.6 minutes to read and grew by ~1,021 files an hour. That is what froze the status wall for two days. Column pushdown filters rows; it cannot prune files.",
+   "scope": "shared",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_sealed_hour_compacted"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

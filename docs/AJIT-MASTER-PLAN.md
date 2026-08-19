@@ -375,6 +375,92 @@ its own plan when slice 1's row inventory is reviewed.
 >
 > Decision taken by the user 2026-08-17: cache now, repartition next.
 
+### SL-16
+  slice:      slice-0
+  does:       finish the hour migration for the datasets still holding a legacy symbol layout
+  satisfies:  RL-020 RL-018 RL-012 RL-032
+  sources:    ~/research/DECISIONS.md#15.5 The scan is the hot spot, not the walk
+  depends on: SL-15
+  probe:      probe_hour_pruning_enabled
+  accepts:    no dataset under the store holds a top-level symbol= directory, so
+              _is_partitioned_by_hour returns true for every one of them, and each
+              migrated dataset has a verified report before its legacy copy is
+              retired
+  state:      measured by probe_hour_pruning_enabled
+
+### SL-17
+  slice:      slice-0
+  does:       write and compact a whole-universe dataset one part per venue per hour
+  satisfies:  RL-020 RL-018 RL-012 RL-032
+  sources:    ~/research/DECISIONS.md#15.5 The scan is the hot spot, not the walk
+  depends on: SL-16
+  probe:      probe_sealed_hour_compacted
+  accepts:    a sealed hour of funding holds one part per venue rather than one per
+              symbol, the rows and columns of that hour are unchanged across the
+              compaction, and the hour still being written is never compacted
+  state:      measured by probe_sealed_hour_compacted
+
+> **Compaction alone cannot hold, and that is why this row writes as well as compacts.**
+> `append_partition` groups by `(hour, symbol)` and drops SYMBOL from the file body
+> because the `symbol=` path segment carries it. Compact a sealed hour into parts that
+> sit directly under `availability_hour=` with the symbol back in the body, and the very
+> next poll writes per-symbol parts beside them — leaving one dataset where some
+> fragments take `symbol` from the path and others from the body. pyarrow infers those
+> as different types, `string` against `large_string`, and **refuses to merge them**:
+> the exact ArrowTypeError `append_partition` already documents itself as avoiding.
+>
+> So the writer moves with the layout. For a whole-universe dataset the path is
+> `availability_hour=<H>/` alone, the venue is already in the part name
+> (`part-funding-binance-…`), and SYMBOL travels in the body where it is the thing being
+> distinguished rather than the thing being partitioned on. Compaction then merges the
+> handful of parts an hour accumulates — one per poll per venue — into one per venue,
+> and never touches the hour still open.
+>
+> **Which datasets, and why not all of them.** `funding` and `option_chain` are read
+> whole-universe-for-a-window by every consumer, so a `symbol=` level buys nothing and
+> costs 1,021 files an hour. `bars` and `book` are read per symbol, where that level is
+> what makes the read cheap. The split is by access pattern, not by size.
+>
+> **The modules these rows build.** `store/sealed_hour_compaction.py` merges a sealed
+> hour and verifies it on content before replacing anything, in the shape
+> `store/hourly_migration.py` already established: rows per (hour, symbol), total rows
+> and the column set, never "the command exited 0". This store has lost a column
+> silently once already — `funding_interval_hours`, 2026-08-09 — which turned a 4-hourly
+> funding rate into an 8-hourly one.
+
+> **What made the wall stop, measured 2026-08-19.** `status-wall.html` last completed on
+> **2026-08-17 13:38** and the probe cache directory had never been created — which is the
+> proof, because `measured_periodically` writes on the first success and no expensive probe
+> had ever returned one. The board that reports whether the system is healthy had been frozen
+> for two days while reading as if it were current, which is the Rule 8 failure it exists to
+> prevent, wearing the costume of a working board.
+>
+> Two causes, and the second is the one that hurts.
+>
+> **The migration never finished for the datasets that needed it most.** `funding` holds 16
+> `availability_hour=` directories beside **1,271 legacy `symbol=` ones**, and `option_chain`
+> 16 beside **1,520**. `_is_partitioned_by_hour` disables hour pruning for a whole dataset
+> while any top-level `symbol=` remains — deliberately, because a part-way dataset would
+> otherwise drop every legacy row from a bounded read with no error. So SL-15's speed-up is
+> switched off for the two largest datasets, and only `bars_60000000000ns` was ever migrated.
+>
+> **Per-symbol parts are too small to be worth opening.** One sealed funding hour holds
+> **1,892 fragments for 26,015 rows and 16.2 MiB** — 13.8 rows and 8.8 KiB per file — and
+> costs **29 ms per fragment** to open. The whole funding dataset therefore takes **30.6
+> minutes** to read, for 850 MB, and it grows by ~1,021 files every hour. Column pushdown
+> filters rows; **it cannot prune files**, which is the same lesson SL-14 recorded.
+>
+> **RL-032 settles the granularity: one part per hour per VENUE, not per symbol.** That hour
+> becomes 3 parts instead of 1,892 — binance, bybit, hyperliquid. Per-symbol partitioning
+> earns its keep only where reads are per-symbol, and nothing reads funding that way: every
+> consumer wants the whole universe for a window. Bars and book keep their symbol layout for
+> the opposite reason.
+>
+> **The symbol moves into the file body**, because it is no longer in the path to reconstruct
+> it from. `append_partition` drops it today precisely because the path carried it, so this is
+> forced by the layout rather than chosen — and it is the column this store has already lost
+> once, silently, on 2026-08-09.
+
 ---
 
 ## SLICE bot-framework — SHARED LIVE BOT FRAMEWORK

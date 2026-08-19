@@ -64,6 +64,18 @@ BLOTTER_INTERVAL=${BOARDS_BLOTTER_INTERVAL:-60}
 BLOTTER_LOG="$STATE_DIR/blotter.log"
 WALL_OUT="$BOARDS_DIR/status-wall.html"
 
+# **An off switch for the wall alone**, matching `learn/OFF` for the retrainer.
+# The wall walks the whole store and was measured on 2026-08-19 at 7.8 GB and
+# climbing after 30 minutes without finishing; while the store is being
+# repartitioned (SL-16, SL-17) that walk is both futile and the largest single
+# OOM risk on the box. The cheap boards - plan, conformance, segments, blotter -
+# keep running, so pausing the wall does not blind the operator.
+#
+# A paused wall still leaves `status-wall.html` on disk, and `_board_freshness`
+# is what stops that reading as current: a board is only evidence while it is
+# recent, and a stale one reports its age rather than its content.
+WALL_OFF_SWITCH="$STATE_DIR/WALL-OFF"
+
 mkdir -p "$STATE_DIR"
 
 generator_pid=""
@@ -180,7 +192,11 @@ supervise() {
         # At most ONE wall at a time. A second started while the first is still
         # walking would double a footprint already measured at 11.7 GB on a 30 GB
         # box, and OOM is how this board stopped updating in the first place.
-        if [ -n "$wall_pid" ] && kill -0 "$wall_pid" 2>/dev/null; then
+        if [ -e "$WALL_OFF_SWITCH" ]; then
+          printf '%s wall paused by %s: %s\n' "$(date -u +%FT%TZ)" \
+              "$WALL_OFF_SWITCH" "$(head -c 200 "$WALL_OFF_SWITCH" 2>/dev/null)" \
+              >> "$GENERATOR_LOG"
+        elif [ -n "$wall_pid" ] && kill -0 "$wall_pid" 2>/dev/null; then
           printf '%s wall still running from an earlier pass (pid %s); not starting a second\n' \
               "$(date -u +%FT%TZ)" "$wall_pid" >> "$GENERATOR_LOG"
         else

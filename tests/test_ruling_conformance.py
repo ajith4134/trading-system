@@ -311,3 +311,109 @@ def test_a_shared_ruling_with_no_row_says_so_rather_than_naming_a_subject(tmp_pa
 
     assert "RL-006 0/1 (no row anywhere)" in result.detail
     assert "missing no row" not in result.detail
+
+
+# --- SL-16 / SL-17: the layout that froze the wall --------------------------
+#
+# `status-wall.html` last completed 2026-08-17 13:38 and the probe cache had
+# never been created - the proof that no expensive probe had ever returned. Two
+# causes: `funding` held 16 hour directories beside 1,271 legacy `symbol=` ones,
+# which switches hour pruning off for the whole dataset by design; and a sealed
+# funding hour held 1,892 fragments for 26,015 rows at 29 ms each.
+
+def _dataset(root: Path, name: str, *, hours=(), legacy_symbols=(),
+             parts_per_hour=()) -> Path:
+    """A store dataset in whichever layout the test needs it."""
+    dataset = root / name
+    for symbol in legacy_symbols:
+        folder = dataset / f"symbol={symbol}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "part-old.parquet").write_bytes(b"")
+    for hour in hours:
+        for part in parts_per_hour or ("part-funding-binance-x.parquet",):
+            folder = dataset / f"availability_hour={hour}"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / part).write_bytes(b"")
+    return dataset
+
+
+def test_a_dataset_holding_a_legacy_symbol_directory_reports_pruning_off(tmp_path):
+    """The gate is deliberate - a part-way dataset would drop legacy rows from a
+    bounded read - so a dataset in both layouts is a migration that has not
+    finished, not a dataset that is merely slow."""
+    _dataset(tmp_path, "funding", hours=("2026-08-17T17",),
+             legacy_symbols=("BTCUSDT", "ETHUSDT"))
+    result = ruling_conformance.probe_hour_pruning_enabled(store_root=tmp_path)
+
+    assert result.state != OK
+    assert "funding" in result.detail
+    assert "2" in result.detail, "it must say how much of the old layout remains"
+
+
+def test_a_fully_migrated_store_reports_pruning_on(tmp_path):
+    _dataset(tmp_path, "funding", hours=("2026-08-17T17",))
+    _dataset(tmp_path, "book", hours=("2026-08-17T17",))
+    result = ruling_conformance.probe_hour_pruning_enabled(store_root=tmp_path)
+
+    assert result.state == OK
+    assert "2/2" in result.detail
+
+
+def test_a_retired_legacy_copy_is_not_counted_against_the_live_dataset(tmp_path):
+    """The migration renames the old copy aside rather than deleting it, and a
+    retired copy is evidence the migration finished - never a reason to fail."""
+    _dataset(tmp_path, "bars", hours=("2026-08-17T17",))
+    _dataset(tmp_path, "bars.legacy-symbol-layout", legacy_symbols=("BTCUSDT",))
+    result = ruling_conformance.probe_hour_pruning_enabled(store_root=tmp_path)
+
+    assert result.state == OK, result.detail
+
+
+def test_a_store_with_no_datasets_measures_nothing_rather_than_passing(tmp_path):
+    result = ruling_conformance.probe_hour_pruning_enabled(store_root=tmp_path)
+    assert result.state == NOT_MEASURED
+
+
+def test_a_sealed_hour_of_one_part_per_venue_is_compacted(tmp_path):
+    dataset = _dataset(
+        tmp_path, "funding", hours=("2026-08-17T17", "2026-08-17T18"),
+        parts_per_hour=("part-funding-binance-c.parquet",
+                        "part-funding-bybit-c.parquet"))
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+
+    assert result.state == OK
+    assert "2 part" in result.detail and "2 venue" in result.detail
+
+
+def test_a_sealed_hour_still_holding_a_part_per_symbol_is_not_compacted(tmp_path):
+    dataset = tmp_path / "funding"
+    for hour in ("2026-08-17T17", "2026-08-17T18"):
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            folder = dataset / f"availability_hour={hour}" / f"symbol={symbol}"
+            folder.mkdir(parents=True)
+            (folder / "part-funding-binance-x.parquet").write_bytes(b"")
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+
+    assert result.state != OK
+    assert "3" in result.detail
+
+
+def test_the_hour_still_being_written_is_never_judged(tmp_path):
+    """Only sealed hours are compacted, so the newest one must not be measured -
+    judging it would report every healthy store as failing, once an hour."""
+    dataset = tmp_path / "funding"
+    sealed = dataset / "availability_hour=2026-08-17T17"
+    sealed.mkdir(parents=True)
+    (sealed / "part-funding-binance-c.parquet").write_bytes(b"")
+    live = dataset / "availability_hour=2026-08-17T18" / "symbol=BTCUSDT"
+    live.mkdir(parents=True)
+    (live / "part-funding-binance-x.parquet").write_bytes(b"")
+
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+    assert result.state == OK, result.detail
+
+
+def test_a_dataset_with_only_one_hour_has_nothing_sealed_to_measure(tmp_path):
+    dataset = _dataset(tmp_path, "funding", hours=("2026-08-17T17",))
+    result = ruling_conformance.probe_sealed_hour_compacted(dataset=dataset)
+    assert result.state == NOT_MEASURED
