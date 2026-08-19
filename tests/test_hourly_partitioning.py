@@ -173,3 +173,163 @@ def test_pruning_does_not_depend_on_how_many_hours_are_behind_it(tmp_path):
 
 def test_an_absent_dataset_selects_nothing(tmp_path):
     assert select_fragments(tmp_path, "never_written", None) == []
+
+
+# --- SL-17 / RL-032: the migration converts the layout, not just the path ---
+
+def test_migrating_a_whole_universe_dataset_produces_the_hour_only_layout(tmp_path):
+    """The building copy starts empty, so `partitions_by_hour_alone` sees a
+    dataset with nothing to mix with and writes the converted layout. The swap
+    then puts it in place and the live writer follows it - which is why the
+    conversion and the writer change cannot be separated: a dataset holding both
+    layouts raises `ArrowTypeError` on every read.
+    """
+    import pandas as pd
+    from store.hourly_migration import migrate_dataset_to_hourly
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    base = 1_787_000_000_000_000_000
+    for i, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT")):
+        frame = pd.DataFrame({
+            SYMBOL: [symbol], VENUE: ["binance"],
+            EVENT_TIME: pd.array([base + i], dtype="int64"),
+            INGESTION_TIME: pd.array([base + i], dtype="int64"),
+            AVAILABILITY_TIME: pd.array([base + i], dtype="int64"),
+            "funding_rate": [0.0001 * (i + 1)],
+        })
+        # Written the way the live store holds funding today: symbol at the top.
+        legacy = tmp_path / "funding" / f"symbol={symbol}"
+        legacy.mkdir(parents=True, exist_ok=True)
+        import pyarrow as pa, pyarrow.parquet as pq
+        pq.write_table(pa.Table.from_pandas(frame.drop(columns=[SYMBOL]),
+                                            preserve_index=False),
+                       legacy / f"part-funding-binance-{i}.parquet")
+
+    report = migrate_dataset_to_hourly(tmp_path, "funding")
+
+    built = tmp_path / "funding.hourly-building"
+    parts = sorted(built.rglob("*.parquet"))
+    assert parts, "the migration wrote nothing"
+    assert not any("symbol=" in str(p) for p in parts), (
+        "a whole-universe dataset must migrate into the hour-only layout")
+    assert report.legacy_rows == 3
+
+
+def _legacy_funding_part(root, symbol, *, hour_ns, venue="binance", name="0",
+                         under_hour=None):
+    """One legacy part, in whichever sub-layout the test needs."""
+    import pandas as pd, pyarrow as pa, pyarrow.parquet as pq
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+    frame = pd.DataFrame({
+        SYMBOL: [symbol], VENUE: [venue],
+        EVENT_TIME: pd.array([hour_ns], dtype="int64"),
+        INGESTION_TIME: pd.array([hour_ns], dtype="int64"),
+        AVAILABILITY_TIME: pd.array([hour_ns], dtype="int64"),
+        "funding_rate": [0.0001],
+    })
+    folder = (root / "funding" / f"symbol={symbol}" if under_hour is None
+              else root / "funding" / f"availability_hour={under_hour}" / f"symbol={symbol}")
+    folder.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pandas(frame.drop(columns=[SYMBOL]), preserve_index=False),
+        folder / f"part-funding-{venue}-{name}.parquet")
+
+
+def test_one_hour_of_a_whole_universe_dataset_migrates_to_one_part(tmp_path):
+    """**The fan-out is the `symbol=` level, so removing it must remove the fan-out.**
+    Migrating symbol-folder-by-symbol-folder would write one part per symbol per
+    hour and leave the file count exactly where it started - 1,271 parts an hour
+    for funding, which is the whole defect."""
+    from store.hourly_migration import migrate_dataset_to_hourly
+
+    base = 1_787_000_000_000_000_000
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+        _legacy_funding_part(tmp_path, symbol, hour_ns=base)
+
+    report = migrate_dataset_to_hourly(tmp_path, "funding")
+
+    parts = sorted((tmp_path / "funding.hourly-building").rglob("*.parquet"))
+    assert len(parts) == 1, [str(p) for p in parts]
+    assert report.verified, report.mismatched_groups
+    assert report.legacy_rows == 4 and report.migrated_rows == 4
+
+
+def test_two_hours_migrate_to_one_part_each(tmp_path):
+    from store.hourly_migration import migrate_dataset_to_hourly
+    base = 1_787_000_000_000_000_000
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        _legacy_funding_part(tmp_path, symbol, hour_ns=base, name="a")
+        _legacy_funding_part(tmp_path, symbol, hour_ns=base + 3_600 * 10**9,
+                             name="b")
+
+    report = migrate_dataset_to_hourly(tmp_path, "funding")
+
+    parts = sorted((tmp_path / "funding.hourly-building").rglob("*.parquet"))
+    assert len(parts) == 2, [str(p) for p in parts]
+    assert len({p.parent for p in parts}) == 2
+    assert report.verified and report.migrated_rows == 4
+
+
+def test_parts_already_in_the_hour_layout_are_rewritten_not_linked(tmp_path):
+    """They sit at `availability_hour=<H>/symbol=<S>/`, which is still the
+    per-symbol sub-layout. Hard-linking them into the building copy unchanged
+    would put a `symbol=` directory in the converted dataset - the mixed state
+    that raises ArrowTypeError on every read."""
+    from store.hourly_migration import migrate_dataset_to_hourly
+    base = 1_787_000_000_000_000_000
+    _legacy_funding_part(tmp_path, "BTCUSDT", hour_ns=base)
+    _legacy_funding_part(tmp_path, "ETHUSDT", hour_ns=base,
+                         under_hour="2026-08-17T20", name="h")
+
+    report = migrate_dataset_to_hourly(tmp_path, "funding")
+
+    built = tmp_path / "funding.hourly-building"
+    assert not any("symbol=" in str(p) for p in built.rglob("*.parquet"))
+    assert report.verified, report.mismatched_groups
+    assert report.migrated_rows == 2
+
+
+def test_the_converted_dataset_reads_back_every_symbol(tmp_path):
+    """Verification is on content, and the column that matters here is the one
+    the path stopped carrying."""
+    from store.hourly_migration import migrate_dataset_to_hourly
+    from store.parquet_partition import read_dataset
+    from store.temporal_schema import SYMBOL
+    base = 1_787_000_000_000_000_000
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+        _legacy_funding_part(tmp_path, symbol, hour_ns=base)
+
+    migrate_dataset_to_hourly(tmp_path, "funding")
+    frame = read_dataset(tmp_path, "funding.hourly-building")
+
+    assert sorted(frame[SYMBOL]) == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def test_the_buffer_is_bounded_so_a_large_dataset_cannot_exhaust_memory(tmp_path,
+                                                                       monkeypatch):
+    """**Buffering every hour before the first write makes peak memory the whole
+    dataset**, on a box with 29 GB, no swap, and a documented history of OOM
+    kills. So the buffer has a row cap and flushes the largest hour when it is
+    reached. More than one part in an hour is a fine outcome - it is still one
+    part per flush rather than one per symbol, which is the fan-out being
+    removed - and a dataset small enough to fit under the cap gets exactly one.
+    """
+    from store import hourly_migration
+    from store.hourly_migration import migrate_dataset_to_hourly
+
+    monkeypatch.setattr(hourly_migration, "MAX_BUFFERED_ROWS", 2)
+
+    base = 1_787_000_000_000_000_000
+    for symbol in ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT", "EEEUSDT"):
+        _legacy_funding_part(tmp_path, symbol, hour_ns=base)
+
+    report = migrate_dataset_to_hourly(tmp_path, "funding")
+
+    parts = sorted((tmp_path / "funding.hourly-building").rglob("*.parquet"))
+    assert len(parts) > 1, "the cap must have forced a flush"
+    assert not any("symbol=" in str(p) for p in parts)
+    assert report.verified, report.mismatched_groups
+    assert report.legacy_rows == 5 and report.migrated_rows == 5

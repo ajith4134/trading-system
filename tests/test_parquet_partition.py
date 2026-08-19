@@ -195,3 +195,126 @@ def test_the_column_survives_whichever_partition_is_discovered_first(tmp_path):
     frame = read_dataset(tmp_path, "d")
     assert "added_later" in frame.columns
     assert len(frame) == 2
+
+
+# --- SL-17 / RL-032: whole-universe datasets partition by hour alone --------
+#
+# One sealed funding hour held 1,892 fragments for 26,015 rows and 16.2 MiB -
+# 13.8 rows and 8.8 KiB per file - at 29 ms each to open, so the whole 850 MB
+# dataset cost 30.6 minutes to read and grew by ~1,021 files an hour. That is
+# what froze the status wall for two days. Nothing reads funding one symbol at a
+# time: every consumer wants the whole universe for a window, so the `symbol=`
+# level buys nothing and costs a file per symbol per hour.
+
+def _funding_frame(symbols=("BTCUSDT", "ETHUSDT"), hour_ns=None, venue="binance"):
+    import pandas as pd
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+    base = hour_ns if hour_ns is not None else 1_787_000_000_000_000_000
+    n = len(symbols)
+    return pd.DataFrame({
+        SYMBOL: list(symbols),
+        VENUE: [venue] * n,
+        EVENT_TIME: pd.array([base + i for i in range(n)], dtype="int64"),
+        INGESTION_TIME: pd.array([base + i for i in range(n)], dtype="int64"),
+        AVAILABILITY_TIME: pd.array([base + i for i in range(n)], dtype="int64"),
+        "funding_rate": [0.0001 * (i + 1) for i in range(n)],
+    })
+
+
+def test_a_whole_universe_dataset_writes_one_part_per_hour_not_per_symbol(tmp_path):
+    from store.parquet_partition import append_partition
+    written = append_partition(tmp_path, "funding",
+                               _funding_frame(("BTCUSDT", "ETHUSDT", "SOLUSDT")),
+                               "funding-binance-2026-08-19-upto1")
+
+    assert len(written) == 1, "three symbols, one part"
+    assert "symbol=" not in str(written[0]), written[0]
+    assert "availability_hour=" in str(written[0])
+
+
+def test_the_symbol_travels_in_the_body_when_the_path_no_longer_carries_it(tmp_path):
+    """It is the column this store has already lost once, silently, on
+    2026-08-09 - `funding_interval_hours`, which turned a 4-hourly funding rate
+    into an 8-hourly one."""
+    from store.parquet_partition import append_partition, read_dataset
+    from store.temporal_schema import SYMBOL
+    append_partition(tmp_path, "funding", _funding_frame(("BTCUSDT", "ETHUSDT")),
+                     "funding-binance-2026-08-19-upto1")
+
+    frame = read_dataset(tmp_path, "funding")
+    assert set(frame[SYMBOL]) == {"BTCUSDT", "ETHUSDT"}
+    assert set(frame["funding_rate"]) == {0.0001, 0.0002}
+
+
+def test_a_per_symbol_dataset_keeps_its_symbol_partition(tmp_path):
+    """Bars and book are read one symbol at a time, which is exactly where the
+    `symbol=` level earns what it costs."""
+    from store.parquet_partition import append_partition
+    written = append_partition(tmp_path, "bars_60000000000ns",
+                               _funding_frame(("BTCUSDT", "ETHUSDT")),
+                               "bars-binance-2026-08-19-upto1")
+
+    assert len(written) == 2
+    assert all("symbol=" in str(p) for p in written)
+
+
+def test_two_hours_in_one_frame_still_land_in_two_hour_directories(tmp_path):
+    """A frame is not one hour, and the hour in the path may never be a lie."""
+    import pandas as pd
+    from store.parquet_partition import append_partition
+    early = _funding_frame(("BTCUSDT",), hour_ns=1_787_000_000_000_000_000)
+    later = _funding_frame(("ETHUSDT",), hour_ns=1_787_003_600_000_000_000 + 10**10)
+    written = append_partition(tmp_path, "funding",
+                               pd.concat([early, later], ignore_index=True),
+                               "funding-binance-2026-08-19-upto1")
+
+    assert len(written) == 2
+    assert len({p.parent for p in written}) == 2
+
+
+def test_a_repeated_snapshot_id_is_still_refused_in_the_new_layout(tmp_path):
+    """Corrections are new snapshots, never rewrites - the promise the reader
+    is built on, and it must not weaken with the layout."""
+    import pytest
+    from store.parquet_partition import PartitionExistsError, append_partition
+    append_partition(tmp_path, "funding", _funding_frame(),
+                     "funding-binance-2026-08-19-upto1")
+    with pytest.raises(PartitionExistsError):
+        append_partition(tmp_path, "funding", _funding_frame(),
+                         "funding-binance-2026-08-19-upto1")
+
+
+def test_a_dataset_already_holding_symbol_parts_keeps_being_written_that_way(tmp_path):
+    """**A mixed dataset is unreadable, not merely slow.** Measured 2026-08-19:
+    one `symbol=` part beside one hour-only part in the same dataset gives
+    `ArrowTypeError: Unable to merge: Field symbol has incompatible types:
+    large_string vs string` - the path-derived column is `string`, the body one
+    `large_string`, and pyarrow refuses.
+
+    So the writer asks the DATA which layout it is in rather than trusting a
+    constant, which could otherwise be true before the existing data was
+    converted. The conversion flips the layout once and the writer follows.
+    """
+    from store.parquet_partition import append_partition, read_dataset
+    from store.temporal_schema import SYMBOL
+
+    # A dataset that already holds the old layout, as the live store does.
+    old = tmp_path / "funding" / "availability_hour=2026-08-17T20" / "symbol=BTCUSDT"
+    old.mkdir(parents=True)
+    (old / "part-funding-binance-old-upto1.parquet").write_bytes(b"")
+
+    written = append_partition(tmp_path, "funding",
+                               _funding_frame(("ETHUSDT", "SOLUSDT")),
+                               "funding-binance-2026-08-19-upto2")
+
+    assert all("symbol=" in str(p) for p in written), (
+        "a converted layout must never be written into an unconverted dataset")
+
+
+def test_an_empty_dataset_takes_the_new_layout(tmp_path):
+    """Nothing to mix with, so a fresh whole-universe dataset starts converted."""
+    from store.parquet_partition import append_partition
+    written = append_partition(tmp_path, "funding", _funding_frame(),
+                               "funding-binance-2026-08-19-upto1")
+    assert len(written) == 1 and "symbol=" not in str(written[0])

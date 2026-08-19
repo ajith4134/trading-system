@@ -421,12 +421,28 @@ its own plan when slice 1's row inventory is reviewed.
 > costs 1,021 files an hour. `bars` and `book` are read per symbol, where that level is
 > what makes the read cheap. The split is by access pattern, not by size.
 >
-> **The modules these rows build.** `store/sealed_hour_compaction.py` merges a sealed
-> hour and verifies it on content before replacing anything, in the shape
-> `store/hourly_migration.py` already established: rows per (hour, symbol), total rows
-> and the column set, never "the command exited 0". This store has lost a column
-> silently once already — `funding_interval_hours`, 2026-08-09 — which turned a 4-hourly
-> funding rate into an 8-hourly one.
+> **No compaction module, and the measurement is why.** The intent here was a pass that
+> merges a sealed hour's parts into one per venue. Counting the DISTINCT part names in a
+> sealed hour first showed there is nothing to merge: funding's hour
+> `2026-08-17T17` holds 1,892 fragments under **3 distinct names** — binance, bybit,
+> hyperliquid — and option_chain's holds 1,436 under **one**. The fan-out is entirely
+> the `symbol=` level, so converting the layout takes that hour to 3 files and 1 file
+> respectively, and RL-032's target is met by the conversion alone.
+>
+> A merge pass would therefore be machinery for a problem that does not exist, which is
+> what the counterweight in CLAUDE.md warns against: every automation is operational debt,
+> and the question of whether it is worth maintaining comes before whether it is possible.
+> **What would make it needed** is a build cadence that writes several snapshots per hour
+> per venue — then `probe_sealed_hour_compacted` reports parts exceeding venues and says
+> so, which is the trigger rather than a guess.
+>
+> **The conversion is `store/hourly_migration.py`, unchanged in shape.** Its building copy
+> starts empty, so `partitions_by_hour_alone` sees a dataset with nothing to mix with and
+> writes the converted layout; its existing verify-then-swap carries the rest. It verifies
+> on content — rows per (hour, symbol), total rows, the column set — never on "the command
+> exited 0", because this store has lost a column silently once already:
+> `funding_interval_hours`, 2026-08-09, which turned a 4-hourly funding rate into an
+> 8-hourly one.
 
 > **What made the wall stop, measured 2026-08-19.** `status-wall.html` last completed on
 > **2026-08-17 13:38** and the probe cache directory had never been created — which is the

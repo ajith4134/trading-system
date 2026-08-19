@@ -45,6 +45,65 @@ HOUR_KEY = "availability_hour"
 # rename is here to prevent.
 _PARTIAL_PREFIX = ".writing-part-"
 
+# **Datasets every consumer reads whole-universe-for-a-window** (SL-17, RL-032).
+# These partition by availability hour ALONE and keep SYMBOL in the file body.
+#
+# Measured 2026-08-19: one sealed `funding` hour held 1,892 fragments for 26,015
+# rows and 16.2 MiB - 13.8 rows and 8.8 KiB per file - at 29 ms each to open, so
+# the whole 850 MB dataset cost 30.6 minutes to read and grew by ~1,021 files an
+# hour. Nothing asks funding for one symbol; every consumer wants the universe
+# for a window, so the `symbol=` level bought nothing and cost a file per symbol
+# per hour. That is what froze the status wall for two days.
+#
+# The split is by ACCESS PATTERN, not by size: `bars` and `book` are read one
+# symbol at a time, which is exactly where a `symbol=` level earns what it costs.
+WHOLE_UNIVERSE_DATASETS = frozenset({
+    "funding", "funding_reconstructed", "option_chain",
+})
+
+# `hourly_migration` builds its converted copy under this suffix and swaps it in.
+# Defined here rather than there because the LAYOUT decision has to see through
+# the suffix: a building copy of `funding` is still funding, and if it were
+# treated as an unknown dataset the migration would rebuild the old layout and
+# the conversion would be a no-op that looked like a success.
+BUILDING_SUFFIX = ".hourly-building"
+
+
+def partitions_by_hour_alone(dataset: str, root: Path | None = None) -> bool:
+    """Whether this dataset's path carries the hour and nothing else.
+
+    **The DATA decides, not the constant.** A dataset holding one `symbol=` part
+    beside one hour-only part is UNREADABLE, not merely slow: the path-derived
+    column infers as `string` and the body one as `large_string`, and pyarrow
+    refuses to merge them - `ArrowTypeError`, measured 2026-08-19. A constant
+    alone would produce exactly that state, because it becomes true the moment
+    the code ships and the existing parts are converted later.
+
+    So a dataset that already holds a `symbol=` directory keeps being written the
+    way it already is, whatever the constant says. The conversion flips the
+    layout once, and the writer follows it.
+    """
+    if dataset.endswith(BUILDING_SUFFIX):
+        dataset = dataset[:-len(BUILDING_SUFFIX)]
+    if dataset not in WHOLE_UNIVERSE_DATASETS:
+        return False
+    root = Path(root) if root is not None else None
+    if root is None or not root.is_dir():
+        return True              # nothing on disk to mix with, so start converted
+    # **Cheap on purpose.** This runs on every append, and an `rglob` over the
+    # 63,063 fragments funding held on 2026-08-19 would make the check its own
+    # hot spot - the exact mistake SL-14 recorded. Two listings answer it: a
+    # legacy `symbol=` at the top, or a `symbol=` inside the newest hour, which
+    # is the one a converted dataset would have written into.
+    if any(root.glob("symbol=*")):
+        return False
+    hours = sorted(entry.name for entry in os.scandir(root)
+                   if entry.is_dir() and entry.name.startswith(f"{HOUR_KEY}="))
+    if not hours:
+        return True
+    return not any(entry.is_dir() and entry.name.startswith("symbol=")
+                   for entry in os.scandir(root / hours[-1]))
+
 # The unified schema of each dataset, and the exact set of fragment paths it was
 # built from. Keyed by dataset root, because two datasets share nothing.
 #
@@ -283,7 +342,13 @@ def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
         return []
 
     hours = frame[AVAILABILITY_TIME].map(floor_to_hour)
-    groups = list(frame.groupby([hours.rename(HOUR_KEY), SYMBOL], sort=True))
+    # A whole-universe dataset groups by the hour alone, so one poll of 1,287
+    # symbols is one part rather than 1,287 (SL-17, RL-032).
+    by_hour_alone = partitions_by_hour_alone(dataset,
+                                             Path(store_root) / dataset)
+    groups = (list(frame.groupby(hours.rename(HOUR_KEY), sort=True))
+              if by_hour_alone
+              else list(frame.groupby([hours.rename(HOUR_KEY), SYMBOL], sort=True)))
 
     # Every target is checked before any part is written. Checking and writing
     # group-by-group in one pass would let a frame with N groups write the first
@@ -291,13 +356,16 @@ def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
     # a half-written snapshot - exactly the partial state this store promises never
     # to hold, and the promise Task 4's reader is built on.
     plan: list[tuple[str, pd.DataFrame, Path, Path]] = []
-    for (hour, symbol), group in groups:
-        folder = Path(store_root) / dataset / f"{HOUR_KEY}={hour}" / f"symbol={symbol}"
+    for key, group in groups:
+        hour, symbol = (key, None) if by_hour_alone else key
+        folder = Path(store_root) / dataset / f"{HOUR_KEY}={hour}"
+        if symbol is not None:
+            folder = folder / f"symbol={symbol}"
         target = folder / f"part-{snapshot_id}.parquet"
         if target.exists():
             raise PartitionExistsError(
                 f"{target} already exists; snapshot '{snapshot_id}' has been written for "
-                f"{symbol}. Corrections are new snapshots, never rewrites")
+                f"{symbol or hour}. Corrections are new snapshots, never rewrites")
         plan.append((symbol, group, folder, target))
 
     written: list[Path] = []
@@ -310,7 +378,13 @@ def append_partition(store_root: Path, dataset: str, frame: pd.DataFrame,
         # them (ArrowTypeError) the moment more than one part exists for a symbol.
         # Dropping the duplicate is the standard hive-partitioning convention, not a
         # loss: read_dataset reconstructs the column from the path on every read.
-        body = group.drop(columns=[SYMBOL]).reset_index(drop=True)
+        # SYMBOL is dropped only when the PATH carries it. A whole-universe
+        # dataset has no `symbol=` segment to reconstruct it from, so the column
+        # travels in the body - and it is the column this store has already lost
+        # once, silently: `funding_interval_hours`, 2026-08-09, which turned a
+        # 4-hourly funding rate into an 8-hourly one.
+        body = (group.reset_index(drop=True) if symbol is None
+                else group.drop(columns=[SYMBOL]).reset_index(drop=True))
         table = pa.Table.from_pandas(body, preserve_index=False)
         _write_part_atomically(table, folder, target)
         written.append(target)

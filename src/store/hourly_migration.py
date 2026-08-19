@@ -36,12 +36,26 @@ from pathlib import Path
 import pandas as pd
 
 from store.parquet_partition import (
-    HOUR_KEY, PartitionExistsError, append_partition, compute_snapshot_id,
-    floor_to_hour, read_dataset,
+    # BUILDING_SUFFIX is defined there rather than here because the LAYOUT
+    # decision has to see through it: a building copy of `funding` is still
+    # funding, and treating it as an unknown dataset would rebuild the old
+    # layout - a conversion that was a no-op wearing the look of a success.
+    BUILDING_SUFFIX, HOUR_KEY, PartitionExistsError, append_partition,
+    compute_snapshot_id, floor_to_hour, partitions_by_hour_alone, read_dataset,
 )
 from store.temporal_schema import AVAILABILITY_TIME, SYMBOL
 
-BUILDING_SUFFIX = ".hourly-building"
+# **How many rows the hour buffer may hold before it flushes the largest hour.**
+# Buffering every hour until the end would make peak memory the whole dataset,
+# on a box with 29 GB, no swap, and eight OOM kills recorded in one week. Two
+# million rows of funding is on the order of a few hundred MB in pandas, which
+# is a cost this machine can carry while a bot is trading on it.
+#
+# Exceeding it costs an extra part in one hour, not correctness: still one part
+# per FLUSH rather than one per symbol, which is the fan-out being removed. A
+# dataset that fits under the cap gets exactly one part per hour.
+MAX_BUFFERED_ROWS = 2_000_000
+
 LEGACY_SUFFIX = ".legacy-symbol-layout"
 REPORT_PREFIX = "migration-report-"
 # Leading dot on purpose: pyarrow's dataset discovery skips names beginning with
@@ -256,6 +270,47 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str,
         raise MigrationRefused(f"no dataset partitions under {root}")
 
     building = into or f"{dataset}{BUILDING_SUFFIX}"
+    # **A whole-universe dataset is written one part per HOUR, so its rows are
+    # buffered across symbols before anything is written** (SL-17, RL-032).
+    # Migrating symbol-folder-by-symbol-folder would call `append_partition`
+    # once per symbol and produce one part per symbol per hour - 1,271 an hour
+    # for funding, which is exactly the fan-out being removed. The buffer is
+    # flushed per hour, and one hour of funding is 26,015 rows: bounded by the
+    # cadence rather than by the archive.
+    by_hour_alone = partitions_by_hour_alone(building,
+                                             store_root / building)
+    pending: dict[str, list] = {}
+    pending_parts: dict[str, list[Path]] = {}
+    pending_keys: dict[str, list[str]] = {}
+    buffered_rows = 0
+
+    def flush_hour(hour: str) -> int:
+        """Write one hour's buffered rows as a single part, and forget them."""
+        frames = pending.pop(hour, [])
+        parts_in = sorted(set(pending_parts.pop(hour, [])))
+        keys_in = pending_keys.pop(hour, [])
+        if not frames:
+            return 0
+        frame = pd.concat(frames, ignore_index=True)
+        try:
+            written = len(append_partition(store_root, building, frame,
+                                           compute_snapshot_id(parts_in)))
+        except PartitionExistsError:
+            # Content-derived id: the file on disk already holds exactly these
+            # rows, so recording them now is the repair rather than a rewrite.
+            written = 0
+        _record_consumed(store_root, building, keys_in)
+        return written
+
+    def flush_largest_if_over_cap() -> int:
+        """Keep peak memory bounded by writing the biggest hour first."""
+        nonlocal buffered_rows
+        written = 0
+        while buffered_rows > MAX_BUFFERED_ROWS and pending:
+            biggest = max(pending, key=lambda h: sum(len(f) for f in pending[h]))
+            buffered_rows -= sum(len(f) for f in pending[biggest])
+            written += flush_hour(biggest)
+        return written
     consumed = _read_consumed(store_root, building)
     legacy_parts = migrated_parts = legacy_rows = 0
     hours: set[str] = set()
@@ -286,6 +341,19 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str,
         if not fresh:
             continue
         frame = _read_legacy_parts(folder, fresh)
+        newly = [str(part.relative_to(root)) for part in fresh]
+        if by_hour_alone:
+            # Buffered, not written: the flush below turns one hour's rows from
+            # every symbol into the single part this layout exists to produce.
+            for hour, group in frame.groupby(
+                    frame[AVAILABILITY_TIME].map(floor_to_hour)):
+                pending.setdefault(hour, []).append(group)
+                pending_parts.setdefault(hour, []).extend(fresh)
+                pending_keys.setdefault(hour, []).extend(newly)
+                buffered_rows += len(group)
+            consumed |= set(newly)
+            migrated_parts += flush_largest_if_over_cap()
+            continue
         # The snapshot id is derived from the parts that fed it, so the name
         # still answers "which data produced this" after compaction merged them.
         snapshot = compute_snapshot_id(fresh)
@@ -296,7 +364,6 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str,
             # them. The snapshot id is content-derived, so the file already on
             # disk holds exactly these rows; recording it now is the repair.
             pass
-        newly = [str(part.relative_to(root)) for part in fresh]
         consumed |= set(newly)
         _record_consumed(store_root, building, newly)
 
@@ -315,12 +382,32 @@ def migrate_dataset_to_hourly(store_root: Path, dataset: str,
         hours.add(hour)
         expected[(hour, symbol)] = expected.get((hour, symbol), 0) + len(rows)
         key = str(part.relative_to(root))
-        if key not in consumed:
-            _link_into_building(store_root, dataset, building, part)
-            migrated_parts += 1
+        if key in consumed:
+            continue
+        if by_hour_alone:
+            # **These sit at `availability_hour=<H>/symbol=<S>/`, which is still
+            # the per-symbol sub-layout.** Hard-linking them unchanged would put
+            # a `symbol=` directory inside the converted dataset - the mixed
+            # state that raises ArrowTypeError on every read - so they are
+            # rewritten with the rest rather than carried across.
+            rows_with_symbol = rows.copy()
+            rows_with_symbol[SYMBOL] = symbol
+            pending.setdefault(hour, []).append(rows_with_symbol)
+            pending_parts.setdefault(hour, []).append(part)
+            pending_keys.setdefault(hour, []).append(key)
+            buffered_rows += len(rows_with_symbol)
             consumed.add(key)
-            linked.append(key)
+            migrated_parts += flush_largest_if_over_cap()
+            continue
+        _link_into_building(store_root, dataset, building, part)
+        migrated_parts += 1
+        consumed.add(key)
+        linked.append(key)
     _record_consumed(store_root, building, linked)
+
+    # One part per hour, from every symbol that contributed to it.
+    for hour in sorted(pending):
+        migrated_parts += flush_hour(hour)
 
     report = _verify(store_root, dataset, building, legacy_parts, migrated_parts,
                      legacy_rows, len(folders), len(hours), expected, legacy_columns,
