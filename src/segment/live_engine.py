@@ -61,6 +61,7 @@ from pathlib import Path
 from live import universe_discovery
 from live.live_feed import LIVE, NEVER_DELIVERED, QUIET
 from segment.arbiter import ABSTAIN, select
+from segment.capital_accounting import DOLLAR_QUOTES, quote_currency
 from segment.bot_registry import all_segments, segment_bot
 from segment.brain import BrainOutputs
 from segment.live_features import LiveFeatureFrames
@@ -194,6 +195,33 @@ class LiveSegmentEngine:
                 "evidence": {"count": len(recovered),
                              "symbols": [k[1] for k in recovered]}}, now_ns)
         return len(recovered)
+
+
+    def _usd_conversion(self, frame, symbol: str, venue: str) -> dict:
+        """The rate this instrument's price converts to USDT at, journalled (RL-029).
+
+        Deribit quotes an option in BTC or ETH, so a premium of 0.1135 is not
+        eleven cents - it is 0.1135 of the underlying. Summing that into a USDT
+        total unconverted is a unit error that reads as a result.
+
+        The rate is taken from the frame the fill was decided on, so it is the
+        price the bot actually saw rather than one looked up afterwards, and it
+        is written onto the fill so any converted figure can be audited back to
+        it. When no rate is available the fill says so and the accounting reports
+        it as unconvertible - it is never converted at a rate nobody recorded.
+        """
+        currency = quote_currency(venue, symbol)
+        if currency in DOLLAR_QUOTES:
+            return {"quote_currency": currency, "usd_rate": "1",
+                    "rate_source": "quoted in dollars"}
+        underlying = (frame or {}).get("venue_underlying_price")
+        if underlying is None:
+            underlying = (frame or {}).get("underlying_price")
+        if underlying is None:
+            return {"quote_currency": currency, "usd_rate": None,
+                    "rate_source": "no rate available at the fill"}
+        return {"quote_currency": currency, "usd_rate": str(underlying),
+                "rate_source": "venue underlying price on the deciding frame"}
 
     def _heartbeat(self, now_ns: int, note: str) -> None:
         directory = self.root / self.bot.segment
@@ -403,6 +431,10 @@ class LiveSegmentEngine:
             "at_ns": now_ns, "segment": self.bot.segment, "venue": venue,
             "symbol": symbol, "event": "OPEN", "side": side,
             "quantity": str(quantity), "price": str(price),
+            # BF-11: what this position actually costs, in the instrument's own
+            # currency, with the rate that turns it into USDT.
+            "notional": str(quantity * price),
+            **self._usd_conversion(frame, symbol, venue),
             "hard_stop": str(hard_stop),
             "stop_fraction": str(stop_fraction),
             "stop_fraction_declared": str(declared),
@@ -448,9 +480,9 @@ class LiveSegmentEngine:
                 continue
 
             if directive.action == CLOSE:
-                self._close(position, mark, directive, now_ns)
+                self._close(position, mark, directive, now_ns, frame)
 
-    def _close(self, position, mark, directive, now_ns: int) -> None:
+    def _close(self, position, mark, directive, now_ns: int, frame=None) -> None:
         gross = ((mark - position.entry_price) * position.quantity
                  if position.side == "LONG"
                  else (position.entry_price - mark) * position.quantity)
@@ -471,6 +503,10 @@ class LiveSegmentEngine:
             "quantity": str(position.quantity), "price": str(mark),
             "entry_price": str(position.entry_price),
             "gross_pnl": str(gross), "band": position.band,
+            # The rate at the CLOSE, not the one recorded at the open: a P&L
+            # realised today converts at today's price, and carrying both lets a
+            # reader see when the two disagreed (RL-029).
+            **self._usd_conversion(frame, position.symbol, position.venue),
             "held_ns": now_ns - position.entry_ns,
             "close_reason": directive.reason,
             "closed_by": self.bot.profit_tail.name,

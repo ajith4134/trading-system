@@ -120,8 +120,20 @@ def read_segment(segment: str, state_root: Path, now_ns: int) -> dict:
         else:
             status = LIVE
 
+    # BF-11: the capital this bot used and what it made on it, in USDT. Read from
+    # the same fill journals as everything else on the tile, so the two can never
+    # disagree about what happened.
+    # Read from the declaration, NOT by building the bot: building one performs
+    # live venue discovery, and a board that hits four exchanges to read a
+    # constant is a board that stops rendering when a venue is slow.
+    from segment.capital_accounting import bankroll_of
+    from segment.capital_accounting import account_for_fills
+    capital = account_for_fills(fills, segment=segment,
+                                bankroll_usdt=bankroll_of(segment))
+
     return {
         "segment": segment,
+        "capital": capital,
         "status": status,
         "heartbeat": heartbeat,
         "heartbeat_age_ns": age_ns,
@@ -148,6 +160,48 @@ def _fmt_age(age_ns) -> str:
     if seconds < 5400:
         return f"{seconds / 60:.0f}m ago"
     return f"{seconds / 3600:.1f}h ago"
+
+
+def _pct(value) -> str:
+    """A percentage, or NOT MEASURED. A bot that closed nothing has not made 0%."""
+    if value is None:
+        return "<span class='thin'>NOT MEASURED</span>"
+    klass = "up" if value > 0 else "down" if value < 0 else "flat"
+    return f"<span class='{klass}'>{value:+.2f}%</span>"
+
+
+def _capital_block(report) -> str:
+    """BF-12 / RL-028: three denominators side by side, or none of them.
+
+    The user asked for the USDT profit or loss against the capital used, and
+    chose all three ways of counting capital rather than one. They differ by
+    orders of magnitude on the same trades - on the perp bot's 2,847 closes, 158
+    USDT was ever at risk while 705 USDT was turned over - so publishing one
+    alone would be publishing whichever flatters.
+    """
+    if report is None:
+        return ("<p class='meta'>capital · <span class='thin'>NOT MEASURED — the "
+                "fill journal could not be read</span></p>")
+    unconvertible = ""
+    if report.unconvertible_fills:
+        # RL-029: named, never converted at a rate nobody recorded, and never
+        # dropped - a dropped fill makes the P&L smaller and the board tidier.
+        unconvertible = (
+            f" · <span class='warnt'>{report.unconvertible_fills} fill(s) "
+            f"unconvertible ({html.escape(', '.join(report.unconvertible_currencies))}) "
+            f"— excluded from every figure here</span>")
+    return f"""
+      <div class="numbers capital">
+        <div><span class="n">{float(report.peak_at_risk_usdt):,.2f}</span><span class="l">peak at risk USDT</span></div>
+        <div><span class="n">{float(report.open_now_usdt):,.2f}</span><span class="l">open now USDT</span></div>
+        <div><span class="n">{float(report.turnover_usdt):,.2f}</span><span class="l">turnover USDT</span></div>
+        <div><span class="n">{float(report.realised_pnl_usdt):+,.4f}</span><span class="l">realised USDT</span></div>
+        <div><span class="n">{float(report.equity_usdt):,.2f}</span><span class="l">equity of {float(report.bankroll_usdt):,.0f}</span></div>
+      </div>
+      <p class="meta">return on · peak {_pct(report.return_on_peak_pct)}
+        · turnover {_pct(report.return_on_turnover_pct)}
+        · bankroll {_pct(report.return_on_bankroll_pct)}
+        · <span class='thin'>{html.escape(report.basis)}</span>{unconvertible}</p>"""
 
 
 def _tile(measured: dict) -> str:
@@ -260,6 +314,7 @@ def _tile(measured: dict) -> str:
         ratchets {counts.get('ratchets', 0)} ·
         frames refused {counts.get('frames_refused', 0)}</p>
       {live_row}
+      {_capital_block(measured.get("capital"))}
       {table}
     </section>"""
 
@@ -278,6 +333,9 @@ h1 { font-size:20px; margin:0 0 4px; }
 .tile { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px;
         overflow-x:auto; }
 .tile.live { border-left:4px solid var(--up); }
+.numbers.capital { border-top:1px dashed var(--line); padding-top:10px; margin-top:6px; }
+.warnt { color:var(--warn); }
+.flat { color:var(--dim); }
 .tile.stale { border-left:4px solid var(--warn); }
 .tile.off { border-left:4px solid var(--dim); }
 .tile.unmeasured { border-left:4px solid var(--dim); background:#12161c; }

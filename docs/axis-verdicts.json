@@ -1240,7 +1240,16 @@
         "scripts/segment_bot_supervisor.sh"
       ]
     },
-    "segment.live_features": {
+    "segment.capital_accounting": {
+   "learning": "n/a: it accounts, it does not fit. Every figure is a sum over journalled fills and the only judgement in the module is which fills it is allowed to count",
+   "reasoning": "pass: it distinguishes three denominators that answer different questions and refuses to let one stand for another, and it separates a fill it cannot convert from a fill worth nothing - a BTC premium with no rate is reported unconvertible rather than summed into a USDT total, which is a five-order-of-magnitude error that reads as a result. An inverse contract is excluded by name because its P&L is not linear in its price",
+   "depth": "pass: changes what is shown when wrong. A bot that has closed nothing returns None for every ratio and the tile renders NOT MEASURED rather than 0.0%, and unconvertible fills are counted onto the face of the tile rather than dropped - dropping them would make P&L smaller and the board tidier, which is the wrong direction to be wrong in",
+   "evidence": [
+    "tests/test_capital_accounting.py",
+    "src/segment/capital_accounting.py"
+   ]
+  },
+  "segment.live_features": {
       "learning": "fail: fixed feature definitions over a fixed window. Nothing here adapts, and a trained brain consuming these will be doing the learning",
       "reasoning": "pass: a missing or stale input produces a refusal naming what was missing rather than a default, and only observations INSIDE the time window count so a symbol that stopped quoting cannot produce a momentum from old points. Measured 2026-08-18: an observation-counted window spanned 0.1s on a websocket and would have spanned 10 minutes on a 10s REST poll - the window is now time, and both the span and the bound are published on every frame so a threshold can never be read against a window it was not stated for",
       "depth": "pass: every decision of all four bots reads a frame from here. The first live run abstained 81 of 81 times with momentum exactly 0.0, which is what surfaced the window bug - a feature module that could not be wrong in a visible way would not have shown it",

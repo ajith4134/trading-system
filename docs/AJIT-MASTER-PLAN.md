@@ -534,6 +534,54 @@ absolutely.
 > whole supervisor exists to prevent, and only a probe measuring the board's own age
 > could see it.**
 
+### BF-11
+  slice:      bot-framework
+  does:       account, in USDT, for the capital each bot used and the profit or loss it made
+              on it - peak at risk, turnover, and equity against a declared bankroll
+  satisfies:  RL-028 RL-029 RL-005 RL-012
+  sources:    docs/rulings.json#RL-028
+  depends on: BF-06
+  probe:      probe_capital_and_pnl_reported
+  accepts:    every bot reports all three denominators or none of them, a fill priced in a
+              currency other than USDT is converted at a rate journalled with that fill or
+              is reported as unconvertible rather than converted at an unrecorded rate, and
+              no return is published without the capital base it was computed against
+  state:      measured by probe_capital_and_pnl_reported
+
+> **Why three numbers rather than one, in the user's own decision (RL-028).** "Return" has
+> no meaning until the denominator is named, and the three available denominators differ by
+> orders of magnitude on the same trades: **peak concurrent notional** answers what the bot
+> needed, **cumulative turnover** answers what it traded through, and **equity against a
+> declared bankroll** answers what an account holder would have seen. A tile publishing one
+> of them alone is publishing whichever flatters. So the row's acceptance is all three or
+> none.
+>
+> **The unit trap this row exists to avoid (RL-029).** Deribit options are quoted in BTC.
+> Three of the four bots are already in USDT and summing the fourth into a total without
+> conversion is a unit error that reads as a result - the same shape as the $837 loss in
+> `DECISIONS.md`, where one number was credited to 36 features. The conversion rate is
+> journalled ON THE FILL, so every converted figure can be audited back to the price it was
+> converted at, and a fill that carries no rate is reported as unconvertible rather than
+> converted at a rate nobody saw.
+>
+> **The bankroll is DECLARED, not inferred.** A bot's bankroll is part of its declaration in
+> `segment/bot_registry.py`, like its venue and its brains, because inferring it from the
+> largest position the bot happened to take would make the denominator move with the
+> numerator - a return that rises when the bot gets luckier about sizing.
+
+### BF-12
+  slice:      bot-framework
+  does:       show each bot's capital and P&L on the wall, in USDT, with the conversion rate
+              and its age where one was used
+  satisfies:  RL-028 RL-029 RL-012 RL-008
+  sources:    docs/rulings.json#RL-028
+  depends on: BF-11 BF-08
+  probe:      probe_capital_and_pnl_reported
+  accepts:    the tile carries peak at risk, turnover and equity against bankroll, a bot with
+              no closed trade reads NOT MEASURED rather than 0.0%, and a converted figure
+              names the rate it was converted at
+  state:      measured by probe_capital_and_pnl_reported
+
 > **The modules these rows build.** Named here so the row and the file cannot drift apart, and so
 > `require-plan-row.sh` admits them:
 >
@@ -549,6 +597,8 @@ absolutely.
 > | BF-08 | `statuswall/segment_tiles.py` |
 > | BF-09 | `live/universe_discovery.py` |
 > | BF-10 | `statuswall/segment_probes.py` |
+> | BF-11 | `segment/capital_accounting.py` |
+> | BF-12 | `statuswall/segment_tiles.py` (the capital block) |
 > | SB-01 | `spot/tradable_universe.py` |
 > | SB-02 | `spot/segment_brains.py` |
 > | DB-01 | `dated/tradable_universe.py` |

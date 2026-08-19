@@ -1067,6 +1067,52 @@ def probe_profit_tail_is_learned() -> ProbeResult:
                      str(STATE_ROOT / "<segment>" / "heartbeat.json"))
 
 
+def probe_capital_and_pnl_reported() -> ProbeResult:
+    """BF-11 / BF-12 / RL-028 / RL-029: capital used and P&L made, in USDT.
+
+    All three denominators or none: a return quoted against an unnamed capital
+    base is a number chosen to flatter, and on the same trades peak-at-risk,
+    turnover and bankroll differ by orders of magnitude.
+
+    Unconvertible fills are counted and named rather than dropped (RL-029). A
+    bot whose fills are ALL unconvertible reports that, because a zero P&L from
+    nothing counted looks exactly like a zero P&L from a flat bot.
+    """
+    from segment.capital_accounting import account_for_fills, bankroll_of
+
+    met, missing = [], {}
+    lines = []
+    for segment in SEGMENTS:
+        fills = []
+        for path in journal_paths(segment, "fills"):
+            fills.extend(tail_rows(path, rows=200_000, max_bytes=64_000_000))
+        if not fills:
+            missing[segment] = "no fills journalled"
+            continue
+        report = account_for_fills(fills, segment=segment,
+                                   bankroll_usdt=bankroll_of(segment))
+        lines.append(f"{segment} peak {float(report.peak_at_risk_usdt):,.0f} / "
+                     f"turnover {float(report.turnover_usdt):,.0f} / "
+                     f"P&L {float(report.realised_pnl_usdt):+,.2f} USDT")
+        if report.converted_fills == 0:
+            missing[segment] = (f"all {report.unconvertible_fills} fills "
+                                f"unconvertible ({', '.join(report.unconvertible_currencies)})")
+            continue
+        if report.closes == 0:
+            missing[segment] = "has opened but closed nothing, so no return exists yet"
+            continue
+        met.append(segment)
+
+    page, _, path = _board_fresh("segment-bots.html")
+    if page is not None and "peak at risk USDT" not in page:
+        return ProbeResult(DEGRADED,
+                           "the accounting exists and the wall does not render it",
+                           str(path))
+    return _fraction(met, missing,
+                     "bots reporting capital and P&L in USDT (" + " · ".join(lines) + ")",
+                     str(STATE_ROOT / "<segment>" / "fills-*.ndjson"))
+
+
 def probe_champion_reload_current() -> ProbeResult:
     """LB-09: the bot decides from the champion registered NOW, not at its start.
 
@@ -1304,6 +1350,7 @@ SEGMENT_PROBES = {
     "probe_beliefs_carry_provenance": probe_beliefs_carry_provenance,
     "probe_calibration_updates_live": probe_calibration_updates_live,
     "probe_profit_tail_is_learned": probe_profit_tail_is_learned,
+    "probe_capital_and_pnl_reported": probe_capital_and_pnl_reported,
     "probe_champion_reload_current": probe_champion_reload_current,
     "probe_axis_tests_run": probe_axis_tests_run,
     "probe_retrainer_running": probe_retrainer_running,

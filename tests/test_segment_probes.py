@@ -490,3 +490,54 @@ def test_a_bear_carrying_the_bulls_own_evidence_is_a_negation(live_root):
 
     assert result.state == DEGRADED
     assert "negation" in result.detail
+
+
+# --- BF-11 / BF-12: capital and P&L, in USDT -------------------------------
+
+def _usdt_fill(event, price="100", qty="1", at_ns=1, **extra):
+    row = {"at_ns": at_ns, "event": event, "venue": "binance-futures",
+           "symbol": "BTCUSDT", "quantity": qty, "price": price, "band": "fast",
+           "hard_stop": "1", "entry_timing": "IMMEDIATE_ENTRY_BASELINE"}
+    if event == "CLOSE":
+        row["gross_pnl"] = extra.pop("pnl", "5")
+    row.update(extra)
+    return row
+
+
+def test_a_bot_that_has_closed_a_trade_reports_its_capital_and_pnl(live_root):
+    for segment in probes.SEGMENTS:
+        _write_rows(live_root / segment / "fills-2026-08-19.ndjson",
+                    [_usdt_fill("OPEN", at_ns=1), _usdt_fill("CLOSE", at_ns=2)])
+
+    result = probes.probe_capital_and_pnl_reported()
+
+    assert result.state == OK
+    assert "peak" in result.detail and "turnover" in result.detail
+    assert "USDT" in result.detail
+
+
+def test_a_bot_whose_fills_are_all_unconvertible_says_so_rather_than_reporting_zero(
+        live_root):
+    """A zero P&L from nothing counted looks exactly like a zero P&L from a flat
+    bot, and RL-029 is what separates them."""
+    for segment in probes.SEGMENTS:
+        _write_rows(live_root / segment / "fills-2026-08-19.ndjson",
+                    [{"at_ns": 1, "event": "OPEN", "venue": "deribit",
+                      "symbol": "BTC-26MAR27-68000-C", "quantity": "0.1",
+                      "price": "0.1135"}])
+
+    result = probes.probe_capital_and_pnl_reported()
+
+    assert result.state == NOT_MEASURED
+    assert "unconvertible" in result.detail
+
+
+def test_a_bot_that_has_opened_but_closed_nothing_has_no_return_yet(live_root):
+    for segment in probes.SEGMENTS:
+        _write_rows(live_root / segment / "fills-2026-08-19.ndjson",
+                    [_usdt_fill("OPEN", at_ns=1)])
+
+    result = probes.probe_capital_and_pnl_reported()
+
+    assert result.state == NOT_MEASURED
+    assert "closed nothing" in result.detail

@@ -41,6 +41,7 @@ from pathlib import Path
 
 from dated import segment_brains as dated_brains
 from learn import learned_brains
+from segment.capital_accounting import SEGMENT_BANKROLLS_USDT, bankroll_of  # noqa: F401
 from learn.online_calibration import OnlineCalibration
 from dated import tradable_universe as dated_universe
 from live import live_feed, universe_discovery
@@ -124,6 +125,23 @@ class SegmentBot:
     # the position is marked at the other side, and the round trip was already past a
     # 1% stop before the market moved at all. Every trade stopped out on the spread.
     hard_stop_fraction: Decimal = Decimal("0.010")
+    # **The bankroll this bot is measured against, in USDT (BF-11, RL-028).**
+    #
+    # DECLARED, never inferred. Inferring it from the largest position the bot
+    # happened to take would make the denominator move with the numerator - a
+    # return that improves when the bot gets luckier about sizing - and the user
+    # asked for equity against a real account's view alongside peak-at-risk and
+    # turnover precisely because those three answer different questions.
+    #
+    # The VALUE lives in `segment.capital_accounting`, which a board can import
+    # without pulling in the model registry, the feeds and the universes - that
+    # import cost the segment wall 32 seconds before it rendered a tile. This
+    # reads it from there so there is exactly one number.
+    #
+    # It is a measurement base, not a limit: the risk gate owns limits and does
+    # not read this.
+    bankroll_usdt: Decimal = field(
+        default_factory=lambda: SEGMENT_BANKROLLS_USDT["perp"])
     # How many positions this bot may hold at once.
     #
     # **It was 8, hardcoded in the engine, and 8 is a limit for a 13-symbol universe.**
