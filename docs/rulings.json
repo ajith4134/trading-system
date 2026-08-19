@@ -422,6 +422,21 @@
     "docs/AJIT-MASTER-PLAN.md"
    ],
    "probe": "probe_champion_reload_current"
+  },
+  {
+   "id": "RL-031",
+   "date": "2026-08-19",
+   "session": "5a148238",
+   "source": "interview",
+   "verbatim": "[interview answer] A row in a segment slice covers that segment's three brains",
+   "clarified_as": "Per-brain coverage is counted by attributing a row to the brains of the segment slice it sits in: a row in spot-bot counts for spot-bot/BULL, spot-bot/BEAR and spot-bot/PROFIT-TAIL together. A row in a shared or cross-cutting slice attributes to no brain, because a capability built once is not thereby delivered to four bots.",
+   "means": "The arithmetic had a denominator of twelve brains and a numerator that counted slice keys, and a slice key can never equal a brain name - so all nine per-brain rulings read 0/12 and always would have, including RL-026 and RL-030. A fraction that can only be zero is not a measurement. Attribution follows how the bots are actually built: a capability lands in a segment bot and its three brains receive it at once. A shared slice still counting for all four is the very failure the scope arithmetic exists to catch.",
+   "scope": "system",
+   "recorded_in": [
+    "docs/rulings.json",
+    "docs/AJIT-MASTER-PLAN.md"
+   ],
+   "probe": "probe_scope_arithmetic"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."

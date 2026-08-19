@@ -54,6 +54,31 @@ def _keys_claiming(subject: str, slices: list[PlanSlice]) -> set[str]:
             if subject in row.satisfies}
 
 
+def _brains_of(slice_keys: set[str]) -> set[str]:
+    """The brains a set of slice keys accounts for (RL-031, 2026-08-19).
+
+    A row in a SEGMENT slice covers that segment's three brains together,
+    because that is how the bots are actually built: a capability lands in a
+    segment bot and BULL, BEAR and PROFIT-TAIL receive it at once. Rows do not
+    name a brain, and requiring them to would make it a ninth mandatory field on
+    every row that satisfies a per-brain ruling.
+
+    **A shared or cross-cutting slice accounts for NO brain**, and that is the
+    doctrine rather than an omission. A capability built once is not thereby
+    delivered to four bots - letting `bot-framework` or `learned-brains` count
+    for all twelve would reproduce inside the plan the exact failure the scope
+    arithmetic exists to catch.
+
+    Before this, the numerator compared slice keys against brain names directly.
+    A slice key is `spot-bot`, never `spot-bot/BULL`, so the comparison could
+    never match: measured 2026-08-19, all nine per-brain rulings read 0/12 and
+    always would have, RL-026 and RL-030 among them. A fraction that can only be
+    zero is not a measurement.
+    """
+    return {brain for brain in BRAINS
+            if brain.split("/", 1)[0] in slice_keys}
+
+
 def cover_ruling(ruling: Ruling, slices: list[PlanSlice]) -> Coverage:
     """How much of a ruling the plan's rows actually cover, per its scope."""
     claimed = _keys_claiming(ruling.id, slices)
@@ -64,7 +89,8 @@ def cover_ruling(ruling: Ruling, slices: list[PlanSlice]) -> Coverage:
                         len(SEGMENTS) - len(missing), len(SEGMENTS), missing)
 
     if ruling.scope == "per-brain":
-        missing = tuple(b for b in BRAINS if b not in claimed)
+        covered = _brains_of(claimed)
+        missing = tuple(b for b in BRAINS if b not in covered)
         return Coverage(ruling.id, ruling.scope,
                         len(BRAINS) - len(missing), len(BRAINS), missing)
 

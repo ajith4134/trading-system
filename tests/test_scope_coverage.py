@@ -59,12 +59,58 @@ def test_a_per_segment_ruling_in_all_four_slices_is_resolved():
     assert coverage.missing == ()
 
 
-def test_a_per_brain_ruling_at_eleven_of_twelve_is_unresolved_and_names_the_gap():
-    rows = [(f"X-{i}", b) for i, b in enumerate(BRAINS[:-1])]
-    coverage = cover_ruling(_ruling("per-brain"), _slices(*rows))
-    assert (coverage.have, coverage.need) == (11, 12)
+# --- per-brain, under RL-031 -----------------------------------------------
+#
+# **The test that used to stand here keyed its slices BY BRAIN NAME**, and that
+# is a shape the real plan cannot produce: a slice key is `spot-bot` or
+# `learned-brains`, never `spot-bot/BULL`. So the fixture proved an arithmetic
+# that could never run, and underneath it all nine per-brain rulings read 0/12
+# and always would have - RL-026 "make the brains real ai" among them. Measured
+# 2026-08-19 against the real spine.
+#
+# RL-031 settles how a row becomes attributable to a brain: a row in a SEGMENT
+# slice covers that segment's three brains together, because that is how the
+# bots are actually built - a capability lands in a segment bot and BULL, BEAR
+# and PROFIT-TAIL receive it at once.
+
+
+def test_a_row_in_a_segment_slice_covers_that_segments_three_brains():
+    coverage = cover_ruling(_ruling("per-brain"), _slices(("SP-01", "spot-bot")))
+    assert (coverage.have, coverage.need) == (3, 12)
     assert not coverage.resolved
-    assert coverage.missing == (BRAINS[-1],)
+    assert set(coverage.missing) == set(BRAINS) - {
+        "spot-bot/BULL", "spot-bot/BEAR", "spot-bot/PROFIT-TAIL"}
+
+
+def test_a_per_brain_ruling_in_all_four_segment_slices_is_resolved():
+    coverage = cover_ruling(_ruling("per-brain"),
+                            _slices(*[(f"X-{i}", s) for i, s in enumerate(SEGMENTS)]))
+    assert (coverage.have, coverage.need) == (12, 12)
+    assert coverage.resolved
+    assert coverage.missing == ()
+
+
+def test_a_row_in_a_shared_slice_covers_no_brain():
+    """**A capability built once is not thereby delivered to four bots.**
+
+    This is the whole doctrine of the scope arithmetic, and letting a shared
+    slice count for all twelve would reproduce inside the plan the exact failure
+    the plan exists to catch. LB-09 sits in `learned-brains` and satisfies the
+    per-brain RL-030; it must read as covering no brain until rows exist in the
+    segment slices that receive it.
+    """
+    for shared in ("learned-brains", "bot-framework", "slice-0", "slice-5"):
+        coverage = cover_ruling(_ruling("per-brain"), _slices(("X-01", shared)))
+        assert coverage.have == 0, f"{shared} must attribute to no brain"
+        assert set(coverage.missing) == set(BRAINS)
+
+
+def test_three_segments_of_four_reports_nine_of_twelve_and_names_the_missing_bot():
+    rows = [(f"X-{i}", s) for i, s in enumerate(SEGMENTS[:-1])]
+    coverage = cover_ruling(_ruling("per-brain"), _slices(*rows))
+    assert (coverage.have, coverage.need) == (9, 12)
+    assert all(m.startswith(SEGMENTS[-1]) for m in coverage.missing)
+    assert len(coverage.missing) == 3
 
 
 def test_a_shared_ruling_needs_exactly_one_row_anywhere():

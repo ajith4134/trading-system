@@ -222,3 +222,92 @@ def test_the_scan_probe_never_compares_an_exact_count_to_a_lower_bound(tmp_path,
 
     assert result.state == PARTIAL
     assert "lower bound" in result.detail
+
+
+# --- SL-05: a fraction that does not name its gap does not close it ---------
+#
+# SL-05 accepts "a per-segment ruling with rows in three of four slices reports
+# 3/4 and is unresolved, NAMING THE MISSING SEGMENT". It reported the fraction
+# and stopped there, so the board said RL-006 2/4 without ever saying which two
+# bots were short - and a gap nobody names is a gap nobody closes.
+
+def _spine_with(tmp_path: Path, rows: list[tuple[str, str, str]]) -> Path:
+    """A spine holding one row per (id, slice key, satisfied ruling)."""
+    body = ["# AJIT MASTER PLAN", ""]
+    for slice_key in dict.fromkeys(key for _, key, _ in rows):
+        body += [f"## SLICE {slice_key} — {slice_key.upper()}", ""]
+        for row_id, key, satisfies in rows:
+            if key != slice_key:
+                continue
+            body += [
+                f"### {row_id}",
+                f"  slice:      {key}",
+                "  does:       does a thing",
+                f"  satisfies:  {satisfies}",
+                "  sources:    spec.md#1",
+                "  depends on: none",
+                "  probe:      probe_thing",
+                "  accepts:    it works",
+                "  state:      measured by probe_thing",
+                "",
+            ]
+    path = tmp_path / "spine.md"
+    path.write_text("\n".join(body), encoding="utf-8")
+    return path
+
+
+def _register_with(tmp_path: Path, scope: str, rid: str = "RL-006") -> Path:
+    import json
+    path = tmp_path / "rulings.json"
+    path.write_text(json.dumps({"rulings": [{
+        "id": rid, "date": "2026-08-01", "verbatim": "said a thing",
+        "means": "meant a thing", "probe": None, "scope": scope}]}),
+        encoding="utf-8")
+    return path
+
+
+def test_a_per_segment_ruling_short_of_four_names_the_missing_segments(tmp_path):
+    spine = _spine_with(tmp_path, [("SP-01", "spot-bot", "RL-006"),
+                                   ("PE-01", "perp-bot", "RL-006")])
+    result = ruling_conformance.probe_scope_arithmetic(
+        spine=spine, register=_register_with(tmp_path, "per-segment"))
+
+    assert "2/4" in result.detail
+    assert "dated-bot" in result.detail and "options-bot" in result.detail
+    assert "spot-bot" not in result.detail.split("short:")[-1].replace(
+        "spot-bot/", ""), "a covered segment must not be listed as missing"
+
+
+def test_a_per_brain_ruling_names_the_brains_it_is_missing(tmp_path):
+    spine = _spine_with(tmp_path, [("SP-01", "spot-bot", "RL-006")])
+    result = ruling_conformance.probe_scope_arithmetic(
+        spine=spine, register=_register_with(tmp_path, "per-brain"))
+
+    assert "3/12" in result.detail
+    assert "perp-bot/BULL" in result.detail
+
+
+def test_a_fully_covered_register_reads_ok_and_names_nothing_missing(tmp_path):
+    # Row ids follow the spine's own pattern - `[A-Z]{2,3}-\d+`. A fixture that
+    # ignores it parses into slices holding no rows, which reads as a coverage
+    # failure rather than as a malformed test.
+    rows = [(f"{prefix}-0{i}", key, "RL-006")
+            for i, (prefix, key) in enumerate(
+                (("SP", "spot-bot"), ("PE", "perp-bot"),
+                 ("DA", "dated-bot"), ("OP", "options-bot")))]
+    result = ruling_conformance.probe_scope_arithmetic(
+        spine=_spine_with(tmp_path, rows),
+        register=_register_with(tmp_path, "per-segment"))
+
+    assert result.state == OK
+    assert "4/4" in result.detail or "1/1 rulings covered" in result.detail
+
+
+def test_a_shared_ruling_with_no_row_says_so_rather_than_naming_a_subject(tmp_path):
+    """"One row anywhere" has no subject to name, so it carries a sentence."""
+    spine = _spine_with(tmp_path, [("SP-01", "spot-bot", "RL-018")])
+    result = ruling_conformance.probe_scope_arithmetic(
+        spine=spine, register=_register_with(tmp_path, "shared"))
+
+    assert "RL-006 0/1 (no row anywhere)" in result.detail
+    assert "missing no row" not in result.detail

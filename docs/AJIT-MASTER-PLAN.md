@@ -103,13 +103,39 @@ its own plan when slice 1's row inventory is reviewed.
 ### SL-05
   slice:      slice-0
   does:       compute per-scope coverage so partial delivery reads as a fraction
-  satisfies:  RL-021 RL-009 RL-019
+  satisfies:  RL-021 RL-009 RL-019 RL-031
   sources:    2026-08-17-ajit-master-plan-design.md#5. Reconciliation — how the file proves nothing was skipped
   depends on: SL-04
   probe:      probe_scope_arithmetic
   accepts:    a per-segment ruling with rows in three of four slices reports 3/4
               and is unresolved, naming the missing segment
   state:      measured by probe_scope_arithmetic
+
+> **The per-brain numerator could not count, measured 2026-08-19.** The denominator
+> was twelve brains and the numerator compared SLICE KEYS against brain names. A
+> slice key is `spot-bot` or `learned-brains`, never `spot-bot/BULL`, so the
+> comparison could never match: all nine per-brain rulings read 0/12 and always
+> would have — RL-026 "make the brains real ai" and RL-030 among them, the latter
+> reading 0/12 on the day its row was built and its probe measured 2/4 bots live.
+> **A fraction that can only ever be zero is not a measurement**, and it was sitting
+> inside the one row whose whole job is to stop "assigned" meaning "done".
+>
+> **RL-031 settles the attribution.** A row in a SEGMENT slice covers that segment's
+> three brains together, because that is how the bots are actually built — a
+> capability lands in a segment bot and BULL, BEAR and PROFIT-TAIL receive it at
+> once. Rows keep their eight fields; naming a brain per row would have made a ninth
+> mandatory one and sent every existing row back for revision.
+>
+> **A shared or cross-cutting slice attributes to no brain, and that is the doctrine
+> rather than an omission.** A capability built once is not thereby delivered to four
+> bots. Letting `bot-framework` or `learned-brains` count for all twelve would
+> reproduce inside the plan the exact failure the scope arithmetic exists to catch —
+> which is why LB-09, sitting in `learned-brains`, correctly contributes nothing to
+> RL-030's brain coverage until the segment slices carry rows for it.
+>
+> The probe also **names the gap** now rather than only counting it. It reported
+> `RL-006 2/4` without saying which two bots were short, and a gap nobody names is a
+> gap nobody closes.
 
 ### SL-06
   slice:      slice-0

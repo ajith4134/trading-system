@@ -347,6 +347,30 @@ def probe_spine_present(spine: Path = SPINE) -> ProbeResult:
                        str(spine))
 
 
+def _name_gap(missing: tuple[str, ...], most: int = 4) -> str:
+    """Which subjects a ruling is short of, named rather than counted.
+
+    SL-05 accepts a fraction that NAMES the missing segment, and the probe
+    reported `RL-006 2/4` without ever saying which two bots were short. A gap
+    nobody names is a gap nobody closes - the same reason the plan counts
+    distinct slices instead of rows.
+
+    A per-brain ruling can be short of all twelve, so a long tail is counted
+    rather than listed: the first few name the gap, and the remainder says how
+    much more of it there is instead of filling the tile with a list.
+    """
+    if not missing:
+        return "nothing missing"
+    # `shared` and `system` carry a sentence rather than a list of subjects,
+    # because "one row anywhere" has no subject to name.
+    if missing == ("no row anywhere",):
+        return "no row anywhere"
+    if len(missing) <= most:
+        return "missing " + ", ".join(missing)
+    return (f"missing {', '.join(missing[:most])} "
+            f"and {len(missing) - most} more")
+
+
 def probe_scope_arithmetic(spine: Path = SPINE,
                            register: Path = REGISTER) -> ProbeResult:
     """RL-021: coverage must read as a fraction, not as a yes.
@@ -364,7 +388,8 @@ def probe_scope_arithmetic(spine: Path = SPINE,
         return ProbeResult(DEGRADED, f"{failure!r}", str(spine))
     covers = [cover_ruling(r, slices) for r in rulings]
     resolved = sum(1 for c in covers if c.resolved)
-    partial = [f"{c.subject} {c.have}/{c.need}" for c in covers if not c.resolved]
+    partial = [f"{c.subject} {c.have}/{c.need} ({_name_gap(c.missing)})"
+               for c in covers if not c.resolved]
     detail = f"{resolved}/{len(covers)} rulings covered; short: {', '.join(partial[:6])}"
     if resolved == len(covers):
         return ProbeResult(OK, detail, str(spine))
