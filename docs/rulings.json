@@ -1,656 +1,699 @@
 {
- "_what_this_is": "The human rulings register. Every design decision the USER made, in the user's own words, with the date and the session it was said in. A ruling is not a feature and not a plan - it is a thing the user settled that the build is not free to re-derive. Declining a ruling is allowed; forgetting one is not.",
- "_why_it_exists": "Ruling RL-019 was given on 2026-08-17 after the user found that a design they had settled on 2026-08-03 was only 2/22 built. The pattern behind it: rulings were recorded as prose inside whichever document was open at the time, or not at all, so nothing could enumerate them and nothing could measure whether the running system honoured them. Section 3a of the goal document is the counter-example that worked - the ruling was written verbatim the moment it was given.",
- "_how_status_is_decided": "It is NOT decided here. No row carries a status field on purpose. Each row names a probe; statuswall.ruling_conformance runs it and the board renders what it measured. A ruling with probe:null renders NOT MEASURED, never green (Rule 8). Typing a status into this file would be exactly the fiction the board exists to prevent.",
- "_source_note": "Rows sourced 'transcript' were recovered on 2026-08-17 from ~/.claude/projects/**/*.jsonl by reading every user message in the project's history. Verbatim text is reproduced as typed, including typos - it is the user's wording, not a cleaned-up paraphrase, because a paraphrase is how the meaning drifts.",
- "rulings": [
-  {
-   "id": "RL-001",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "tis is new server i need you to makesure to creat some perminet rules wic is followed trou out tis entire process till te end",
-   "means": "A standing rule set binds every session in every directory until the user changes it.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md"
-   ],
-   "probe": "probe_permanent_rules_present"
-  },
-  {
-   "id": "RL-002",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "wen usin aents for online researc readin code,editin code insted of usin te bie modeles wit i token consumption i need you to yse models wic ave similare reselts and bit cost less tokens",
-   "means": "Subagents run on the lightest model that gives comparable results for the task type.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md#rule-1",
-    "~/.claude/skills/model-selection/SKILL.md"
-   ],
-   "probe": null
-  },
-  {
-   "id": "RL-003",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "if something needs installing if tha there are option that required to install domething then say and installe never skip them just because they need installations",
-   "means": "Never drop an option because it needs installing. Name it, install it, verify it.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md#rule-3"
-   ],
-   "probe": null
-  },
-  {
-   "id": "RL-004",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "instead of treating this a simple project or a hobby treat it as we are creating a advanced institutional project with high complexity and production garde code for the complex and advanced feature and like example windows software or other paid advanced ai bots which have thousands to millions of loc instead of tobo simple design which doesn't worked this the quality grade of code I need",
-   "means": "Institutional production-grade code, not a hobby build. Depth over simplicity where the problem is genuinely complex.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
-    "~/research/ADVANCED-INTELLIGENT-CODE.md"
-   ],
-   "probe": "probe_axis_verdicts_present"
-  },
-  {
-   "id": "RL-005",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "afirst paper tradin wit full expiriment wit out any restriction open to all kind of experimenrts and savin te tins tat ets profits and use tem on live tradin or repeatin tem in",
-   "means": "Paper trading is the unrestricted experimentation ground. What earns in paper is what graduates to live. No shadow-mode half-measures.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-paper-execution-engine-design.md"
-   ],
-   "probe": "probe_paper_engine_running"
-  },
-  {
-   "id": "RL-006",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "in crypto we ave sements lie spot ,futures and options and i need a real workin deatiled production rade ai aents two for futures and options put and call and lon and sort a endt tat works and researcs ater informations and find if te price increses like lon or call and oter ai aent wit same features wic does on proce decrese on put and sort and futures and spot ave marins",
-   "means": "The three instrument segments are named by the user: spot, futures, options. Within them, two directional agents - one that only argues up (long/call), one that only argues down (short/put).",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5",
-    "~/research/dual-agent-spec.md"
-   ],
-   "probe": "probe_segments_captured"
-  },
-  {
-   "id": "RL-007",
-   "date": "2026-08-01",
-   "session": "97883161",
-   "source": "transcript",
-   "verbatim": "ok in order wit out skippin",
-   "means": "Work proceeds in the declared order and nothing in it is skipped.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
-   ],
-   "probe": "probe_build_order_current"
-  },
-  {
-   "id": "RL-008",
-   "date": "2026-08-01",
-   "session": "eeb7daf9",
-   "source": "transcript",
-   "verbatim": "new rules on namin t efiles and funtion names relevento its funtions",
-   "means": "Files and functions are named for what they do. A name is a contract.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md#rule-7"
-   ],
-   "probe": null
-  },
-  {
-   "id": "RL-009",
-   "date": "2026-08-02",
-   "session": "0a15b275",
-   "source": "transcript",
-   "verbatim": "instead of picking symbols from its univers and tradings them and skipping the rest when they have potential to make profit instead I need the brain to act as a teacher in a examination hall with all the students of the class like that only top students pass and the teacher tries to help and pass all the students like this brain keeps track of full universe symbols in each segment and the passing criteria is the profit making environment for that symbol as every student has potential to pass every symbol has potential to make profit and the brain waits for that exact setup",
-   "means": "Universe-wide scanning is a property of EACH SEGMENT BOT, not a strategy and not a shared service. Every symbol in that bot's segment is watched continuously on that segment's own data, and the bot waits for each symbol's setup rather than pre-selecting a shortlist. Amended 2026-08-17 by RL-019: the goal document's §5a calls this 'a property of the system' and the user ruled it is a property of each bot. Measured the same day: src/strategy/ holds two modules and neither is an opportunity monitor, so this is 0/4.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a"
-   ],
-   "probe": "probe_universe_breadth"
-  },
-  {
-   "id": "RL-010",
-   "date": "2026-08-02",
-   "session": "0a15b275",
-   "source": "transcript",
-   "verbatim": "I need more features on advanced ai like having real intelligence actual real intelleence not jut a code that follows only instructions, features related to knowledge,features related to its autonomy of its opening browser and searching for data it needs for learning or trading etc finding the pattern in it's knowledge",
-   "means": "Real intelligence, not instruction-following. Autonomous knowledge acquisition, including reaching the internet for what it needs, and finding pattern in what it knows.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
-    "~/research/IDEAS-INTELLIGENCE.md"
-   ],
-   "probe": "probe_intelligence_axes"
-  },
-  {
-   "id": "RL-011",
-   "date": "2026-08-03",
-   "session": "60ca965f",
-   "source": "transcript",
-   "verbatim": "instead of ai or the bot deciding which side or direction to trade after selecting a symbol of any segment I need 2 ai features one ai feature is on increase direction or bet on increase trades like buy or long like that other ai feature is on the decreasing side bets like put or short like that and inter if these being a feature it should be a other bots with it's own deep architecture, data , features etc and the ai feature is profit tail gating this ai also a complete other bot with its dedicated features , data etc deep arctechee and thing of The's three other deep and advanced project bots inside this bot",
-   "means": "BULL, BEAR and PROFIT-TAIL are three independent bots inside the main bot - each with its own data pipeline, its own features, its own deep architecture, its own training and its own validation history. Not three model heads sharing a pipeline.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "~/research/bull-bear-profit-agents-spec.md",
-    "docs/superpowers/plans/2026-08-09-full-build-master-plan.md#D"
-   ],
-   "probe": "probe_three_bots"
-  },
-  {
-   "id": "RL-012",
-   "date": "2026-08-03",
-   "session": "60ca965f",
-   "source": "transcript",
-   "verbatim": "Dash board should be like a tv that shows how every feature is working or behaving so any problems are coloured by me visually",
-   "means": "The dashboard shows how every feature is actually behaving, with problems visible as colour. It is a display of measured state.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md#rule-8"
-   ],
-   "probe": "probe_board_generated"
-  },
-  {
-   "id": "RL-013",
-   "date": "2026-08-08",
-   "session": "bf5a5150",
-   "source": "transcript",
-   "verbatim": "I need the bots to have real intelligence real ai in the code not some hard coded values or instructions I need real intelligence fo read book or articles or research papers to understand what differentiate between the code you write and the real advanced intuition grade code which haves depth and real reasoning and intelligence",
-   "means": "The intelligence standard is judged on three separate axes - learning, reasoning, depth - and each is tested mechanically rather than asserted.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a"
-   ],
-   "probe": "probe_intelligence_axes"
-  },
-  {
-   "id": "RL-014",
-   "date": "2026-08-08",
-   "session": "bf5a5150",
-   "source": "transcript",
-   "verbatim": "insted of picking and selecting few and trying to get a profit trade from them my idea of considering all trades that exist in all segments like in spot we have like 300+ symbols , in futures we have 500+ symbols and same in options the project where we find opportunities or environment where every segments symbol has a opportunity for openings for profit trades so we watch all the symbols in all the segments",
-   "means": "Universe-wide, per segment, at the stated scale: 300+ spot, 500+ futures, and options. Not a shortlist.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a.1"
-   ],
-   "probe": "probe_universe_breadth"
-  },
-  {
-   "id": "RL-015",
-   "date": "2026-08-09",
-   "session": "2545cd0b",
-   "source": "transcript",
-   "verbatim": "I don't want to wait weeks I need the full project complet with all plans , ideas, features , goals all completed and start papper trading after full project is completed",
-   "means": "Everything, then paper. Strict order, paper last.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
-   ],
-   "probe": "probe_build_order_current",
-   "superseded_by": "RL-017"
-  },
-  {
-   "id": "RL-016",
-   "date": "2026-08-09",
-   "session": "a7ca9e36",
-   "source": "transcript",
-   "verbatim": "alyas in tervie me if you need any clarifications insted of askin qutions ans forettin and you assumin",
-   "means": "Ask the question and wait for the answer. An open question must never quietly become an assumption.",
-   "scope": "system",
-   "recorded_in": [
-    "~/.claude/CLAUDE.md#rule-6",
-    "~/.claude/projects/-home-anushadudekula71/memory/interview-instead-of-assuming.md"
-   ],
-   "probe": "probe_memory_reachable"
-  },
-  {
-   "id": "RL-017",
-   "date": "2026-08-15",
-   "session": "224133dd",
-   "source": "transcript",
-   "verbatim": "i need you to keep inmind te new rule tat is implementin te projiect feature by feature so find ow many features or ideas toatl completed and start implementin and ive me das board link and wy te papper tradin still did not started",
-   "means": "Implement feature by feature, and paper trading starts now rather than after everything. This reverses the ordering of RL-015 - recorded as a new ruling rather than an edit, because the master plan is the record of what was decided then.",
-   "scope": "system",
-   "recorded_in": [
-    "~/research/DECISIONS.md#14"
-   ],
-   "probe": "probe_paper_engine_running"
-  },
-  {
-   "id": "RL-018",
-   "date": "2026-08-16",
-   "session": "d9733ff5",
-   "source": "transcript",
-   "verbatim": "our entire trading crypto bot is intraday on all segments spot, futures, options.",
-   "means": "The holding period is intraday on every segment. This removes the latency-immunity property that made funding carry the earnings core by right.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3a"
-   ],
-   "probe": "probe_intraday_data_lag",
-   "history": "Superseded by RL-035 on 2026-08-19 and RESTORED the same day by RL-043, which also named its timeframes as 1m, 5m, 15m, 30m. Binding on all four segments again."
-  },
-  {
-   "id": "RL-019",
-   "date": "2026-08-17",
-   "session": "a5d87c87",
-   "source": "transcript",
-   "verbatim": "each segment are like there own bots with its own architecture, data features etc like this so make sure you do not assume and build different from what we discussed and fixed before",
-   "clarified_as": "Fully separate bots: spot / perpetual futures / dated futures / options each get their own engine process, own feature set, own models, own risk gate, own paper journal, own board tile. They share only the store and the cost engine. Four supervisors, four P&L curves.",
-   "means": "Segment is a bot boundary, not a config flag. This is the same pattern as RL-011 applied to the instrument axis: RL-011 splits by DIRECTION (bull/bear/profit-tail), RL-019 splits by SEGMENT (spot/perp/dated/options). Both axes are real and they compose.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3b"
-   ],
-   "probe": "probe_segment_bots"
-  },
-  {
-   "id": "RL-020",
-   "date": "2026-08-17",
-   "session": "a5d87c87",
-   "source": "transcript",
-   "verbatim": "Yes - keep it on 24/7",
-   "means": "The instance stays up continuously. Crypto never closes and an intraday bot that is off part of the week cannot be honestly judged. The cold-start cost of the paper engine is to be cut so a restart is not a long prime.",
-   "scope": "shared",
-   "recorded_in": [
-    "~/research/DECISIONS.md#15"
-   ],
-   "probe": "probe_uptime_continuous"
-  },
-  {
-   "id": "RL-021",
-   "date": "2026-08-17",
-   "session": "a5d87c87",
-   "source": "transcript",
-   "verbatim": "save in some files make it a auto matic rule or anything that makes you look for all this plans, ideas, etc we discussed and not skipped or assumed",
-   "clarified_as": "All four: a hook that blocks on unrecorded rulings; this rulings file, appended the moment a ruling is given; a conformance probe on the board; and session-start injection of the plan index.",
-   "means": "Remembering the plan is not left to discipline. It is enforced by the hook layer, recorded in a file, measured on a board, and injected into every session.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/rulings.json",
-    "src/statuswall/ruling_conformance.py"
-   ],
-   "probe": "probe_enforcement_live"
-  },
-  {
-   "id": "RL-022",
-   "date": "2026-08-17",
-   "session": "3a4fddd2",
-   "source": "transcript",
-   "verbatim": "lets first fouces on option one and see ow it performes and winrate and profit and add te rest if tis not work out so save te oter 2 options in te ajit plan file so we wont foret revisiyin it",
-   "clarified_as": "The perp/futures bot is built first, end to end. Its edge is DIRECTIONAL SCALPING. Two holding bands are built and compared side by side in paper - seconds-to-minutes and 5-to-60-minutes - and the winrate and profit decide which survives. Market making, mean reversion and funding/basis carry were all selected as wanted, and are recorded as later rows in the perp slice rather than built now.",
-   "means": "One segment, one edge, two horizons, judged on measured winrate and profit before anything else is added. Nothing chosen is dropped - the deferred edges and horizons are written into the plan as rows so they are revisited rather than forgotten.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_spine_parses"
-  },
-  {
-   "id": "RL-023",
-   "date": "2026-08-18",
-   "session": "3c43ae41",
-   "source": "interview",
-   "verbatim": "This is not as in the plans bull/bear/arbiter  it is bull bear and profit tailgating",
-   "clarified_as": "The three bots per brain are BULL, BEAR and PROFIT-TAIL. The arbiter is the SELECTION STEP that consumes all three, not a third brain. PROFIT-TAIL's expectancy and tail estimates are inputs the arbiter consumes, never a veto; PROFIT-TAIL then owns entry timing and the entire position after fill, and can neither reject a selected trade nor refuse to close a loser. The hard stop overrides it absolutely.",
-   "means": "Any segment bot built with two brains and an arbiter is built wrong. Three brains, then selection, then timing, then the gate.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md",
-    "~/research/bull-bear-profit-agents-spec.md"
-   ],
-   "probe": "probe_spine_parses"
-  },
-  {
-   "id": "RL-024",
-   "date": "2026-08-18",
-   "session": "3c43ae41",
-   "source": "interview",
-   "verbatim": "and tink aain sould te paper tradin sould be done on live data on live crypto prices not on old data",
-   "clarified_as": "Paper trading runs against LIVE crypto prices taken from the venue websockets, not against the parquet store. The store is a Layer-1 build that lags hours behind the market and costs a cold multi-minute scan per read; a bot polling it is backtesting on a delay while calling itself paper trading.",
-   "means": "Every segment bot's market data path is a live feed. The store remains the research and training corpus, and is never the trading clock.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_live_feed_fresh"
-  },
-  {
-   "id": "RL-025",
-   "date": "2026-08-18",
-   "session": "3c43ae41",
-   "source": "interview",
-   "verbatim": "[interview answer] Rule brains now, learned later; retire plumbing-momentum as the plan says",
-   "clarified_as": "Each segment bot's BULL, BEAR and PROFIT-TAIL decide from the computed live feature frame by explicit journalled rules, behind the same interface a trained model will later implement. Every decision names the features that produced it. The board labels them RULE BRAIN, NO EDGE CLAIM. plumbing-momentum is retired once a segment bot is journalling fills, its journal archived and marked as making no edge claim.",
-   "means": "Rule brains are scaffolding with an honest label, not the RL-013 intelligence standard. They are replaced, not extended.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_segment_brains_reason"
-  },
-  {
-   "id": "RL-026",
-   "date": "2026-08-18",
-   "session": "3c43ae41",
-   "source": "interview",
-   "verbatim": "now make the brains real ai not rule based",
-   "clarified_as": "The BULL, BEAR and PROFIT-TAIL brains of every segment decide from TRAINED MODELS, not stated thresholds. Every numeric parameter in the decision path traces to a fit() with a logged loss and a dataset reference (§1a L1). Chosen in interview: the model drives paper trading immediately - RL-005 makes paper the place for unrestricted experiment and no capital is at risk - while the promotion gate governs any future real-money step. Learning happens in two labelled places: a supervised retrainer refits from the store on a cadence (scheduled retraining), and the LIVE loop updates its own calibration and conformal abstention threshold from realised outcomes every poll (§1a L2).",
-   "means": "RL-025's rule brains were scaffolding and this is their replacement, not their extension. A brain that cannot name the fit that produced its numbers is not admissible.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_brains_are_learned"
-  },
-  {
-   "id": "RL-027",
-   "date": "2026-08-18",
-   "session": "3c43ae41",
-   "source": "interview",
-   "verbatim": "also lots of futer featues and intelliences learnin will be connectin to tis",
-   "clarified_as": "The learned brain layer is an EXTENSION POINT, not one model wired to one engine. Future intelligence capabilities - the ten §1a.6 orders first, and whatever follows - attach as belief sources and belief critics without modifying the engine, the arbiter or the segment bots. The carrier is a BELIEF: a claim with its provenance, its epistemic class (read / verified / observed, and only observed may size a position) and a half-life after which it expires rather than being silently reused.",
-   "means": "Any capability that cannot be expressed as a belief with provenance, class and expiry does not attach here, and any decision path that reads a raw model output instead of a belief has bypassed the extension point.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_beliefs_carry_provenance"
-  },
-  {
-   "id": "RL-028",
-   "date": "2026-08-19",
-   "session": "d9c4767e",
-   "source": "interview",
-   "verbatim": "also new feature for every sement bots i need te usdt profit or loss for te captal used or ow muc capital orusdt by bot tradin ow muc profit it ot in usdt",
-   "clarified_as": "Every segment bot reports, in USDT, how much capital it used and how much profit or loss it made on it. Asked how capital should be counted the user chose ALL THREE SIDE BY SIDE: PEAK CONCURRENT NOTIONAL (the most USDT at risk at one moment - what the bot needed), CUMULATIVE NOTIONAL TRADED (turnover, the same dollar counted every round trip), and EQUITY AGAINST A DECLARED BANKROLL per bot (a real account's view). No single one of the three is allowed to stand alone as 'return', because each answers a different question and the three differ by orders of magnitude.",
-   "means": "A P&L figure with no capital beside it is not a result, and a return computed against an unstated capital base is a number chosen to flatter. Every tile carries all three denominators or it carries none.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_capital_and_pnl_reported"
-  },
-  {
-   "id": "RL-029",
-   "date": "2026-08-19",
-   "session": "d9c4767e",
-   "source": "interview",
-   "verbatim": "[interview answer] Convert to USDT at the live BTC price, rate journalled per fill",
-   "clarified_as": "Deribit options are quoted in BTC, not USDT. The options bot converts its premiums to USDT at the LIVE BTC mark so all four bots are comparable in one currency, and the rate used is journalled with each fill so any converted figure can be audited back to the price it was converted at.",
-   "means": "A converted number whose rate was not recorded cannot be checked, and mixing a BTC-denominated P&L into a USDT total without conversion is a unit error that looks like a result. A fill with no rate recorded may not be converted at all - it reports as unconvertible rather than being converted at a rate nobody saw.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_capital_and_pnl_reported"
-  },
-  {
-   "id": "RL-030",
-   "date": "2026-08-19",
-   "session": "be72d4ff",
-   "source": "interview",
-   "verbatim": "[interview answer] New entries only; check the alias file every poll and load only when the id changed",
-   "clarified_as": "When a new champion registers while a bot is running, the bot picks it up WITHOUT a restart, and the swap applies to NEW ENTRIES ONLY: a position already open keeps the brains that opened it until it closes. The bot checks the champion alias on every poll - a stat of a small file - and loads a model only when the version id actually changed.",
-   "means": "A trade whose P&L is split across two models is attributable to neither, which is the same failure as crediting one P&L to 36 features. Every fill already carries its brains by name, and this keeps that record true. A bot that only picks up a champion at process start is a bot that never uses most of what the retrainer fits.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_champion_reload_current"
-  },
-  {
-   "id": "RL-031",
-   "date": "2026-08-19",
-   "session": "5a148238",
-   "source": "interview",
-   "verbatim": "[interview answer] A row in a segment slice covers that segment's three brains",
-   "clarified_as": "Per-brain coverage is counted by attributing a row to the brains of the segment slice it sits in: a row in spot-bot counts for spot-bot/BULL, spot-bot/BEAR and spot-bot/PROFIT-TAIL together. A row in a shared or cross-cutting slice attributes to no brain, because a capability built once is not thereby delivered to four bots.",
-   "means": "The arithmetic had a denominator of twelve brains and a numerator that counted slice keys, and a slice key can never equal a brain name - so all nine per-brain rulings read 0/12 and always would have, including RL-026 and RL-030. A fraction that can only be zero is not a measurement. Attribution follows how the bots are actually built: a capability lands in a segment bot and its three brains receive it at once. A shared slice still counting for all four is the very failure the scope arithmetic exists to catch.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_scope_arithmetic"
-  },
-  {
-   "id": "RL-032",
-   "date": "2026-08-19",
-   "session": "5a148238",
-   "source": "interview",
-   "verbatim": "[interview answer] Repartition: one file per hour per venue",
-   "clarified_as": "A whole-universe dataset - funding and the option chain, where every consumer wants all symbols for a window rather than one symbol - is partitioned by availability hour and compacted to ONE PART PER VENUE within that hour, not one per symbol. The symbol moves into the file body, because the path no longer carries it. Datasets that are read per-symbol, bars and book, keep their symbol layout.",
-   "means": "Per-symbol parts of a poll-wide dataset are too small to be worth opening: one sealed funding hour held 1,892 fragments for 26,015 rows and 16.2 MiB - 13.8 rows per file - at 29 ms each, so the whole 850 MB dataset cost 30.6 minutes to read and grew by ~1,021 files an hour. That is what froze the status wall for two days. Column pushdown filters rows; it cannot prune files.",
-   "scope": "shared",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_sealed_hour_compacted"
-  },
-  {
-   "id": "RL-033",
-   "date": "2026-08-19",
-   "session": "5a148238",
-   "source": "interview",
-   "verbatim": "[interview answer] Probes read a bounded window, not the whole archive",
-   "clarified_as": "The status wall's expensive probes are bounded to the newest hours of a dataset rather than materialising the whole archive, and each tile STATES THE WINDOW IT MEASURED. A number whose scope is on its face is a measurement; the same number presented as covering everything is an assertion.",
-   "means": "The wall could not finish a pass at all: it last completed 2026-08-17 13:38 and its probe cache had never been created, because the five expensive probes materialise the whole bars dataset - 208,880 fragments - reaching 7 GB before the kernel killed them. A board that never returns reports nothing, which is worse than a board reporting a bounded number honestly. Hour partitioning is what makes the bound cheap, and bars keeps its per-symbol layout because the bots read it that way.",
-   "scope": "shared",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_wall_pass_completes"
-  },
-  {
-   "id": "RL-034",
-   "date": "2026-08-19",
-   "session": "5a148238",
-   "source": "interview",
-   "verbatim": "[interview answer] Convert bars, and widen the wall window back out",
-   "clarified_as": "Bars is converted to the hour-only layout like funding and the option chain, and once it is, the wall's expensive probes stop needing a tight window: the tiles report over a long window, or the whole record, because the read is cheap rather than because the scope was narrowed.",
-   "means": "The premise of keeping a symbol partition was that some reader prunes by it. Nothing does: `ClockGatedReader` applies `symbols` to the already-materialised frame, and the only pushdown filters in the store are on availability time and the hour. So the symbol level cost bars 208,880 fragments and pruned for nobody. A window that exists because the data is badly laid out is a narrowed claim paying for an avoidable cost; once the layout is fixed the honest answer is also the cheap one.",
-   "scope": "shared",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_wall_pass_completes"
-  },
-  {
-   "id": "RL-035",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "interview",
-   "verbatim": "I need you after reading and understanding all the design and type of trading in this crypto trading project turn them or change them in to a swing trade or now normal crypto trading how professional crypto traders trade with all the other features / [interview answer] Swing default, intraday kept off",
-   "clarified_as": "Swing trading becomes the live configuration of the converted bots. The intraday brains, tails and bands stay in the repository and stay tested, but no supervisor runs them. Reversible by switching the band back, and no double compute is paid meanwhile.",
-   "means": "SUPERSEDES RL-018 for the segments named in RL-036. The holding period is no longer bounded by the trading day, so six things change together and none of them is optional: the data axis moves from 180-second tick windows to 4h/1d bars; the features move from order-flow imbalance and mid momentum to trend structure, ATR, multi-timeframe alignment and a BTC-led regime filter; risk gains overnight gap, multi-day funding cost, ATR-derived sizing, portfolio heat and a correlation cap; exits become structural stop, R-multiple partials and a trail, with the clock stop measured in days; open positions must survive a supervisor restart, which they never had to before; and the learning labels move to a daily triple-barrier horizon with the purge and embargo scaled to match. A larger max_hold_ns alone is not this ruling and does not discharge it.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_swing_band_is_live",
-   "superseded_by": "RL-043",
-   "history": "Shelved rather than declined, hours after it was ruled. Its measurement and its design document stand and are picked up if the intraday numbers do not improve."
-  },
-  {
-   "id": "RL-036",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "interview",
-   "verbatim": "futures and spot botes",
-   "clarified_as": "The perp bot and the spot bot convert to swing. The dated bot and the options bot are not in scope for this change and keep running exactly as they are.",
-   "means": "The denominator for RL-035 is two segment slices, not four. Dated and options are DEFERRED, not declined - dated in particular already records in its own code that its convergence edge acts over weeks and is being clamped to two hours, so it is the strongest candidate for the next conversion and gets a plan row so it is revisited rather than forgotten.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_swing_scope_is_perp_and_spot"
-  },
-  {
-   "id": "RL-037",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "interview",
-   "verbatim": "do all",
-   "clarified_as": "All three history options at once: backfill historical klines, use them for feature research and offline validation, and keep every paper fill priced on live venue data.",
-   "means": "AMENDS RL-024 without breaking it. RL-024 governs FILLS and is untouched - no fill is ever priced off a stored bar. What is added is history as a TRAINING and RESEARCH input: 4h and 1d klines backfilled from the venues' free REST, held in the store, read by label construction, feature design and offline validation only. The reason this is not optional under RL-035 is arithmetic: a live-only record produces roughly one swing label per symbol per week, so a swing edge would take months to become statistically readable and could never be checked before it went live. Any module that reads a stored bar on the decision path is a defect, and integrity must be able to say which side of that line each reader is on.",
-   "scope": "shared",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_no_stored_bar_on_decision_path"
-  },
-  {
-   "id": "RL-038",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "Before you change I have a double why how can I know how much capital is being used fore each trade and first insted of changing let's edits the current system",
-   "clarified_as": "RL-035's swing conversion is done by EDITING the running system in place, not by building a new one beside it. The existing four-segment engine, journal format, capital accounting, risk gate and board are the thing being changed; nothing is rewritten from scratch and nothing is replaced wholesale.",
-   "means": "This is a constraint on METHOD, not on scope. It rules out the shape the swing change naturally wants to take - a parallel swing engine that runs beside the intraday one until it is ready - because that shape ends with two systems, two journals and two boards, and the old one never dies. Every step of the conversion must leave one running system that still passes its probes. Concretely: the brains, the profit tail, the feature window and the sizing are edited in `src/perp/` and `src/spot/`; `src/segment/live_engine.py`, `src/segment/capital_accounting.py` and the board keep their identity and gain fields. A new module is allowed only where no existing module owns the responsibility.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_one_engine_not_two"
-  },
-  {
-   "id": "RL-039",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "Let's foucs on spot and future segment bots and rest turn off",
-   "clarified_as": "The dated bot and the options bot are switched OFF, not merely left out of the swing conversion. Only perp and spot run. Executed 2026-08-19 via the designed per-segment off switch, `~/capture/segment/<segment>/OFF`, so both render as deliberately off rather than as crashed, and capture for bybit and deribit keeps running untouched.",
-   "means": "Sharpens RL-036 from 'not in scope' to 'not running'. It also sharpens RL-022's one-edge-at-a-time discipline onto the segment axis: two bots are judged on measured winrate and profit before any third is restarted. Nothing is deleted - the dated and options brains, tails and universes stay in the repository and stay tested, and removing the OFF file restarts either bot. Two consequences to hold: the four-segment comparison RL-006 asked for is paused, not abandoned; and the dated bot's own recorded tension - a convergence edge acting over weeks clamped to two hours - is now deferred rather than live, which is the honest place for it until the swing horizon it needs actually exists.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_only_perp_and_spot_running"
-  },
-  {
-   "id": "RL-040",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "interview",
-   "verbatim": "I need you to create a edit option on top of the 2 spot and future segment bots of the total papper capital from the total portfolio that the 2 segment bots can use and the min and max capital per trade / [interview answers] A config file the bots re-read live; Shared pool with a per-bot cap; Margin posted",
-   "clarified_as": "One editable JSON file, `~/capture/segment/capital.json`, is the single declaration of how much paper capital the perp and spot bots may use. It holds the portfolio total, the fraction of it either single bot may hold at once, and the minimum and maximum MARGIN per trade. Both bots re-read it live on the poll after its mtime changes - no restart - the same way the model alias file is reloaded under RL-030.",
-   "means": "OVERTURNS the line in `src/segment/capital_accounting.py` that reads *'It is a measurement base, not a limit - the risk gate owns limits and does not read it.'* The declared capital becomes a BUDGET that is actually spent and can actually be exhausted, and the gate now reads it. Three consequences that are not optional. First, the pool is SHARED across two independent OS processes, so headroom must be reserved under a real lock on the pool file, not computed from each bot's own view - two bots reading a stale balance and both opening is how a shared pool silently overshoots. Second, capital per trade means MARGIN POSTED, so with leverage the position notional is a multiple of it and every P&L, drawdown and excursion figure is denominated on the notional while the pool is debited the margin; mixing the two is the unit error this whole ruling exists to prevent. Third, a missing or malformed file must STOP the bots opening rather than fall back to a default - capital silently chosen by a default is capital chosen by nobody.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_capital_declaration_is_enforced"
-  },
-  {
-   "id": "RL-041",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "interview",
-   "verbatim": "And the spot and futures have leverage option s like 5x or 10x or 20x / [interview answer] Both bots, chosen per trade",
-   "clarified_as": "Both the perp bot and the spot bot size positions with leverage, and the multiple is chosen per trade rather than fixed per bot, under a ceiling declared per segment in `capital.json`. Warned at the time that this is the most demanding of the four options and needs a borrow-cost model, per-trade sizing and a liquidation-distance check before it is safe; the user chose it with that stated.",
-   "means": "Leverage does not exist anywhere in the codebase today - zero references to leverage, margin, liquidation or isolated/cross - so this is new construction, not a setting to expose. Three prerequisites are part of this ruling and may not be deferred, because each one is a way for leverage to report a profit that is not real. (1) SPOT BORROW COST: leveraged spot is borrowed money, and not charging interest on it makes the spot bot's returns a free loan that inflates every figure it publishes. (2) LIQUIDATION DISTANCE: at L times leverage an isolated position liquidates on roughly a 1/L adverse move, so a hard stop wider than that is a stop that can never fire - the position dies first. The gate must refuse, or reduce leverage until the stop fits, and name which it did. (3) THE CHOOSING RULE MUST BE DECLARED AND JOURNALLED: the default is volatility-targeted, leverage = target risk over the instrument's realised volatility, clamped to the declared ceiling - NOT confidence-scaled, because the perp and spot brains currently journal `calibrated=False` and scaling leverage by an uncalibrated confidence compounds the miscalibration exactly where it costs most. The rule is named in the config file so it can be changed without a code change.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_leverage_declared_and_bounded"
-  },
-  {
-   "id": "RL-042",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "and a data coloum of peak profit and loss that the trade reach after placed",
-   "clarified_as": "Every trade records the best and the worst it ever got while it was open - maximum favourable excursion and maximum adverse excursion - journalled on CLOSE and shown as columns beside the realised P&L.",
-   "means": "Measured 2026-08-19: `peak_favourable` is declared on `OpenPosition` and copied on ratchet but NEVER ASSIGNED anywhere in the codebase, so it has been `None` for every position that has ever existed, and there is no adverse counterpart at all. A field that looks built and is not is worse than an absent one. Both excursions are tracked on every poll, as a fraction of entry AND in USDT on the position notional, and both are journalled on CLOSE. They must be labelled SAMPLED: the engine polls every six seconds and cannot see the true extreme between polls, so the journalled figure is a lower bound on the real excursion and the sample count is recorded beside it. This is what makes the exit policy auditable - a trade that reached +0.9% before closing at -0.2% is a profit tail that let go, and without these two columns that failure is invisible.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_excursions_journalled_on_close"
-  },
-  {
-   "id": "RL-043",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "2 for now we will continue intrady wit 1m,5m,15m,30m intrady as it is",
-   "clarified_as": "The swing conversion is SHELVED, not built. The perp and spot bots stay intraday, and the intraday timeframes are named for the first time: 1m, 5m, 15m, 30m. Everything else agreed this session - the declared capital budget, the shared pool, per-trade leverage, and the excursion columns - proceeds unchanged, because none of it depended on the horizon.",
-   "means": "REVERSES RL-035 and RESTORES RL-018 to full force on perp and spot. RL-035 is not deleted: its analysis stands and its design document stays, so if the intraday numbers do not improve the conversion is picked up rather than re-derived. Two things follow. First, RL-037's history backfill keeps its justification but changes its target - the intervals that matter are now 1m, 5m, 15m and 30m, and `src/store/bar_backfill.py` today knows only 1m, 5m and 1h, so 15m and 30m are missing. Second, naming four timeframes is itself new: the bots currently see ONE 180-second tick window and have no bar timeframes at all, so 'as it is' describes the horizon, not the feature axis. Which of those two the user meant is the open question recorded against this ruling and must be answered before any feature work starts.",
-   "scope": "per-segment",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_intraday_timeframes_declared"
-  },
-  {
-   "id": "RL-044",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "do all 3",
-   "clarified_as": "All three of the offered steps: gate the champion alias assignment through a real promotion decision, never promote a model that does not beat the incumbent on the same out-of-fold measure, and only then decide what to do with the model perp is currently running.",
-   "means": "MEASURED 2026-08-19: the champion alias is assigned UNCONDITIONALLY by `learn.train_segment_model` line 247. The only check is a binomial test against the majority class; `models.model_registry.assign_alias` reads the incumbent solely to record it as `previous_version_id` and never compares. So the champion is whatever trained LAST, not what is best, and a retrain that produces a worse model silently replaces a better one. The promotion machinery already exists - `validation.promotion_gate`, `validation.promotion_pipeline`, `models.champion_challenger` - and outside their own files the only importer is a statuswall PROBE. Built, tested, and wired to nothing that promotes anything: the exact trap CLAUDE.md names with `tail_specs()`. What it cost, the same day: perp's champion moved 976ee2399a5c -> 9fa37695dae0 at 15:34 with accuracy 0.5486 both times, but the base rate rose from 0.5316 to 0.5363, so the EDGE fell from 1.70 to 1.23 percentage points on 42% fewer out-of-fold rows. The outgoing model had opened 3,352 positions; the incoming one proposed 10 times in 600 polls and selected none. NOTE the check that does NOT discriminate here: effective sample fraction was 0.0022 for the outgoing model and 0.0038 for the incoming one, so a floor on it would have blocked the BETTER model too. Any threshold on effective sample is a separate decision with the power to stop all promotion, and is the user's to set rather than one to invent inside a gate.",
-   "scope": "per-brain",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_champion_promotion_is_gated"
-  },
-  {
-   "id": "RL-045",
-   "date": "2026-08-19",
-   "session": "c05c1e5d",
-   "source": "transcript",
-   "verbatim": "You are forgetting the whole picture we skipped the plan and Jumped straight to implementing papper trading and setment bots now we implement the thing that make these bots intelligent learning research strategies instructions universal opportunity scanner bull and bear and profit tail gating bots inside the segments bots with is own features etc and so on and many more we discussed and skipped now I need to focus on whole picture and see or search how other famous crypto bots papper trading or trading types they use compete to what we did or implemented / [interview answers] Both, reconciliation first; All three research areas as one report; Stop them during the audit",
-   "clarified_as": "Work stops being reactive. Before any more building: one honest reconciliation of everything ruled, planned or discussed against what measurably exists in the code, and one graded research report comparing this system to the named public crypto trading systems on all three axes - paper-trading mechanics, intelligence and learning approach, and overall architecture. The reconciliation comes first and its gap list becomes the build order. All four segment bots are switched off for the duration so nothing moves underneath the audit.",
-   "means": "The user is naming a process failure, not a technical one, and they are right. Every session today ran the loop 'find defect, fix defect, find next defect' - the capital sizing, the champion gate, the uniqueness pooling - all real, all reactive, none of it the plan asking to be built. That is Rule 6 run backwards, and the cost is invisible precisely because the work was useful. What was skipped is named in the ruling itself: real learning, research capability, strategy discovery, the universal opportunity scanner (RL-009, RL-014), bull/bear/profit-tail as three brains inside each segment bot with that bot's own features (RL-011, RL-019, RL-023), and the intelligence standard of the goal document's SS1a. The reconciliation must search `~/research/ledger/` before concluding any capability is absent - 599 of its rows are PRIOR-ART in repositories no plan references, and four capabilities were designed from scratch on 2026-08-08 that the corpus already held.",
-   "scope": "system",
-   "recorded_in": [
-    "docs/rulings.json",
-    "docs/AJIT-MASTER-PLAN.md"
-   ],
-   "probe": "probe_reconciliation_is_current"
-  }
- ],
- "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
+  "_what_this_is": "The human rulings register. Every design decision the USER made, in the user's own words, with the date and the session it was said in. A ruling is not a feature and not a plan - it is a thing the user settled that the build is not free to re-derive. Declining a ruling is allowed; forgetting one is not.",
+  "_why_it_exists": "Ruling RL-019 was given on 2026-08-17 after the user found that a design they had settled on 2026-08-03 was only 2/22 built. The pattern behind it: rulings were recorded as prose inside whichever document was open at the time, or not at all, so nothing could enumerate them and nothing could measure whether the running system honoured them. Section 3a of the goal document is the counter-example that worked - the ruling was written verbatim the moment it was given.",
+  "_how_status_is_decided": "It is NOT decided here. No row carries a status field on purpose. Each row names a probe; statuswall.ruling_conformance runs it and the board renders what it measured. A ruling with probe:null renders NOT MEASURED, never green (Rule 8). Typing a status into this file would be exactly the fiction the board exists to prevent.",
+  "_source_note": "Rows sourced 'transcript' were recovered on 2026-08-17 from ~/.claude/projects/**/*.jsonl by reading every user message in the project's history. Verbatim text is reproduced as typed, including typos - it is the user's wording, not a cleaned-up paraphrase, because a paraphrase is how the meaning drifts.",
+  "rulings": [
+    {
+      "id": "RL-001",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "tis is new server i need you to makesure to creat some perminet rules wic is followed trou out tis entire process till te end",
+      "means": "A standing rule set binds every session in every directory until the user changes it.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md"
+      ],
+      "probe": "probe_permanent_rules_present"
+    },
+    {
+      "id": "RL-002",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "wen usin aents for online researc readin code,editin code insted of usin te bie modeles wit i token consumption i need you to yse models wic ave similare reselts and bit cost less tokens",
+      "means": "Subagents run on the lightest model that gives comparable results for the task type.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-1",
+        "~/.claude/skills/model-selection/SKILL.md"
+      ],
+      "probe": null
+    },
+    {
+      "id": "RL-003",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "if something needs installing if tha there are option that required to install domething then say and installe never skip them just because they need installations",
+      "means": "Never drop an option because it needs installing. Name it, install it, verify it.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-3"
+      ],
+      "probe": null
+    },
+    {
+      "id": "RL-004",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "instead of treating this a simple project or a hobby treat it as we are creating a advanced institutional project with high complexity and production garde code for the complex and advanced feature and like example windows software or other paid advanced ai bots which have thousands to millions of loc instead of tobo simple design which doesn't worked this the quality grade of code I need",
+      "means": "Institutional production-grade code, not a hobby build. Depth over simplicity where the problem is genuinely complex.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
+        "~/research/ADVANCED-INTELLIGENT-CODE.md"
+      ],
+      "probe": "probe_axis_verdicts_present"
+    },
+    {
+      "id": "RL-005",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "afirst paper tradin wit full expiriment wit out any restriction open to all kind of experimenrts and savin te tins tat ets profits and use tem on live tradin or repeatin tem in",
+      "means": "Paper trading is the unrestricted experimentation ground. What earns in paper is what graduates to live. No shadow-mode half-measures.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-paper-execution-engine-design.md"
+      ],
+      "probe": "probe_paper_engine_running"
+    },
+    {
+      "id": "RL-006",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "in crypto we ave sements lie spot ,futures and options and i need a real workin deatiled production rade ai aents two for futures and options put and call and lon and sort a endt tat works and researcs ater informations and find if te price increses like lon or call and oter ai aent wit same features wic does on proce decrese on put and sort and futures and spot ave marins",
+      "means": "The three instrument segments are named by the user: spot, futures, options. Within them, two directional agents - one that only argues up (long/call), one that only argues down (short/put).",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5",
+        "~/research/dual-agent-spec.md"
+      ],
+      "probe": "probe_segments_captured"
+    },
+    {
+      "id": "RL-007",
+      "date": "2026-08-01",
+      "session": "97883161",
+      "source": "transcript",
+      "verbatim": "ok in order wit out skippin",
+      "means": "Work proceeds in the declared order and nothing in it is skipped.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
+      ],
+      "probe": "probe_build_order_current"
+    },
+    {
+      "id": "RL-008",
+      "date": "2026-08-01",
+      "session": "eeb7daf9",
+      "source": "transcript",
+      "verbatim": "new rules on namin t efiles and funtion names relevento its funtions",
+      "means": "Files and functions are named for what they do. A name is a contract.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-7"
+      ],
+      "probe": null
+    },
+    {
+      "id": "RL-009",
+      "date": "2026-08-02",
+      "session": "0a15b275",
+      "source": "transcript",
+      "verbatim": "instead of picking symbols from its univers and tradings them and skipping the rest when they have potential to make profit instead I need the brain to act as a teacher in a examination hall with all the students of the class like that only top students pass and the teacher tries to help and pass all the students like this brain keeps track of full universe symbols in each segment and the passing criteria is the profit making environment for that symbol as every student has potential to pass every symbol has potential to make profit and the brain waits for that exact setup",
+      "means": "Universe-wide scanning is a property of EACH SEGMENT BOT, not a strategy and not a shared service. Every symbol in that bot's segment is watched continuously on that segment's own data, and the bot waits for each symbol's setup rather than pre-selecting a shortlist. Amended 2026-08-17 by RL-019: the goal document's §5a calls this 'a property of the system' and the user ruled it is a property of each bot. Measured the same day: src/strategy/ holds two modules and neither is an opportunity monitor, so this is 0/4.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a"
+      ],
+      "probe": "probe_universe_breadth"
+    },
+    {
+      "id": "RL-010",
+      "date": "2026-08-02",
+      "session": "0a15b275",
+      "source": "transcript",
+      "verbatim": "I need more features on advanced ai like having real intelligence actual real intelleence not jut a code that follows only instructions, features related to knowledge,features related to its autonomy of its opening browser and searching for data it needs for learning or trading etc finding the pattern in it's knowledge",
+      "means": "Real intelligence, not instruction-following. Autonomous knowledge acquisition, including reaching the internet for what it needs, and finding pattern in what it knows.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a",
+        "~/research/IDEAS-INTELLIGENCE.md"
+      ],
+      "probe": "probe_intelligence_axes"
+    },
+    {
+      "id": "RL-011",
+      "date": "2026-08-03",
+      "session": "60ca965f",
+      "source": "transcript",
+      "verbatim": "instead of ai or the bot deciding which side or direction to trade after selecting a symbol of any segment I need 2 ai features one ai feature is on increase direction or bet on increase trades like buy or long like that other ai feature is on the decreasing side bets like put or short like that and inter if these being a feature it should be a other bots with it's own deep architecture, data , features etc and the ai feature is profit tail gating this ai also a complete other bot with its dedicated features , data etc deep arctechee and thing of The's three other deep and advanced project bots inside this bot",
+      "means": "BULL, BEAR and PROFIT-TAIL are three independent bots inside the main bot - each with its own data pipeline, its own features, its own deep architecture, its own training and its own validation history. Not three model heads sharing a pipeline.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "~/research/bull-bear-profit-agents-spec.md",
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md#D"
+      ],
+      "probe": "probe_three_bots"
+    },
+    {
+      "id": "RL-012",
+      "date": "2026-08-03",
+      "session": "60ca965f",
+      "source": "transcript",
+      "verbatim": "Dash board should be like a tv that shows how every feature is working or behaving so any problems are coloured by me visually",
+      "means": "The dashboard shows how every feature is actually behaving, with problems visible as colour. It is a display of measured state.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-8"
+      ],
+      "probe": "probe_board_generated"
+    },
+    {
+      "id": "RL-013",
+      "date": "2026-08-08",
+      "session": "bf5a5150",
+      "source": "transcript",
+      "verbatim": "I need the bots to have real intelligence real ai in the code not some hard coded values or instructions I need real intelligence fo read book or articles or research papers to understand what differentiate between the code you write and the real advanced intuition grade code which haves depth and real reasoning and intelligence",
+      "means": "The intelligence standard is judged on three separate axes - learning, reasoning, depth - and each is tested mechanically rather than asserted.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#1a"
+      ],
+      "probe": "probe_intelligence_axes"
+    },
+    {
+      "id": "RL-014",
+      "date": "2026-08-08",
+      "session": "bf5a5150",
+      "source": "transcript",
+      "verbatim": "insted of picking and selecting few and trying to get a profit trade from them my idea of considering all trades that exist in all segments like in spot we have like 300+ symbols , in futures we have 500+ symbols and same in options the project where we find opportunities or environment where every segments symbol has a opportunity for openings for profit trades so we watch all the symbols in all the segments",
+      "means": "Universe-wide, per segment, at the stated scale: 300+ spot, 500+ futures, and options. Not a shortlist.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#5a.1"
+      ],
+      "probe": "probe_universe_breadth"
+    },
+    {
+      "id": "RL-015",
+      "date": "2026-08-09",
+      "session": "2545cd0b",
+      "source": "transcript",
+      "verbatim": "I don't want to wait weeks I need the full project complet with all plans , ideas, features , goals all completed and start papper trading after full project is completed",
+      "means": "Everything, then paper. Strict order, paper last.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/superpowers/plans/2026-08-09-full-build-master-plan.md"
+      ],
+      "probe": "probe_build_order_current",
+      "superseded_by": "RL-017"
+    },
+    {
+      "id": "RL-016",
+      "date": "2026-08-09",
+      "session": "a7ca9e36",
+      "source": "transcript",
+      "verbatim": "alyas in tervie me if you need any clarifications insted of askin qutions ans forettin and you assumin",
+      "means": "Ask the question and wait for the answer. An open question must never quietly become an assumption.",
+      "scope": "system",
+      "recorded_in": [
+        "~/.claude/CLAUDE.md#rule-6",
+        "~/.claude/projects/-home-anushadudekula71/memory/interview-instead-of-assuming.md"
+      ],
+      "probe": "probe_memory_reachable"
+    },
+    {
+      "id": "RL-017",
+      "date": "2026-08-15",
+      "session": "224133dd",
+      "source": "transcript",
+      "verbatim": "i need you to keep inmind te new rule tat is implementin te projiect feature by feature so find ow many features or ideas toatl completed and start implementin and ive me das board link and wy te papper tradin still did not started",
+      "means": "Implement feature by feature, and paper trading starts now rather than after everything. This reverses the ordering of RL-015 - recorded as a new ruling rather than an edit, because the master plan is the record of what was decided then.",
+      "scope": "system",
+      "recorded_in": [
+        "~/research/DECISIONS.md#14"
+      ],
+      "probe": "probe_paper_engine_running"
+    },
+    {
+      "id": "RL-018",
+      "date": "2026-08-16",
+      "session": "d9733ff5",
+      "source": "transcript",
+      "verbatim": "our entire trading crypto bot is intraday on all segments spot, futures, options.",
+      "means": "The holding period is intraday on every segment. This removes the latency-immunity property that made funding carry the earnings core by right.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3a"
+      ],
+      "probe": "probe_intraday_data_lag",
+      "history": "Superseded by RL-035 on 2026-08-19 and RESTORED the same day by RL-043, which also named its timeframes as 1m, 5m, 15m, 30m. Binding on all four segments again."
+    },
+    {
+      "id": "RL-019",
+      "date": "2026-08-17",
+      "session": "a5d87c87",
+      "source": "transcript",
+      "verbatim": "each segment are like there own bots with its own architecture, data features etc like this so make sure you do not assume and build different from what we discussed and fixed before",
+      "clarified_as": "Fully separate bots: spot / perpetual futures / dated futures / options each get their own engine process, own feature set, own models, own risk gate, own paper journal, own board tile. They share only the store and the cost engine. Four supervisors, four P&L curves.",
+      "means": "Segment is a bot boundary, not a config flag. This is the same pattern as RL-011 applied to the instrument axis: RL-011 splits by DIRECTION (bull/bear/profit-tail), RL-019 splits by SEGMENT (spot/perp/dated/options). Both axes are real and they compose.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/superpowers/specs/2026-08-08-final-project-goal-design.md#3b"
+      ],
+      "probe": "probe_segment_bots"
+    },
+    {
+      "id": "RL-020",
+      "date": "2026-08-17",
+      "session": "a5d87c87",
+      "source": "transcript",
+      "verbatim": "Yes - keep it on 24/7",
+      "means": "The instance stays up continuously. Crypto never closes and an intraday bot that is off part of the week cannot be honestly judged. The cold-start cost of the paper engine is to be cut so a restart is not a long prime.",
+      "scope": "shared",
+      "recorded_in": [
+        "~/research/DECISIONS.md#15"
+      ],
+      "probe": "probe_uptime_continuous"
+    },
+    {
+      "id": "RL-021",
+      "date": "2026-08-17",
+      "session": "a5d87c87",
+      "source": "transcript",
+      "verbatim": "save in some files make it a auto matic rule or anything that makes you look for all this plans, ideas, etc we discussed and not skipped or assumed",
+      "clarified_as": "All four: a hook that blocks on unrecorded rulings; this rulings file, appended the moment a ruling is given; a conformance probe on the board; and session-start injection of the plan index.",
+      "means": "Remembering the plan is not left to discipline. It is enforced by the hook layer, recorded in a file, measured on a board, and injected into every session.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "src/statuswall/ruling_conformance.py"
+      ],
+      "probe": "probe_enforcement_live"
+    },
+    {
+      "id": "RL-022",
+      "date": "2026-08-17",
+      "session": "3a4fddd2",
+      "source": "transcript",
+      "verbatim": "lets first fouces on option one and see ow it performes and winrate and profit and add te rest if tis not work out so save te oter 2 options in te ajit plan file so we wont foret revisiyin it",
+      "clarified_as": "The perp/futures bot is built first, end to end. Its edge is DIRECTIONAL SCALPING. Two holding bands are built and compared side by side in paper - seconds-to-minutes and 5-to-60-minutes - and the winrate and profit decide which survives. Market making, mean reversion and funding/basis carry were all selected as wanted, and are recorded as later rows in the perp slice rather than built now.",
+      "means": "One segment, one edge, two horizons, judged on measured winrate and profit before anything else is added. Nothing chosen is dropped - the deferred edges and horizons are written into the plan as rows so they are revisited rather than forgotten.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_spine_parses"
+    },
+    {
+      "id": "RL-023",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "This is not as in the plans bull/bear/arbiter  it is bull bear and profit tailgating",
+      "clarified_as": "The three bots per brain are BULL, BEAR and PROFIT-TAIL. The arbiter is the SELECTION STEP that consumes all three, not a third brain. PROFIT-TAIL's expectancy and tail estimates are inputs the arbiter consumes, never a veto; PROFIT-TAIL then owns entry timing and the entire position after fill, and can neither reject a selected trade nor refuse to close a loser. The hard stop overrides it absolutely.",
+      "means": "Any segment bot built with two brains and an arbiter is built wrong. Three brains, then selection, then timing, then the gate.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md",
+        "~/research/bull-bear-profit-agents-spec.md"
+      ],
+      "probe": "probe_spine_parses"
+    },
+    {
+      "id": "RL-024",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "and tink aain sould te paper tradin sould be done on live data on live crypto prices not on old data",
+      "clarified_as": "Paper trading runs against LIVE crypto prices taken from the venue websockets, not against the parquet store. The store is a Layer-1 build that lags hours behind the market and costs a cold multi-minute scan per read; a bot polling it is backtesting on a delay while calling itself paper trading.",
+      "means": "Every segment bot's market data path is a live feed. The store remains the research and training corpus, and is never the trading clock.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_live_feed_fresh"
+    },
+    {
+      "id": "RL-025",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "[interview answer] Rule brains now, learned later; retire plumbing-momentum as the plan says",
+      "clarified_as": "Each segment bot's BULL, BEAR and PROFIT-TAIL decide from the computed live feature frame by explicit journalled rules, behind the same interface a trained model will later implement. Every decision names the features that produced it. The board labels them RULE BRAIN, NO EDGE CLAIM. plumbing-momentum is retired once a segment bot is journalling fills, its journal archived and marked as making no edge claim.",
+      "means": "Rule brains are scaffolding with an honest label, not the RL-013 intelligence standard. They are replaced, not extended.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_segment_brains_reason"
+    },
+    {
+      "id": "RL-026",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "now make the brains real ai not rule based",
+      "clarified_as": "The BULL, BEAR and PROFIT-TAIL brains of every segment decide from TRAINED MODELS, not stated thresholds. Every numeric parameter in the decision path traces to a fit() with a logged loss and a dataset reference (§1a L1). Chosen in interview: the model drives paper trading immediately - RL-005 makes paper the place for unrestricted experiment and no capital is at risk - while the promotion gate governs any future real-money step. Learning happens in two labelled places: a supervised retrainer refits from the store on a cadence (scheduled retraining), and the LIVE loop updates its own calibration and conformal abstention threshold from realised outcomes every poll (§1a L2).",
+      "means": "RL-025's rule brains were scaffolding and this is their replacement, not their extension. A brain that cannot name the fit that produced its numbers is not admissible.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_brains_are_learned"
+    },
+    {
+      "id": "RL-027",
+      "date": "2026-08-18",
+      "session": "3c43ae41",
+      "source": "interview",
+      "verbatim": "also lots of futer featues and intelliences learnin will be connectin to tis",
+      "clarified_as": "The learned brain layer is an EXTENSION POINT, not one model wired to one engine. Future intelligence capabilities - the ten §1a.6 orders first, and whatever follows - attach as belief sources and belief critics without modifying the engine, the arbiter or the segment bots. The carrier is a BELIEF: a claim with its provenance, its epistemic class (read / verified / observed, and only observed may size a position) and a half-life after which it expires rather than being silently reused.",
+      "means": "Any capability that cannot be expressed as a belief with provenance, class and expiry does not attach here, and any decision path that reads a raw model output instead of a belief has bypassed the extension point.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_beliefs_carry_provenance"
+    },
+    {
+      "id": "RL-028",
+      "date": "2026-08-19",
+      "session": "d9c4767e",
+      "source": "interview",
+      "verbatim": "also new feature for every sement bots i need te usdt profit or loss for te captal used or ow muc capital orusdt by bot tradin ow muc profit it ot in usdt",
+      "clarified_as": "Every segment bot reports, in USDT, how much capital it used and how much profit or loss it made on it. Asked how capital should be counted the user chose ALL THREE SIDE BY SIDE: PEAK CONCURRENT NOTIONAL (the most USDT at risk at one moment - what the bot needed), CUMULATIVE NOTIONAL TRADED (turnover, the same dollar counted every round trip), and EQUITY AGAINST A DECLARED BANKROLL per bot (a real account's view). No single one of the three is allowed to stand alone as 'return', because each answers a different question and the three differ by orders of magnitude.",
+      "means": "A P&L figure with no capital beside it is not a result, and a return computed against an unstated capital base is a number chosen to flatter. Every tile carries all three denominators or it carries none.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_capital_and_pnl_reported"
+    },
+    {
+      "id": "RL-029",
+      "date": "2026-08-19",
+      "session": "d9c4767e",
+      "source": "interview",
+      "verbatim": "[interview answer] Convert to USDT at the live BTC price, rate journalled per fill",
+      "clarified_as": "Deribit options are quoted in BTC, not USDT. The options bot converts its premiums to USDT at the LIVE BTC mark so all four bots are comparable in one currency, and the rate used is journalled with each fill so any converted figure can be audited back to the price it was converted at.",
+      "means": "A converted number whose rate was not recorded cannot be checked, and mixing a BTC-denominated P&L into a USDT total without conversion is a unit error that looks like a result. A fill with no rate recorded may not be converted at all - it reports as unconvertible rather than being converted at a rate nobody saw.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_capital_and_pnl_reported"
+    },
+    {
+      "id": "RL-030",
+      "date": "2026-08-19",
+      "session": "be72d4ff",
+      "source": "interview",
+      "verbatim": "[interview answer] New entries only; check the alias file every poll and load only when the id changed",
+      "clarified_as": "When a new champion registers while a bot is running, the bot picks it up WITHOUT a restart, and the swap applies to NEW ENTRIES ONLY: a position already open keeps the brains that opened it until it closes. The bot checks the champion alias on every poll - a stat of a small file - and loads a model only when the version id actually changed.",
+      "means": "A trade whose P&L is split across two models is attributable to neither, which is the same failure as crediting one P&L to 36 features. Every fill already carries its brains by name, and this keeps that record true. A bot that only picks up a champion at process start is a bot that never uses most of what the retrainer fits.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_champion_reload_current"
+    },
+    {
+      "id": "RL-031",
+      "date": "2026-08-19",
+      "session": "5a148238",
+      "source": "interview",
+      "verbatim": "[interview answer] A row in a segment slice covers that segment's three brains",
+      "clarified_as": "Per-brain coverage is counted by attributing a row to the brains of the segment slice it sits in: a row in spot-bot counts for spot-bot/BULL, spot-bot/BEAR and spot-bot/PROFIT-TAIL together. A row in a shared or cross-cutting slice attributes to no brain, because a capability built once is not thereby delivered to four bots.",
+      "means": "The arithmetic had a denominator of twelve brains and a numerator that counted slice keys, and a slice key can never equal a brain name - so all nine per-brain rulings read 0/12 and always would have, including RL-026 and RL-030. A fraction that can only be zero is not a measurement. Attribution follows how the bots are actually built: a capability lands in a segment bot and its three brains receive it at once. A shared slice still counting for all four is the very failure the scope arithmetic exists to catch.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_scope_arithmetic"
+    },
+    {
+      "id": "RL-032",
+      "date": "2026-08-19",
+      "session": "5a148238",
+      "source": "interview",
+      "verbatim": "[interview answer] Repartition: one file per hour per venue",
+      "clarified_as": "A whole-universe dataset - funding and the option chain, where every consumer wants all symbols for a window rather than one symbol - is partitioned by availability hour and compacted to ONE PART PER VENUE within that hour, not one per symbol. The symbol moves into the file body, because the path no longer carries it. Datasets that are read per-symbol, bars and book, keep their symbol layout.",
+      "means": "Per-symbol parts of a poll-wide dataset are too small to be worth opening: one sealed funding hour held 1,892 fragments for 26,015 rows and 16.2 MiB - 13.8 rows per file - at 29 ms each, so the whole 850 MB dataset cost 30.6 minutes to read and grew by ~1,021 files an hour. That is what froze the status wall for two days. Column pushdown filters rows; it cannot prune files.",
+      "scope": "shared",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_sealed_hour_compacted"
+    },
+    {
+      "id": "RL-033",
+      "date": "2026-08-19",
+      "session": "5a148238",
+      "source": "interview",
+      "verbatim": "[interview answer] Probes read a bounded window, not the whole archive",
+      "clarified_as": "The status wall's expensive probes are bounded to the newest hours of a dataset rather than materialising the whole archive, and each tile STATES THE WINDOW IT MEASURED. A number whose scope is on its face is a measurement; the same number presented as covering everything is an assertion.",
+      "means": "The wall could not finish a pass at all: it last completed 2026-08-17 13:38 and its probe cache had never been created, because the five expensive probes materialise the whole bars dataset - 208,880 fragments - reaching 7 GB before the kernel killed them. A board that never returns reports nothing, which is worse than a board reporting a bounded number honestly. Hour partitioning is what makes the bound cheap, and bars keeps its per-symbol layout because the bots read it that way.",
+      "scope": "shared",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_wall_pass_completes"
+    },
+    {
+      "id": "RL-034",
+      "date": "2026-08-19",
+      "session": "5a148238",
+      "source": "interview",
+      "verbatim": "[interview answer] Convert bars, and widen the wall window back out",
+      "clarified_as": "Bars is converted to the hour-only layout like funding and the option chain, and once it is, the wall's expensive probes stop needing a tight window: the tiles report over a long window, or the whole record, because the read is cheap rather than because the scope was narrowed.",
+      "means": "The premise of keeping a symbol partition was that some reader prunes by it. Nothing does: `ClockGatedReader` applies `symbols` to the already-materialised frame, and the only pushdown filters in the store are on availability time and the hour. So the symbol level cost bars 208,880 fragments and pruned for nobody. A window that exists because the data is badly laid out is a narrowed claim paying for an avoidable cost; once the layout is fixed the honest answer is also the cheap one.",
+      "scope": "shared",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_wall_pass_completes"
+    },
+    {
+      "id": "RL-035",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "interview",
+      "verbatim": "I need you after reading and understanding all the design and type of trading in this crypto trading project turn them or change them in to a swing trade or now normal crypto trading how professional crypto traders trade with all the other features / [interview answer] Swing default, intraday kept off",
+      "clarified_as": "Swing trading becomes the live configuration of the converted bots. The intraday brains, tails and bands stay in the repository and stay tested, but no supervisor runs them. Reversible by switching the band back, and no double compute is paid meanwhile.",
+      "means": "SUPERSEDES RL-018 for the segments named in RL-036. The holding period is no longer bounded by the trading day, so six things change together and none of them is optional: the data axis moves from 180-second tick windows to 4h/1d bars; the features move from order-flow imbalance and mid momentum to trend structure, ATR, multi-timeframe alignment and a BTC-led regime filter; risk gains overnight gap, multi-day funding cost, ATR-derived sizing, portfolio heat and a correlation cap; exits become structural stop, R-multiple partials and a trail, with the clock stop measured in days; open positions must survive a supervisor restart, which they never had to before; and the learning labels move to a daily triple-barrier horizon with the purge and embargo scaled to match. A larger max_hold_ns alone is not this ruling and does not discharge it.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_swing_band_is_live",
+      "superseded_by": "RL-043",
+      "history": "Shelved rather than declined, hours after it was ruled. Its measurement and its design document stand and are picked up if the intraday numbers do not improve."
+    },
+    {
+      "id": "RL-036",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "interview",
+      "verbatim": "futures and spot botes",
+      "clarified_as": "The perp bot and the spot bot convert to swing. The dated bot and the options bot are not in scope for this change and keep running exactly as they are.",
+      "means": "The denominator for RL-035 is two segment slices, not four. Dated and options are DEFERRED, not declined - dated in particular already records in its own code that its convergence edge acts over weeks and is being clamped to two hours, so it is the strongest candidate for the next conversion and gets a plan row so it is revisited rather than forgotten.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_swing_scope_is_perp_and_spot"
+    },
+    {
+      "id": "RL-037",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "interview",
+      "verbatim": "do all",
+      "clarified_as": "All three history options at once: backfill historical klines, use them for feature research and offline validation, and keep every paper fill priced on live venue data.",
+      "means": "AMENDS RL-024 without breaking it. RL-024 governs FILLS and is untouched - no fill is ever priced off a stored bar. What is added is history as a TRAINING and RESEARCH input: 4h and 1d klines backfilled from the venues' free REST, held in the store, read by label construction, feature design and offline validation only. The reason this is not optional under RL-035 is arithmetic: a live-only record produces roughly one swing label per symbol per week, so a swing edge would take months to become statistically readable and could never be checked before it went live. Any module that reads a stored bar on the decision path is a defect, and integrity must be able to say which side of that line each reader is on.",
+      "scope": "shared",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_no_stored_bar_on_decision_path"
+    },
+    {
+      "id": "RL-038",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "Before you change I have a double why how can I know how much capital is being used fore each trade and first insted of changing let's edits the current system",
+      "clarified_as": "RL-035's swing conversion is done by EDITING the running system in place, not by building a new one beside it. The existing four-segment engine, journal format, capital accounting, risk gate and board are the thing being changed; nothing is rewritten from scratch and nothing is replaced wholesale.",
+      "means": "This is a constraint on METHOD, not on scope. It rules out the shape the swing change naturally wants to take - a parallel swing engine that runs beside the intraday one until it is ready - because that shape ends with two systems, two journals and two boards, and the old one never dies. Every step of the conversion must leave one running system that still passes its probes. Concretely: the brains, the profit tail, the feature window and the sizing are edited in `src/perp/` and `src/spot/`; `src/segment/live_engine.py`, `src/segment/capital_accounting.py` and the board keep their identity and gain fields. A new module is allowed only where no existing module owns the responsibility.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_one_engine_not_two"
+    },
+    {
+      "id": "RL-039",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "Let's foucs on spot and future segment bots and rest turn off",
+      "clarified_as": "The dated bot and the options bot are switched OFF, not merely left out of the swing conversion. Only perp and spot run. Executed 2026-08-19 via the designed per-segment off switch, `~/capture/segment/<segment>/OFF`, so both render as deliberately off rather than as crashed, and capture for bybit and deribit keeps running untouched.",
+      "means": "Sharpens RL-036 from 'not in scope' to 'not running'. It also sharpens RL-022's one-edge-at-a-time discipline onto the segment axis: two bots are judged on measured winrate and profit before any third is restarted. Nothing is deleted - the dated and options brains, tails and universes stay in the repository and stay tested, and removing the OFF file restarts either bot. Two consequences to hold: the four-segment comparison RL-006 asked for is paused, not abandoned; and the dated bot's own recorded tension - a convergence edge acting over weeks clamped to two hours - is now deferred rather than live, which is the honest place for it until the swing horizon it needs actually exists.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_only_perp_and_spot_running"
+    },
+    {
+      "id": "RL-040",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "interview",
+      "verbatim": "I need you to create a edit option on top of the 2 spot and future segment bots of the total papper capital from the total portfolio that the 2 segment bots can use and the min and max capital per trade / [interview answers] A config file the bots re-read live; Shared pool with a per-bot cap; Margin posted",
+      "clarified_as": "One editable JSON file, `~/capture/segment/capital.json`, is the single declaration of how much paper capital the perp and spot bots may use. It holds the portfolio total, the fraction of it either single bot may hold at once, and the minimum and maximum MARGIN per trade. Both bots re-read it live on the poll after its mtime changes - no restart - the same way the model alias file is reloaded under RL-030.",
+      "means": "OVERTURNS the line in `src/segment/capital_accounting.py` that reads *'It is a measurement base, not a limit - the risk gate owns limits and does not read it.'* The declared capital becomes a BUDGET that is actually spent and can actually be exhausted, and the gate now reads it. Three consequences that are not optional. First, the pool is SHARED across two independent OS processes, so headroom must be reserved under a real lock on the pool file, not computed from each bot's own view - two bots reading a stale balance and both opening is how a shared pool silently overshoots. Second, capital per trade means MARGIN POSTED, so with leverage the position notional is a multiple of it and every P&L, drawdown and excursion figure is denominated on the notional while the pool is debited the margin; mixing the two is the unit error this whole ruling exists to prevent. Third, a missing or malformed file must STOP the bots opening rather than fall back to a default - capital silently chosen by a default is capital chosen by nobody.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_capital_declaration_is_enforced"
+    },
+    {
+      "id": "RL-041",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "interview",
+      "verbatim": "And the spot and futures have leverage option s like 5x or 10x or 20x / [interview answer] Both bots, chosen per trade",
+      "clarified_as": "Both the perp bot and the spot bot size positions with leverage, and the multiple is chosen per trade rather than fixed per bot, under a ceiling declared per segment in `capital.json`. Warned at the time that this is the most demanding of the four options and needs a borrow-cost model, per-trade sizing and a liquidation-distance check before it is safe; the user chose it with that stated.",
+      "means": "Leverage does not exist anywhere in the codebase today - zero references to leverage, margin, liquidation or isolated/cross - so this is new construction, not a setting to expose. Three prerequisites are part of this ruling and may not be deferred, because each one is a way for leverage to report a profit that is not real. (1) SPOT BORROW COST: leveraged spot is borrowed money, and not charging interest on it makes the spot bot's returns a free loan that inflates every figure it publishes. (2) LIQUIDATION DISTANCE: at L times leverage an isolated position liquidates on roughly a 1/L adverse move, so a hard stop wider than that is a stop that can never fire - the position dies first. The gate must refuse, or reduce leverage until the stop fits, and name which it did. (3) THE CHOOSING RULE MUST BE DECLARED AND JOURNALLED: the default is volatility-targeted, leverage = target risk over the instrument's realised volatility, clamped to the declared ceiling - NOT confidence-scaled, because the perp and spot brains currently journal `calibrated=False` and scaling leverage by an uncalibrated confidence compounds the miscalibration exactly where it costs most. The rule is named in the config file so it can be changed without a code change.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_leverage_declared_and_bounded"
+    },
+    {
+      "id": "RL-042",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "and a data coloum of peak profit and loss that the trade reach after placed",
+      "clarified_as": "Every trade records the best and the worst it ever got while it was open - maximum favourable excursion and maximum adverse excursion - journalled on CLOSE and shown as columns beside the realised P&L.",
+      "means": "Measured 2026-08-19: `peak_favourable` is declared on `OpenPosition` and copied on ratchet but NEVER ASSIGNED anywhere in the codebase, so it has been `None` for every position that has ever existed, and there is no adverse counterpart at all. A field that looks built and is not is worse than an absent one. Both excursions are tracked on every poll, as a fraction of entry AND in USDT on the position notional, and both are journalled on CLOSE. They must be labelled SAMPLED: the engine polls every six seconds and cannot see the true extreme between polls, so the journalled figure is a lower bound on the real excursion and the sample count is recorded beside it. This is what makes the exit policy auditable - a trade that reached +0.9% before closing at -0.2% is a profit tail that let go, and without these two columns that failure is invisible.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_excursions_journalled_on_close"
+    },
+    {
+      "id": "RL-043",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "2 for now we will continue intrady wit 1m,5m,15m,30m intrady as it is",
+      "clarified_as": "The swing conversion is SHELVED, not built. The perp and spot bots stay intraday, and the intraday timeframes are named for the first time: 1m, 5m, 15m, 30m. Everything else agreed this session - the declared capital budget, the shared pool, per-trade leverage, and the excursion columns - proceeds unchanged, because none of it depended on the horizon.",
+      "means": "REVERSES RL-035 and RESTORES RL-018 to full force on perp and spot. RL-035 is not deleted: its analysis stands and its design document stays, so if the intraday numbers do not improve the conversion is picked up rather than re-derived. Two things follow. First, RL-037's history backfill keeps its justification but changes its target - the intervals that matter are now 1m, 5m, 15m and 30m, and `src/store/bar_backfill.py` today knows only 1m, 5m and 1h, so 15m and 30m are missing. Second, naming four timeframes is itself new: the bots currently see ONE 180-second tick window and have no bar timeframes at all, so 'as it is' describes the horizon, not the feature axis. Which of those two the user meant is the open question recorded against this ruling and must be answered before any feature work starts.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_intraday_timeframes_declared"
+    },
+    {
+      "id": "RL-044",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "do all 3",
+      "clarified_as": "All three of the offered steps: gate the champion alias assignment through a real promotion decision, never promote a model that does not beat the incumbent on the same out-of-fold measure, and only then decide what to do with the model perp is currently running.",
+      "means": "MEASURED 2026-08-19: the champion alias is assigned UNCONDITIONALLY by `learn.train_segment_model` line 247. The only check is a binomial test against the majority class; `models.model_registry.assign_alias` reads the incumbent solely to record it as `previous_version_id` and never compares. So the champion is whatever trained LAST, not what is best, and a retrain that produces a worse model silently replaces a better one. The promotion machinery already exists - `validation.promotion_gate`, `validation.promotion_pipeline`, `models.champion_challenger` - and outside their own files the only importer is a statuswall PROBE. Built, tested, and wired to nothing that promotes anything: the exact trap CLAUDE.md names with `tail_specs()`. What it cost, the same day: perp's champion moved 976ee2399a5c -> 9fa37695dae0 at 15:34 with accuracy 0.5486 both times, but the base rate rose from 0.5316 to 0.5363, so the EDGE fell from 1.70 to 1.23 percentage points on 42% fewer out-of-fold rows. The outgoing model had opened 3,352 positions; the incoming one proposed 10 times in 600 polls and selected none. NOTE the check that does NOT discriminate here: effective sample fraction was 0.0022 for the outgoing model and 0.0038 for the incoming one, so a floor on it would have blocked the BETTER model too. Any threshold on effective sample is a separate decision with the power to stop all promotion, and is the user's to set rather than one to invent inside a gate.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_champion_promotion_is_gated"
+    },
+    {
+      "id": "RL-045",
+      "date": "2026-08-19",
+      "session": "c05c1e5d",
+      "source": "transcript",
+      "verbatim": "You are forgetting the whole picture we skipped the plan and Jumped straight to implementing papper trading and setment bots now we implement the thing that make these bots intelligent learning research strategies instructions universal opportunity scanner bull and bear and profit tail gating bots inside the segments bots with is own features etc and so on and many more we discussed and skipped now I need to focus on whole picture and see or search how other famous crypto bots papper trading or trading types they use compete to what we did or implemented / [interview answers] Both, reconciliation first; All three research areas as one report; Stop them during the audit",
+      "clarified_as": "Work stops being reactive. Before any more building: one honest reconciliation of everything ruled, planned or discussed against what measurably exists in the code, and one graded research report comparing this system to the named public crypto trading systems on all three axes - paper-trading mechanics, intelligence and learning approach, and overall architecture. The reconciliation comes first and its gap list becomes the build order. All four segment bots are switched off for the duration so nothing moves underneath the audit.",
+      "means": "The user is naming a process failure, not a technical one, and they are right. Every session today ran the loop 'find defect, fix defect, find next defect' - the capital sizing, the champion gate, the uniqueness pooling - all real, all reactive, none of it the plan asking to be built. That is Rule 6 run backwards, and the cost is invisible precisely because the work was useful. What was skipped is named in the ruling itself: real learning, research capability, strategy discovery, the universal opportunity scanner (RL-009, RL-014), bull/bear/profit-tail as three brains inside each segment bot with that bot's own features (RL-011, RL-019, RL-023), and the intelligence standard of the goal document's SS1a. The reconciliation must search `~/research/ledger/` before concluding any capability is absent - 599 of its rows are PRIOR-ART in repositories no plan references, and four capabilities were designed from scratch on 2026-08-08 that the corpus already held.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "docs/AJIT-MASTER-PLAN.md"
+      ],
+      "probe": "probe_reconciliation_is_current"
+    },
+    {
+      "id": "RL-046",
+      "date": "2026-08-20",
+      "session": "32be9f8f",
+      "source": "transcript",
+      "verbatim": "your opinion for best or more symbol to trade or which align to my overall plan",
+      "clarified_as": "Asked whether a bot may narrow what the scanner sends it. Answer deferred to Claude with the constraint 'align to my overall plan'. Decided: every bot sees every candidate the scanner raises; the scanner stays blind to the bots. A bot's learned preference for setup classes is a weight it applies inside itself (setup-weight), never a filter upstream.",
+      "means": "RL-009 holds in full: the teacher keeps every student in the hall. Learning lives in the bot, not in the scanner.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/docs/proposals/three-bots-inside-segment.md"
+      ],
+      "probe": "probe_three_bots_in_blueprint"
+    },
+    {
+      "id": "RL-047",
+      "date": "2026-08-20",
+      "session": "32be9f8f",
+      "source": "transcript",
+      "verbatim": "you recommend",
+      "clarified_as": "The profit-tailgating bot may follow this segment's own winning leg of an exploration pair, as well as continuation setups from the scanner and tracked external traders.",
+      "means": "The exploration pair exists to find which side was right; tailgating the winner is what that knowledge is for.",
+      "scope": "per-segment",
+      "recorded_in": [
+        "docs/rulings.json"
+      ],
+      "probe": "probe_three_bots_in_blueprint"
+    },
+    {
+      "id": "RL-048",
+      "date": "2026-08-20",
+      "session": "32be9f8f",
+      "source": "transcript",
+      "verbatim": "bull and bear bots inside the segment bot are separate and what do you think",
+      "clarified_as": "Bull and bear are separate bots: own block, own features, own model, own scorecard, own cells on the board. Built from one part template so neither is privileged (T-1).",
+      "means": "Separate at runtime, same skeleton in the blueprint. RL-011's 'own deep architecture' read as own features plus own model, not a different shape.",
+      "scope": "per-brain",
+      "recorded_in": [
+        "docs/rulings.json"
+      ],
+      "probe": "probe_three_bots_in_blueprint"
+    }
+  ],
+  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
 }
