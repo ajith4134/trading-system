@@ -693,6 +693,21 @@
         "docs/rulings.json"
       ],
       "probe": "probe_three_bots_in_blueprint"
+    },
+    {
+      "id": "RL-049",
+      "date": "2026-08-20",
+      "session": "32be9f8f",
+      "source": "transcript",
+      "verbatim": "And for market data feed we need multi crypto wallet brocker method to avoid getting ban on using only one crypto insted we swap all the available crypto wallets to give more market data for the bot look old project how we did the same after your ideas",
+      "clarified_as": "The market data feed spreads its requests across every available venue (and every API key where a venue allows several) instead of leaning on one, so no single source is driven into a ban and the bot sees more of the market. Design it after reading how trading-system's capture layer handled venues, rate budgets and bans.",
+      "means": "Old project measured the constraint (fstream 928 streams/connection, binance withholding streams from this host, per-venue file-backed rate budget that drops a poll rather than take a 418) but never rotated. Public market data is limited per IP, not per key, so rotation across venues is what widens the feed; key rotation only helps private endpoints. Both are parts in market-data-feed.",
+      "scope": "shared",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/docs/proposals/thinking-blocks-and-feed-expansion.md"
+      ],
+      "probe": "probe_feed_rotation_in_blueprint"
     }
   ],
   "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
