@@ -960,6 +960,51 @@
         "docs/rulings.json",
         "ajit-segment-bots/CLAUDE.md"
       ]
+    },
+    {
+      "id": "RL-067",
+      "date": "2026-08-20",
+      "session": "3a62c363",
+      "source": "transcript",
+      "verbatim": "Yes and we are going to implement features by feature as mentioned in the diagrams in the dash board what we build should match the diagrams",
+      "clarified_as": "Implementation proceeds feature by feature, and what is built must match the diagrams on the dashboard. The blueprint is the specification, not an illustration of it.",
+      "means": "Code conforms to docs/features.json: a part's real consumes and produces must equal what the blueprint declares for it. Divergence is a defect in the code, or a blueprint edit made first and deliberately (dashboard/blueprint_edits/), never a silent drift.",
+      "scope": "system",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/CLAUDE.md"
+      ],
+      "probe": "probe_code_matches_blueprint"
+    },
+    {
+      "id": "RL-068",
+      "scope": "system",
+      "verbatim": "[interview answer] Substrate -> feed -> governor spine -> futures vertical",
+      "clarified_as": "Build order: the part runtime substrate first, then the market-data-feed block, then the six governor parts that make the switch real, then the futures vertical slice to a first paper trade, then widening into learning and intelligence.",
+      "means": "Chosen because the part graph is cyclic — 299 of 321 parts sit in one feedback loop, and the transitive inputs of a paper fill are 306 parts — so no dependency order exists. The feed comes early because the real-data tape every later test needs only accrues in real time and cannot be recovered later.",
+      "probe": "probe_build_order_followed",
+      "date": "2026-08-20",
+      "session": "3a62c363",
+      "source": "transcript",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/CLAUDE.md"
+      ]
+    },
+    {
+      "id": "RL-069",
+      "scope": "system",
+      "verbatim": "[interview answer] Keep it off-diagram, show it as its own tile on the status board",
+      "clarified_as": "The part runtime substrate is not declared in features.json and does not appear on the part monitor. It gets its own probes and its own tile on the status board instead.",
+      "means": "The blueprint describes the circuit; the runtime is the silicon under it. The substrate is still measured — it is simply not counted among the 321 parts. A deliberate exception to RL-067, taken out loud rather than by drift.",
+      "probe": "probe_runtime_tile_on_status_board",
+      "date": "2026-08-20",
+      "session": "3a62c363",
+      "source": "transcript",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/CLAUDE.md"
+      ]
     }
   ],
   "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
