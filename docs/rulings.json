@@ -750,6 +750,66 @@
     "docs/rulings.json"
    ],
    "probe": "probe_llm_foundation_in_blueprint"
+  },
+  {
+   "id": "RL-053",
+   "date": "2026-08-20",
+   "session": "3a62c363",
+   "source": "interview",
+   "verbatim": "[interview answer] Leverage per segment bot is a ceiling: the user sets the maximum, the bot still chooses per trade from volatility plus funding (RL-041), never above it",
+   "clarified_as": "Leverage per segment bot is a ceiling: the user sets the maximum, the bot still chooses per trade from volatility plus funding (RL-041), never above it",
+   "means": "Answer to the design interview for RL-051/RL-052.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "ajit-segment-bots/docs/proposals/capital-desk-and-llm-foundation.md"
+   ],
+   "probe": "probe_leverage_ceiling_in_blueprint"
+  },
+  {
+   "id": "RL-054",
+   "date": "2026-08-20",
+   "session": "3a62c363",
+   "source": "interview",
+   "verbatim": "[interview answer] When the sizer's answer is below the minimum capital per trade, bump the order up to the minimum — always trade at least the minimum",
+   "clarified_as": "When the sizer's answer is below the minimum capital per trade, bump the order up to the minimum — always trade at least the minimum",
+   "means": "Answer to the design interview for RL-051/RL-052.",
+   "scope": "per-segment",
+   "recorded_in": [
+    "docs/rulings.json",
+    "ajit-segment-bots/docs/proposals/capital-desk-and-llm-foundation.md"
+   ],
+   "probe": "probe_capital_bounds_gate_in_blueprint"
+  },
+  {
+   "id": "RL-055",
+   "date": "2026-08-20",
+   "session": "3a62c363",
+   "source": "interview",
+   "verbatim": "[interview answer] Capital settings are edited in a settings file on the server (SSH, or a local form through an SSH tunnel); the board shows the current values and when they last changed",
+   "clarified_as": "Capital settings are edited in a settings file on the server (SSH, or a local form through an SSH tunnel); the board shows the current values and when they last changed",
+   "means": "Answer to the design interview for RL-051/RL-052.",
+   "scope": "system",
+   "recorded_in": [
+    "docs/rulings.json",
+    "ajit-segment-bots/docs/proposals/capital-desk-and-llm-foundation.md"
+   ],
+   "probe": "probe_capital_settings_in_blueprint"
+  },
+  {
+   "id": "RL-056",
+   "date": "2026-08-20",
+   "session": "3a62c363",
+   "source": "interview",
+   "verbatim": "[interview answer] LLM foundation covers all four layers: prompt plus skill registry, evaluation plus replay, budget plus routing policy, memory plus retrieval",
+   "clarified_as": "LLM foundation covers all four layers: prompt plus skill registry, evaluation plus replay, budget plus routing policy, memory plus retrieval",
+   "means": "Answer to the design interview for RL-051/RL-052.",
+   "scope": "shared",
+   "recorded_in": [
+    "docs/rulings.json",
+    "ajit-segment-bots/docs/proposals/capital-desk-and-llm-foundation.md"
+   ],
+   "probe": "probe_llm_foundation_in_blueprint"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
