@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+import os
 import functools
 import shutil
 import subprocess
@@ -81,6 +82,100 @@ class ProbeResult:
 # measurement as long as its age is on the face of it, and this appends the age
 # to the detail rather than presenting an old number as a new one. A cache that
 # hid its age would be an assertion.
+# **How far back an expensive probe reads** (SL-18, RL-033). The five probes
+# below answer day-scale questions - observed days of history, symbols in the
+# store, bar validity - and they were answering them by materialising the WHOLE
+# archive. Measured 2026-08-19: `bars_60000000000ns` holds 208,880 fragments and
+# a pass reached 7.07 GB in nine minutes without finishing, on a box where three
+# earlier passes were OOM-killed at 7.8 GB. `status-wall.html` had not completed
+# since 2026-08-17 13:38 and the probe cache had never been created at all.
+#
+# A board that never returns reports nothing, which is worse than a board
+# reporting a bounded number honestly - PROVIDED the tile says what it bounded.
+# That is the Rule 8 line, and the same one `measured_periodically` draws when it
+# appends the age of a cached answer.
+#
+# **Six hours, and the arithmetic is why it is not more.** Bars are one row per
+# symbol per minute across ~2,230 symbols, so 48 hours is 6.4 million rows and a
+# pass bounded to it still reached 6.17 GB - measured 2026-08-19, which is the
+# reason this number is 6 and not 48. Six hours is ~800,000 rows.
+#
+# The questions these tiles answer do not need more: whether the store is still
+# being written, whether any served price is non-positive, whether the clock gate
+# holds, and how many captured symbols made it in. Each is answered by the newest
+# hours, and a symbol that appears in none of six hours is not a symbol the store
+# is currently building. The one question that genuinely needs the whole record -
+# how many OBSERVED DAYS the promotion gate has - is deliberately left unbounded,
+# because a window there would not be a cheaper answer to the same question but a
+# confident answer to a different one.
+WALL_WINDOW_HOURS = 6
+
+
+def _parts_since(dataset: Path, bound_ns: int | None) -> list[Path]:
+    """The dataset's parts, walking only the hour directories inside the window.
+
+    `rglob("*.parquet")` over `bars_60000000000ns` walks 208,880 entries, and it
+    was doing that on every wall pass to produce a part COUNT. Hour partitioning
+    (SL-16) is what makes the bounded walk possible: the hour is in the path, so
+    the directories outside the window are never opened.
+    """
+    import datetime as dt
+    if bound_ns is None:
+        return list(dataset.rglob("*.parquet"))
+    edge = dt.datetime.fromtimestamp(bound_ns / 1e9, dt.timezone.utc)
+    parts: list[Path] = []
+    for entry in os.scandir(dataset):
+        if not entry.is_dir() or not entry.name.startswith("availability_hour="):
+            continue
+        try:
+            stamp = dt.datetime.strptime(entry.name.split("=", 1)[1],
+                                         "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        if stamp >= edge:
+            parts.extend(Path(entry.path).rglob("*.parquet"))
+    return parts
+
+
+def recent_availability_bound_ns(dataset: Path, hours: int = WALL_WINDOW_HOURS
+                                 ) -> int | None:
+    """The availability time `hours` before this dataset's NEWEST hour.
+
+    **Bounded against the data, not the clock.** A pipeline that stopped two days
+    ago still gets measured over its own last hours, and the freshness check
+    reports the stop separately - where a wall-clock window would read empty and
+    report a working store as one with no rows, which is the failure mode this
+    board exists to catch rather than commit.
+
+    None when the dataset has no hour partitions, or holds fewer hours than the
+    window: there is nothing to prune, so a bound would be a claim without a
+    mechanism behind it.
+    """
+    import datetime as dt
+    if not dataset.is_dir():
+        return None
+    stamps = sorted(entry.name.split("=", 1)[1] for entry in os.scandir(dataset)
+                    if entry.is_dir() and entry.name.startswith("availability_hour="))
+    if not stamps:
+        return None
+    try:
+        newest = dt.datetime.strptime(stamps[-1], "%Y-%m-%dT%H").replace(
+            tzinfo=dt.timezone.utc)
+        oldest = dt.datetime.strptime(stamps[0], "%Y-%m-%dT%H").replace(
+            tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+    edge = newest - dt.timedelta(hours=hours)
+    if edge <= oldest:
+        return None                  # shorter than the window: read it whole
+    return int(edge.timestamp() * 1e9)
+
+
+def window_note(bound_ns: int | None, hours: int = WALL_WINDOW_HOURS) -> str:
+    """What a bounded tile must say about itself, or nothing when unbounded."""
+    return f" (newest {hours}h)" if bound_ns is not None else ""
+
+
 PROBE_CACHE_DIR = Path.home() / "capture" / "boards" / "probe-cache"
 # Six hours. Longer than any board pass, far shorter than the day these numbers
 # actually move on.
@@ -413,8 +508,13 @@ def _probe_consolidated_price_now(facts: SystemFacts) -> ProbeResult:
     try:
         from features.consolidated_price import consolidate_prices
         from store.clock_gated_reader import ClockGatedReader
+        # Bounded like the rest (SL-18, RL-033). `book` is small today - 294
+        # parts - but a probe that reads whole datasets is a probe that gets
+        # expensive the moment its dataset grows, which is how this wall stopped.
+        book_root = facts.capture_root / "store" / "book"
         book = ClockGatedReader(facts.capture_root / "store", "book").read_as_of(
-            2**62, columns=[])
+            2**62, not_before_ns=recent_availability_bound_ns(book_root),
+            columns=[])
         if book.empty:
             return ProbeResult(NOT_BUILT, "no book dataset to consolidate from",
                                "capture/store/book")
@@ -863,15 +963,22 @@ def _probe_bitemporal_store_now(facts: SystemFacts) -> ProbeResult:
     if not datasets:
         return ProbeResult(NOT_BUILT, "no store built from the archive yet",
                            "capture/store")
-    parts = [part for dataset in datasets for part in dataset.rglob("*.parquet")]
+    # **Bounded to the newest hours** (SL-18, RL-033), because the unbounded
+    # version of these two lines is what stopped the wall completing at all:
+    # 208,880 fragments walked and materialised, 7.07 GB, no result.
+    bound = recent_availability_bound_ns(datasets[0])
+    scope = window_note(bound)
+    parts = [part for dataset in datasets
+             for part in _parts_since(dataset, bound)]
     from store.clock_gated_reader import ClockGatedReader
     # A COUNT, not the rows. The keys the reader always reads are enough to
     # resolve corrections and count what survives them.
     rows = len(ClockGatedReader(_store_root(facts), datasets[0].name)
-               .read_as_of(2**62, columns=[]))
+               .read_as_of(2**62, not_before_ns=bound, columns=[]))
 
     evidence = f"capture/store/{datasets[0].name}"
-    counts = f"{rows} rows across {len(parts)} append-only part(s) in {len(datasets)} dataset(s)"
+    counts = (f"{rows} rows across {len(parts)} append-only part(s) in "
+              f"{len(datasets)} dataset(s){scope}")
     if not parts or rows == 0:
         return ProbeResult(DEGRADED, f"store exists and reads empty: {counts}", evidence)
 
@@ -929,8 +1036,10 @@ def _probe_bar_price_validity_now(facts: SystemFacts) -> ProbeResult:
     # Only the price columns are ever looked at, so only they are read. The
     # dataset holds 168,639 fragments and every column of all of them was being
     # materialised to answer "is any price non-positive".
+    bound = recent_availability_bound_ns(datasets[0])
+    scope = window_note(bound)
     served = ClockGatedReader(_store_root(facts), datasets[0].name).read_as_of(
-        2**62, columns=["open", "high", "low", "close"])
+        2**62, not_before_ns=bound, columns=["open", "high", "low", "close"])
     evidence = f"capture/store/{datasets[0].name}"
     if served.empty:
         return ProbeResult(DEGRADED, "store reads empty, so no price can be checked",
@@ -948,7 +1057,7 @@ def _probe_bar_price_validity_now(facts: SystemFacts) -> ProbeResult:
         return ProbeResult(
             OK,
             f"every price positive across {len(served)} bar(s) and {len(columns)} "
-            f"OHLC column(s)",
+            f"OHLC column(s){scope}",
             evidence)
 
     # Named, not just counted. A count tells a reader something is wrong; the symbols
@@ -958,7 +1067,7 @@ def _probe_bar_price_validity_now(facts: SystemFacts) -> ProbeResult:
     worst = {c: int((served[c] <= 0).sum()) for c in columns if (served[c] <= 0).any()}
     return ProbeResult(
         FAILING,
-        f"{len(impossible)} of {len(served)} served bar(s) carry a non-positive price "
+        f"{len(impossible)} of {len(served)} served bar(s){scope} carry a non-positive price "
         f"- {', '.join(f'{c}:{n}' for c, n in sorted(worst.items()))} - "
         f"in {', '.join(symbols[:6])}{' ...' if len(symbols) > 6 else ''}",
         evidence)
@@ -991,14 +1100,23 @@ def _probe_clock_gated_access_now(facts: SystemFacts) -> ProbeResult:
 
     store_root, dataset = _store_root(facts), datasets[0].name
     reader = ClockGatedReader(store_root, dataset)
+    # **Bounded to the newest hours** (SL-18, RL-033). The gate is a property of
+    # every read, so exercising it on a window proves it exactly as well as
+    # exercising it on the archive - and the archive version is why this probe
+    # never returned. The `midpoint` read below is the expensive one: it takes
+    # ALL columns, and unbounded that is half of 208,880 fragments.
+    bound = recent_availability_bound_ns(datasets[0])
+    scope = window_note(bound)
     # Availability times only: this probe asks WHICH rows the gate serves, never
-    # what is in them, and the dataset holds 168,639 fragments.
-    stored = read_dataset(store_root, dataset, columns=[AVAILABILITY_TIME])
-    if stored.empty or reader.read_as_of(2**62, columns=[]).empty:
+    # what is in them.
+    stored = read_dataset(store_root, dataset, not_before_ns=bound,
+                          columns=[AVAILABILITY_TIME])
+    if stored.empty or reader.read_as_of(2**62, not_before_ns=bound,
+                                         columns=[]).empty:
         return ProbeResult(DEGRADED, "store exists but reads empty", "ClockGatedReader.read_as_of")
 
     earliest = int(stored[AVAILABILITY_TIME].min())
-    hidden = reader.read_as_of(earliest - 1, columns=[])
+    hidden = reader.read_as_of(earliest - 1, not_before_ns=bound, columns=[])
     if not hidden.empty:
         # The gate is the whole layer. If it lets anything through early, that is
         # a failure of the system's core guarantee, not a degraded metric.
@@ -1010,7 +1128,7 @@ def _probe_clock_gated_access_now(facts: SystemFacts) -> ProbeResult:
     # inside the data and asserts the invariant on what actually came back, which
     # is the guarantee stated rather than a proxy for it.
     midpoint = int(stored[AVAILABILITY_TIME].median())
-    served = reader.read_as_of(midpoint)
+    served = reader.read_as_of(midpoint, not_before_ns=bound)
     ahead = served[served[AVAILABILITY_TIME] > midpoint]
     if not ahead.empty:
         return ProbeResult(FAILING,
@@ -1019,7 +1137,8 @@ def _probe_clock_gated_access_now(facts: SystemFacts) -> ProbeResult:
                            "ClockGatedReader.read_as_of")
     return ProbeResult(OK,
                        f"gate holds: nothing visible before {earliest}, and all "
-                       f"{len(served)} row(s) served mid-history were already available",
+                       f"{len(served)} row(s) served mid-history were already "
+                       f"available{scope}",
                        "ClockGatedReader.read_as_of, exercised live")
 
 
@@ -1443,6 +1562,13 @@ def _probe_promotion_readiness_now(facts: SystemFacts) -> ProbeResult:
     # `daily_carry` reads the funding rate, the event time and the symbol. The
     # funding dataset holds 58,841 fragments and every column of them was being
     # materialised for those three.
+    # NOT bounded, and deliberately: `readiness` counts OBSERVED DAYS OF HISTORY,
+    # so a window would answer a different question - it would report the record
+    # as permanently 48 hours long and the promotion gate as permanently
+    # unreachable. The conversion is what makes this affordable: funding went from
+    # 63,063 fragments to 81 on 2026-08-19, and the whole read now costs seconds.
+    # If it ever stops being affordable, the answer is a rolling count, not a
+    # window that quietly changes the meaning of the number.
     frame = ClockGatedReader(store_root, OBSERVED_FUNDING).read_as_of(
         2**62, columns=["funding_rate"])
     if frame.empty:

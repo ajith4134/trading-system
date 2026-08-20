@@ -45,20 +45,30 @@ HOUR_KEY = "availability_hour"
 # rename is here to prevent.
 _PARTIAL_PREFIX = ".writing-part-"
 
-# **Datasets every consumer reads whole-universe-for-a-window** (SL-17, RL-032).
-# These partition by availability hour ALONE and keep SYMBOL in the file body.
+# **Every dataset partitions by availability hour ALONE, with SYMBOL in the file
+# body** (SL-17, RL-032; extended to all datasets by RL-034).
 #
 # Measured 2026-08-19: one sealed `funding` hour held 1,892 fragments for 26,015
 # rows and 16.2 MiB - 13.8 rows and 8.8 KiB per file - at 29 ms each to open, so
-# the whole 850 MB dataset cost 30.6 minutes to read and grew by ~1,021 files an
-# hour. Nothing asks funding for one symbol; every consumer wants the universe
-# for a window, so the `symbol=` level bought nothing and cost a file per symbol
-# per hour. That is what froze the status wall for two days.
+# the whole 850 MB dataset cost 30.6 minutes to read. That is what froze the
+# status wall for two days.
 #
-# The split is by ACCESS PATTERN, not by size: `bars` and `book` are read one
-# symbol at a time, which is exactly where a `symbol=` level earns what it costs.
+# **The list was originally a split by access pattern, and that split turned out
+# to rest on a premise the code does not support.** `bars` and `book` were kept
+# per-symbol on the grounds that they are read one symbol at a time - but
+# `ClockGatedReader` applies its `symbols` argument to the ALREADY-MATERIALISED
+# frame, and the only pushdown filters this store builds are on availability time
+# and the hour (see `_availability_bound`). No path anywhere prunes by the
+# `symbol=` partition, so that level cost `bars_60000000000ns` 208,880 fragments
+# and pruned for nobody.
+#
+# A symbol level earns its keep again the day a reader pushes a symbol filter
+# INTO the scan. Until such a reader exists, this frozenset is every dataset, and
+# adding one to it is how that decision gets reversed.
 WHOLE_UNIVERSE_DATASETS = frozenset({
     "funding", "funding_reconstructed", "option_chain",
+    "bars_60000000000ns", "bars_reconstructed_60000000000ns",
+    "book", "dated_futures", "exchange_reserves",
 })
 
 # `hourly_migration` builds its converted copy under this suffix and swaps it in.

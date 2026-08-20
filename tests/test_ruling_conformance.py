@@ -457,3 +457,49 @@ def test_a_part_per_symbol_is_still_caught_once_venues_come_from_the_body(tmp_pa
 
     assert result.state != OK
     assert "4 parts for 1 venue" in result.detail
+
+
+# --- SL-18: a wall that never returns reports nothing -----------------------
+
+def test_the_wall_probe_reports_not_measured_when_no_pass_has_ever_completed(tmp_path):
+    """The probe cache is written on a probe's FIRST success, so an absent cache
+    directory is proof no expensive probe has ever returned. That was the live
+    state from 2026-08-17 13:38 until the bound landed."""
+    result = ruling_conformance.probe_wall_pass_completes(
+        cache_dir=tmp_path / "probe-cache", page=tmp_path / "status-wall.html")
+    assert result.state == NOT_MEASURED
+    assert "has ever completed" in result.detail
+
+
+def test_the_wall_probe_counts_the_expensive_probes_that_cached(tmp_path):
+    import json, time
+    cache = tmp_path / "probe-cache"
+    cache.mkdir()
+    for name in ("probe_bitemporal_store", "probe_consolidated_price"):
+        (cache / f"{name}.json").write_text(json.dumps({
+            "state": "ok", "detail": "d", "proof": "p",
+            "measured_at_s": time.time()}), encoding="utf-8")
+    page = tmp_path / "status-wall.html"
+    page.write_text("<html>the wall</html>", encoding="utf-8")
+
+    result = ruling_conformance.probe_wall_pass_completes(cache_dir=cache, page=page)
+
+    assert "2/5" in result.detail
+    assert result.state != OK, "a partial cache is not a completed pass"
+
+
+def test_the_wall_probe_reads_ok_once_every_expensive_probe_has_cached(tmp_path):
+    import json, time
+    cache = tmp_path / "probe-cache"
+    cache.mkdir()
+    for name in ruling_conformance.EXPENSIVE_PROBES:
+        (cache / f"{name}.json").write_text(json.dumps({
+            "state": "ok", "detail": "d", "proof": "p",
+            "measured_at_s": time.time()}), encoding="utf-8")
+    page = tmp_path / "status-wall.html"
+    page.write_text("<html>the wall</html>", encoding="utf-8")
+
+    result = ruling_conformance.probe_wall_pass_completes(cache_dir=cache, page=page)
+
+    assert result.state == OK, result.detail
+    assert "5/5" in result.detail

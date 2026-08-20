@@ -299,7 +299,10 @@ def test_clock_gate_probe_reports_failing_when_a_row_leaks_before_availability(t
             self._store_root = store_root
             self._dataset = dataset
 
-        def read_as_of(self, sim_clock_ns, symbols=None, columns=None):
+        # `not_before_ns` since SL-18: the real reader takes it, so a double
+        # that refuses it fails on the call rather than on the behaviour.
+        def read_as_of(self, sim_clock_ns, symbols=None, not_before_ns=None,
+                       columns=None):
             # `columns` is part of the reader's interface since 2026-08-19, when
             # the status probes stopped materialising every column of 168,639
             # fragments to answer a yes-or-no question. A double that did not
@@ -371,7 +374,10 @@ def test_clock_gate_probe_fails_a_gate_that_serves_rows_ahead_of_the_clock(tmp_p
         def __init__(self, store_root, dataset):
             self._store_root, self._dataset = store_root, dataset
 
-        def read_as_of(self, sim_clock_ns, symbols=None, columns=None):
+        # `not_before_ns` since SL-18: the real reader takes it, so a double
+        # that refuses it fails on the call rather than on the behaviour.
+        def read_as_of(self, sim_clock_ns, symbols=None, not_before_ns=None,
+                       columns=None):
             from store.parquet_partition import read_dataset
             everything = read_dataset(self._store_root, self._dataset)
             if int(sim_clock_ns) < int(everything[AVAILABILITY_TIME].min()):
@@ -1419,3 +1425,74 @@ def test_the_cache_lives_under_the_archive_it_measured(tmp_path):
     facts = _facts(capture_root=tmp_path)
 
     assert _probe_cache_dir(facts) == tmp_path / "boards" / "probe-cache"
+
+
+# --- SL-18 / RL-033: bound the read, and say what was bounded ---------------
+#
+# `status-wall.html` last completed 2026-08-17 13:38 and the probe cache
+# directory had never been created - the proof that no expensive probe had ever
+# returned, since the cache is written on first success. The five expensive
+# probes materialise the whole bars dataset, 208,880 fragments, and a pass was
+# measured at 7.07 GB after nine minutes without finishing. A board that never
+# returns reports nothing, which is worse than a board reporting a bounded
+# number honestly.
+
+def test_the_window_is_taken_from_the_datasets_newest_hour_not_the_clock(tmp_path):
+    """**Bounded against the DATA, not wall time.** A stopped pipeline still gets
+    measured over its own last hours, and freshness reports the stop separately -
+    where a wall-clock window would silently read empty and call it a store with
+    no rows."""
+    from statuswall.evidence import recent_availability_bound_ns
+
+    dataset = tmp_path / "bars"
+    for hour in ("2026-08-17T09", "2026-08-18T09", "2026-08-19T09"):
+        (dataset / f"availability_hour={hour}").mkdir(parents=True)
+
+    bound = recent_availability_bound_ns(dataset, hours=24)
+
+    assert bound is not None
+    import datetime as dt
+    edge = dt.datetime.fromtimestamp(bound / 1e9, dt.timezone.utc)
+    assert edge.strftime("%Y-%m-%dT%H") == "2026-08-18T09"
+
+
+def test_a_dataset_with_no_hour_partitions_is_not_bounded(tmp_path):
+    """Nothing to prune on, so bounding would be a claim without a mechanism."""
+    from statuswall.evidence import recent_availability_bound_ns
+    dataset = tmp_path / "bars"
+    dataset.mkdir()
+    assert recent_availability_bound_ns(dataset, hours=24) is None
+
+
+def test_a_dataset_shorter_than_the_window_is_read_whole(tmp_path):
+    from statuswall.evidence import recent_availability_bound_ns
+    dataset = tmp_path / "bars"
+    (dataset / "availability_hour=2026-08-19T09").mkdir(parents=True)
+    assert recent_availability_bound_ns(dataset, hours=48) is None
+
+
+def test_a_bounded_tile_names_the_window_it_measured(tmp_path):
+    """The Rule 8 line: a number whose scope is on its face is a measurement, the
+    same number presented as covering everything is an assertion."""
+    import pandas as pd
+    from statuswall.evidence import OK, probe_bitemporal_store
+    from store.parquet_partition import append_partition
+    from store.temporal_schema import (
+        AVAILABILITY_TIME, EVENT_TIME, INGESTION_TIME, SYMBOL, VENUE)
+
+    hour_ns = 1_787_000_000_000_000_000
+    for i, offset in enumerate((0, 3_600 * 10**9 * 100)):   # two hours, far apart
+        frame = pd.DataFrame({
+            SYMBOL: ["BTCUSDT"], VENUE: ["binance"],
+            EVENT_TIME: [hour_ns + offset],
+            INGESTION_TIME: [hour_ns + offset],
+            AVAILABILITY_TIME: [hour_ns + offset], "close": [63113.2],
+        }).astype({EVENT_TIME: "int64", INGESTION_TIME: "int64",
+                   AVAILABILITY_TIME: "int64"})
+        append_partition(tmp_path / "store", "bars_60000000000ns", frame,
+                         f"snap{i}")
+
+    result = probe_bitemporal_store(_facts(capture_root=tmp_path))
+
+    assert result.state in (OK, "degraded", "stopped"), result.state
+    assert "newest" in result.detail and "h" in result.detail, result.detail

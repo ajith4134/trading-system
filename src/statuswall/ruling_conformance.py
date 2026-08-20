@@ -224,6 +224,62 @@ def _live_datasets(store_root: Path) -> list[Path]:
         and not any(d.name.endswith(suffix) for suffix in _NOT_A_LIVE_DATASET))
 
 
+# The five probes wrapped in `measured_periodically`. Each writes its cache entry
+# on its FIRST success, so the set of entries is a record of which ones have ever
+# returned - which is why an absent cache directory was the proof that no
+# expensive probe had completed since 2026-08-17.
+EXPENSIVE_PROBES = (
+    "probe_bitemporal_store",
+    "probe_bar_price_validity",
+    "probe_clock_gated_access",
+    "probe_promotion_readiness",
+    "probe_consolidated_price",
+)
+
+PROBE_CACHE = Path.home() / "capture" / "boards" / "probe-cache"
+WALL_PAGE = Path.home() / "research" / "dashboard" / "status-wall.html"
+
+
+def probe_wall_pass_completes(cache_dir: Path = PROBE_CACHE,
+                              page: Path = WALL_PAGE) -> ProbeResult:
+    """SL-18, RL-033: the wall finishes a pass, rather than never returning.
+
+    **A board that never returns reports nothing**, and that is what this
+    measures rather than how fast the pass was. `status-wall.html` last completed
+    2026-08-17 13:38 while the generator started a fresh pass every five minutes;
+    each one walked 208,880 bars fragments, reached 7 GB, and was killed. Nothing
+    said so, because a stale page looks exactly like a fresh one.
+
+    The evidence is the probe cache. `measured_periodically` writes an entry on a
+    probe's FIRST success and never on a failure, so the entries are a record of
+    which expensive probes have ever completed - and the absence of the directory
+    is a stronger statement than any timing.
+    """
+    cached = sorted(p.stem for p in cache_dir.glob("*.json")) if cache_dir.is_dir() else []
+    met = [name for name in EXPENSIVE_PROBES if name in cached]
+    missing = {name: "has never completed a pass"
+               for name in EXPENSIVE_PROBES if name not in cached}
+    proof = str(cache_dir)
+    if not met:
+        return ProbeResult(
+            NOT_MEASURED,
+            f"no expensive probe has ever completed a pass - the cache at "
+            f"{cache_dir.name} holds nothing, and it is written on first success",
+            proof)
+    if not page.is_file():
+        return ProbeResult(PARTIAL,
+                           f"{len(met)}/{len(EXPENSIVE_PROBES)} expensive probes "
+                           f"cached, but {page.name} has never been written", proof)
+    detail = (f"{len(met)}/{len(EXPENSIVE_PROBES)} expensive probes have completed "
+              f"a pass")
+    if missing:
+        detail += " - " + "; ".join(f"{k}: {v}" for k, v in list(missing.items())[:3])
+        return ProbeResult(PARTIAL, detail, proof)
+    age_h = (time.time() - page.stat().st_mtime) / 3600
+    detail += f"; {page.name} written {age_h:.1f}h ago"
+    return ProbeResult(OK if age_h < 6 else DEGRADED, detail, proof)
+
+
 def probe_hour_pruning_enabled(store_root: Path = STORE_ROOT) -> ProbeResult:
     """SL-16, RL-032: hour pruning is off for any dataset still part-migrated.
 
@@ -687,6 +743,7 @@ PROBES = {
     "probe_paper_engine_running": probe_paper_engine_running,
     "probe_poll_scan_cost": probe_poll_scan_cost,
     "probe_hour_pruning_enabled": probe_hour_pruning_enabled,
+    "probe_wall_pass_completes": probe_wall_pass_completes,
     "probe_sealed_hour_compacted": probe_sealed_hour_compacted,
     "probe_enforcement_live": probe_enforcement_live,
     "probe_rulings_register_loads": probe_rulings_register_loads,

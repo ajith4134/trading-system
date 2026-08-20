@@ -247,13 +247,35 @@ def test_the_symbol_travels_in_the_body_when_the_path_no_longer_carries_it(tmp_p
     assert set(frame["funding_rate"]) == {0.0001, 0.0002}
 
 
-def test_a_per_symbol_dataset_keeps_its_symbol_partition(tmp_path):
-    """Bars and book are read one symbol at a time, which is exactly where the
-    `symbol=` level earns what it costs."""
+def test_a_dataset_nobody_prunes_by_symbol_gets_no_symbol_partition(tmp_path):
+    """**This test used to assert the opposite, on a premise the code does not
+    support.** Bars was kept per-symbol because it is "read one symbol at a
+    time" - but `ClockGatedReader` applies its `symbols` argument to the
+    already-materialised frame, and the only pushdown filters the store builds
+    are on availability time and the hour. Nothing prunes by the `symbol=`
+    partition, so it cost `bars_60000000000ns` 208,880 fragments and pruned for
+    nobody (RL-034, measured 2026-08-19).
+
+    A symbol level earns its keep again the day a reader pushes a symbol filter
+    INTO the scan; adding the dataset back to WHOLE_UNIVERSE_DATASETS is how
+    that gets reversed.
+    """
     from store.parquet_partition import append_partition
     written = append_partition(tmp_path, "bars_60000000000ns",
                                _funding_frame(("BTCUSDT", "ETHUSDT")),
                                "bars-binance-2026-08-19-upto1")
+
+    assert len(written) == 1
+    assert "symbol=" not in str(written[0])
+
+
+def test_an_unknown_dataset_still_keeps_its_symbol_partition(tmp_path):
+    """The frozenset is the decision, not the default. A dataset nobody has
+    reasoned about keeps the conservative layout rather than inheriting one."""
+    from store.parquet_partition import append_partition
+    written = append_partition(tmp_path, "some_new_dataset",
+                               _funding_frame(("BTCUSDT", "ETHUSDT")),
+                               "x-binance-2026-08-19-upto1")
 
     assert len(written) == 2
     assert all("symbol=" in str(p) for p in written)
