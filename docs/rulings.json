@@ -810,6 +810,21 @@
     "ajit-segment-bots/docs/proposals/capital-desk-and-llm-foundation.md"
    ],
    "probe": "probe_llm_foundation_in_blueprint"
+  },
+  {
+   "id": "RL-057",
+   "date": "2026-08-20",
+   "session": "3a62c363",
+   "source": "transcript",
+   "verbatim": "now save evertin now we are oin to start implementin",
+   "clarified_as": "Design phase closes here. Everything is saved and pushed; implementation starts next, futures segment bot first (RL-050), part by part (RL-017).",
+   "means": "Blueprint at 321 parts / 27 blocks, all contracts holding, is the design to build against. From now on a part climbs DECLARED -> IMPLEMENTED -> TESTED -> RUNNING on the part monitor, never inferred upward.",
+   "scope": "system",
+   "recorded_in": [
+    "docs/rulings.json",
+    "ajit-segment-bots/CLAUDE.md"
+   ],
+   "probe": "probe_any_part_implemented"
   }
  ],
  "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
