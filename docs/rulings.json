@@ -1005,6 +1005,21 @@
         "docs/rulings.json",
         "ajit-segment-bots/CLAUDE.md"
       ]
+    },
+    {
+      "id": "RL-071",
+      "scope": "system",
+      "verbatim": "no tape use live prices in te market to trade live ike do in live tradin wit real money it is te rule important rule",
+      "clarified_as": "The bot trades on live market prices arriving in real time, exactly as it would with real money. A tape replay is never the input a trading decision is made from.",
+      "means": "The tape stays what it is -- the durable record, and the fixture real-data tests run on (RL-063). It is not a source a running bot trades from. Every part in the live path takes its market-data from the venue stream as it arrives, and anything the system learns while running, it learns from what it is seeing now. A run driven by replayed history would be a backtest presented as a bot, and the difference between the two is the whole reason paper trading exists (RL-005).",
+      "probe": "probe_live_run_reads_the_venue_stream_not_the_tape",
+      "date": "2026-08-22",
+      "session": "d3bac2f5",
+      "source": "transcript",
+      "recorded_in": [
+        "docs/rulings.json",
+        "ajit-segment-bots/docs/proposals/signal-outcome-labelling.md"
+      ]
     }
   ],
   "_how_scope_works": "Every ruling binds at a level, and the level decides the denominator the reconciliation counts against: per-segment needs a row in all four segment slices, per-brain in all twelve brains, shared and system need one row anywhere. Assigned once is not resolved four times - that is how a cross-cutting capability reads as done while three of four bots never received it. Default assignment (spec 2026-08-17 §5): decides about a symbol or market -> per-segment; about a brain's own learning, beliefs or competence -> per-brain; about capture, store, cost, validation, registry, tail cap or governance -> shared; whole-account objective -> system."
